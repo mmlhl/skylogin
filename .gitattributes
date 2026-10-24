@@ -1,0 +1,20 @@
+# 统一换行，避免 Windows/Linux 混战
+* text=auto
+
+# Go / Markdown / 配置一律 LF
+*.go     text eol=lf
+*.md     text eol=lf
+*.mod    text eol=lf
+*.sum    text eol=lf
+*.html   text eol=lf
+*.manifest text eol=lf
+.gitignore text eol=lf
+NOTICE   text eol=lf
+LICENSE  text eol=lf
+
+# Windows 脚本用 CRLF
+*.bat    text eol=crlf
+
+# 二进制
+*.ico    binary
+*.syso   binary

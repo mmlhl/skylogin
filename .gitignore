@@ -1,0 +1,58 @@
+# 构建产物
+/skylogin.exe
+/dist/
+*.exe
+*.exe~
+*.dll
+
+# 本地调试产物
+*.log
+*.out
+*.err
+/logs/
+/capture/
+/dev/
+/screenshots/
+
+# 运行期数据（绝不入库）
+/accounts.json
+/current.txt
+/last_scan.json
+/huawei_qr.png
+/game-window.png
+
+# Python / 抓包参考环境（不在本仓库内，但防止误提交）
+.venv*/
+__pycache__/
+*.pyc
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# AI 文档（只在本机，不提交）
+/AGENTS.md
+/.ai/
+
+
+
+# ── 前端（web/） ─────────────────────────────────────
+# 依赖目录：体积大、可由 npm ci 还原，绝对不入库
+/web/node_modules/
+# Vite / 构建缓存
+/web/.vite/
+/web/node_modules/.vite/
+# 本地环境文件（可能含个人配置）
+/web/.env.local
+/web/.env.*.local
+# 日志与临时文件
+/web/npm-debug.log*
+/web/yarn-error.log*
+/web/coverage/
+# 注意：/web/dist/ 是**要提交**的——Go 用 go:embed 把它打进 exe，
+# 不提交的话新克隆的仓库直接 go build 会失败。它由 `npm run build` 生成。
+
+# 替换正在运行的 exe 时留下的旧文件
+*.exe.old*

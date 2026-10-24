@@ -1,0 +1,75 @@
+/**
+ * 全局样式与主题变量。
+ *
+ * 数值来自 .ai/06-界面设计规范.md，配色来自 web/src/preview/palettes.ts 的「玄夜」。
+ * 换主题只改下面这一组变量。
+ */
+
+:root {
+  /* 三级表面：底 / 面板 / 浮起 */
+  --bg: #09090a;
+  --panel: #101012;
+  --raised: #161619;
+
+  /* 三级文字 */
+  --text: #f4f2ef;
+  --dim: #a5a29c;
+  --faint: #6d6a65;
+
+  /* 强调色与它上面的文字 */
+  --accent: #d8b47c;
+  --on-accent: #14120c;
+
+  /* 分隔线 */
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.14);
+
+  /* 玻璃：半透明底 */
+  --glass: rgba(255, 255, 255, 0.045);
+  --glass-strong: rgba(255, 255, 255, 0.07);
+
+  /* 圆角三档 */
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 18px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 等宽：ID、路径、设备号 */
+.mono {
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+}

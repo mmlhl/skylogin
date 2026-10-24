@@ -1,0 +1,133 @@
+name: 构建
+
+# 只在两种情况下构建：
+#   1. 手动触发（Actions 页面点「Run workflow」，或者用 gh 命令）
+#   2. 推版本标签（v1.2.0 这种）
+#
+# 普通 push 不会触发——避免每次改代码都跑一遍构建。
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（例如 1.2.0）。留空则自动生成 build-<构建序号>'
+        required: false
+        type: string
+      release:
+        description: '构建完成后创建 GitHub Release'
+        required: false
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: 构建 Windows 版
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 计算版本号
+        id: ver
+        shell: pwsh
+        run: |
+          $manual = "${{ inputs.version }}"
+          $tag = "${{ github.ref_name }}"
+
+          if ($manual -ne "") {
+            $v = $manual.TrimStart('v')
+          } elseif ("${{ github.ref_type }}" -eq "tag") {
+            $v = $tag.TrimStart('v')
+          } else {
+            $v = "build-${{ github.run_number }}"
+          }
+
+          $isRelease = "${{ inputs.release }}" -eq "true" -or "${{ github.ref_type }}" -eq "tag"
+          "version=$v" >> $env:GITHUB_OUTPUT
+          # GitHub 的 if 是字符串比较，统一输出小写
+          "release=$($isRelease.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+          Write-Host "版本号: $v / 创建 Release: $isRelease"
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: 构建前端
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: 跑测试
+        run: go test ./...
+
+      - name: 构建 exe
+        shell: pwsh
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          $ldflags = "-s -w -H=windowsgui -X skylogin/internal/app.Version=${{ steps.ver.outputs.version }}"
+          go build -trimpath -ldflags $ldflags -o skylogin.exe ./cmd/skylogin
+          $size = [math]::Round((Get-Item skylogin.exe).Length / 1MB, 1)
+          Write-Host "构建完成: skylogin.exe ($size MB)"
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: skylogin-${{ steps.ver.outputs.version }}
+          path: skylogin.exe
+          if-no-files-found: error
+
+      - name: 创建 Release
+        if: steps.ver.outputs.release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: v${{ steps.ver.outputs.version }}
+          # 只放 exe；源码压缩包 GitHub 会自动附在 Release 上
+          files: skylogin.exe
+          draft: false
+          prerelease: false
+          body: |
+            ## 光遇账号登录器 ${{ steps.ver.outputs.version }}
+
+            ### 支持的账号
+            - ✅ **华为渠道**账号（扫码添加）
+            - ✅ **网易官方（官服）**账号（用光遇手游 / 网易大神扫码添加）
+            - ❌ 其它渠道（小米、B站、TapTap 等）暂不支持
+
+            ### 怎么用
+            1. 下载 `skylogin.exe`，双击运行（会请求管理员权限，光遇本体需要）
+            2. 点左边的「＋ 添加华为账号」或「＋ 添加网易账号」，用手机扫码
+            3. 选好账号，点「启动光遇」
+
+            扫一次码之后就不用再扫了，之后每次双击 → 点启动即可。
+            多个账号可以随时在左边切换。
+
+            ### 说明
+            - 单个 exe，免安装；不装证书、不改 hosts、不开代理、不注入游戏进程
+            - 启动前会自动关闭发烧平台，用完可以自己再打开
+            - 出问题时点界面里的「打开日志」，把 log.txt 发出来
+
+            ### 文件
+            - `skylogin.exe` —— 主程序
+            - `Source code` —— 源码压缩包（GitHub 自动生成）
+
+
+
