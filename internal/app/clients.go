@@ -10,21 +10,24 @@ package app
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sys/windows"
 
+	"skylogin/internal/channel"
 	"skylogin/internal/device"
 	"skylogin/internal/fever"
+	"skylogin/internal/prefs"
 )
 
 const (
-	// routeTimeout 一条路由最长活多久：登录再慢也该结束了
-	routeTimeout = 3 * time.Minute
-	// routeIdle 发过票之后多久没再来要票，就认为登录完成，可以回收
-	routeIdle = 60 * time.Second
+	// replyWindow 应答次数的计算窗口：卡登录时连续重试有上限，
+	// 但在网络错误页停留很久再点重试时重新计数，路由不会被次数卡死。
+	replyWindow = 10 * time.Minute
 	// routeSweep 多久检查一次
 	routeSweep = 5 * time.Second
 )
@@ -32,6 +35,8 @@ const (
 var (
 	// mirrorSeq 本次会话建过几套镜像（只用来区分目录名）
 	mirrorSeq int
+	// launchSeq 客户端启动顺序号（窗口排列按它铺格子）
+	launchSeq int64
 	clientsMu sync.Mutex
 	// clients: 游戏 pid → 路由
 	clients = map[uint32]*multiSlot{}
@@ -79,19 +84,36 @@ func handleTicket(h *fever.Host, req fever.TicketRequest) bool {
 	}
 	clientsMu.Unlock()
 	if slot == nil {
-		// 路由已经回收（登录完成或超时），不再回票
-		logf("收到已回收路由的取票请求 pid=%d，忽略", req.ProcessID)
+		// 路由不在：只有客户端已退出才会回收。此时再来的取票请求
+		// 大概率是之前登录失败的残留重试，回票也没有意义。
+		logf("收到已回收路由的取票请求 pid=%d，忽略（该客户端此前未能登录成功）", req.ProcessID)
 		return true
+	}
+
+	// 应答次数按窗口重置：错误页停留很久后点重试，应该能拿到新签的票
+	if now := time.Now(); slot.firstReply.IsZero() || now.Sub(slot.firstReply) > replyWindow {
+		slot.firstReply = now
+		attempts.Reset(req.ProcessID)
 	}
 
 	n := attempts.Add(req.ProcessID, 1)
 	if n > maxReplyPerClient {
 		if n == maxReplyPerClient+1 {
-			logf("%s（pid=%d）已应答 %d 次仍未成功，停止应答", displayName(*slot.acc), req.ProcessID, maxReplyPerClient)
+			logf("%s（pid=%d）已应答 %d 次仍未成功，暂停应答（%v 后自动恢复）",
+				displayName(*slot.acc), req.ProcessID, n, replyWindow)
+			// 票据发了几次游戏都没登录成功：签票接口没报错，但凭证大概率
+			// 已经失效（过期 / 被平台作废）。把它标记成待验证并推提示，
+			// 别让这个问题只躺在游戏里——玩家看到的只是"网络错误"。
+			setAccountCredState(slot.acc.UserID, "stale", "多次发票游戏都没能登录成功，凭证可能已失效")
+			setAuthHint("login_stuck", "登录未完成",
+				fmt.Sprintf("%s 多次发票都没能登录成功，凭证可能已失效，请刷新凭证", displayName(*slot.acc)),
+				slot.acc.Username, slot.acc.UserID)
 		}
 		return true
 	}
-	logf("收到游戏取票请求 #%d: pid=%d（%s）", n, req.ProcessID, displayName(*slot.acc))
+	// Identifier 是游戏给这次登录生成的一次性句柄：重试同一登录时不变，
+	// 重新发起登录时会换。打出来方便排查"反复要票"到底是哪种情况。
+	logf("收到游戏取票请求 #%d: pid=%d（%s，id=%x…）", n, req.ProcessID, displayName(*slot.acc), req.Identifier[:6])
 
 	go func() {
 		clientsMu.Lock()
@@ -102,6 +124,36 @@ func handleTicket(h *fever.Host, req fever.TicketRequest) bool {
 		if t == "" {
 			var err error
 			t, ch, err = mintTicket(*slot.acc, slot.dev)
+			if err != nil {
+				switch slot.acc.Channel {
+				case channel.KeyVivo:
+					// vivo 的 openToken 是短命票，uni_sauth 到取票这一步才会拒。
+					// 用 Cookie 会话静默换一张新票后立刻重签；Cookie 也失效才
+					// 需要重新登录。
+					if rerr := refreshVivoCredential(slot.acc); rerr != nil {
+						err = rerr
+						setAccountCredState(slot.acc.UserID, "expired", "vivo登录已失效")
+						setAuthHint("vivo_expired", "vivo登录已过期",
+							fmt.Sprintf("%s 的 vivo 登录已失效，请重新登录该账号", displayName(*slot.acc)),
+							slot.acc.Username, slot.acc.UserID)
+					} else {
+						t, ch, err = mintTicket(*slot.acc, slot.dev)
+					}
+				case channel.KeyM4399:
+					// 4399 同病：oauth-check 说凭证活着，uni_sauth 却拒——
+					// 跑一遍静默恢复链（check → refresh_token 轮换 → state
+					// 兜底）再重签；链路全断才需要重新登录。
+					if rerr := ensureM4399Credential(slot.acc); rerr != nil {
+						err = rerr
+						setAccountCredState(slot.acc.UserID, "expired", "4399登录已失效")
+						setAuthHint("m4399_expired", "4399登录已过期",
+							fmt.Sprintf("%s 的 4399 登录已失效，请重新登录该账号", displayName(*slot.acc)),
+							slot.acc.Username, slot.acc.UserID)
+					} else {
+						t, ch, err = mintTicket(*slot.acc, slot.dev)
+					}
+				}
+			}
 			if err != nil {
 				logf("现签票据失败（%s）: %v", displayName(*slot.acc), err)
 				return
@@ -123,6 +175,8 @@ func handleTicket(h *fever.Host, req fever.TicketRequest) bool {
 func registerClient(pid uint32, slot *multiSlot) {
 	clientsMu.Lock()
 	slot.pid = pid
+	slot.seq = launchSeq
+	launchSeq++
 	slot.createdAt = time.Now()
 	clients[pid] = slot
 	runningByAccount[slot.acc.PlayerID] = pid
@@ -130,9 +184,15 @@ func registerClient(pid uint32, slot *multiSlot) {
 		fellback = slot // 单实例时兜底（有些启动方式拿不到 pid）
 	}
 	clientsMu.Unlock()
+	logf("路由已建立: %s（pid=%d）", displayName(*slot.acc), pid)
 }
 
-// routeJanitor 定期回收路由：登录完成、实例退出、或超过 3 分钟。
+// routeJanitor 定期清理路由。
+//
+// 路由跟客户端同生命周期：进程活着就保留。之前"60 秒没来要票就当登录
+// 完成回收"有两个问题——"没来要票"不代表登录成功（票据被服务端拒绝时，
+// 游戏卡在错误页，60 秒后路由没了，用户点重试就直接被忽略），
+// "已登录完成"那行日志也误导过排查。现在只在客户端退出时回收。
 func routeJanitor() {
 	for {
 		time.Sleep(routeSweep)
@@ -146,22 +206,15 @@ func routeJanitor() {
 			return
 		}
 
-		now := time.Now()
 		clientsMu.Lock()
 		for pid, slot := range clients {
-			dead := !fever.ProcessAlive(pid)
-			expired := now.Sub(slot.createdAt) > routeTimeout
-			idle := !slot.lastTicket.IsZero() && now.Sub(slot.lastTicket) > routeIdle
-			if dead || expired || idle {
-				if idle && !dead && !expired {
-					logf("%s（pid=%d）已登录完成，回收路由", displayName(*slot.acc), pid)
-				} else if expired && !dead {
-					logf("%s（pid=%d）超过 %s 仍未完成，回收路由", displayName(*slot.acc), pid, routeTimeout)
-				}
-				delete(clients, pid)
-				if fellback == slot {
-					fellback = nil
-				}
+			if fever.ProcessAlive(pid) {
+				continue
+			}
+			logf("路由回收: %s（pid=%d）客户端已退出", displayName(*slot.acc), pid)
+			delete(clients, pid)
+			if fellback == slot {
+				fellback = nil
 			}
 		}
 		// 清掉已经退出的进程的"运行中"标记
@@ -307,8 +360,60 @@ func prepareMirror(exe string) (string, error) {
 	if err != nil {
 		logf("镜像目录已建但有告警（%v）", err)
 	}
+	makeIndependentPrefs(exe, m)
 	logf("第 %d 套镜像已就绪: %s", seq+1, m)
 	return filepath.Join(m, filepath.Base(exe)), nil
+}
+
+// nextFullscreen 标记"这一轮多开写全屏显示"（display = fullscreen）。
+// launchManyLayout 拉起进程前置位、全部拉起后清除；预写设置发生在
+// 建镜像的时候，读它就知道该写窗口还是全屏。
+var nextFullscreen atomic.Bool
+
+// makeIndependentPrefs 把镜像里 preferences.sav 的硬链接断开成独立副本，
+// 并按设置预写多开默认：显示模式（窗口 / 全屏）+ 画质 / 帧率。
+//
+// 这份文件存着全屏/画质/帧率等本地设置（TGC 的 PREF 格式，见 internal/prefs）。
+// 整目录硬链接的镜像里它和本体是同一份内容，所有客户端读写互相覆盖，
+// 游戏启动时还都按上一次的状态恢复窗口（全屏多开就是这么把排列毁掉的）。
+func makeIndependentPrefs(srcExe, mirrorRoot string) {
+	rel := filepath.Join("data", "ThatGameCompany", "com.netease.sky", "preferences.sav")
+	p := filepath.Join(mirrorRoot, rel)
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return // 镜像里没有这个文件就算了
+	}
+	if err := os.Remove(p); err != nil {
+		logf("镜像设置断链失败: %v", err)
+		return
+	}
+	if err := os.WriteFile(p, b, 0o644); err != nil {
+		logf("镜像设置独立副本写入失败: %v", err)
+		return
+	}
+
+	// 预写默认值：显示模式（平铺 / 堆叠 = 窗口，全屏 = 全屏）+ 画质 / 帧率
+	cfg := loadConfig()
+	out, err := prefs.ApplyMultiDefaults(b, nextFullscreen.Load(), cfg.MultiQualityMode, cfg.MultiQualityFps)
+	if err != nil {
+		logf("镜像设置预写失败: %v", err)
+		return
+	}
+	if err := os.WriteFile(p, out, 0o644); err != nil {
+		logf("镜像设置写回失败: %v", err)
+		return
+	}
+	extra := "窗口模式"
+	if nextFullscreen.Load() {
+		extra = "全屏"
+	}
+	if cfg.MultiQualityMode != "" {
+		extra += "，画质 " + cfg.MultiQualityMode
+	}
+	if cfg.MultiQualityFps > 0 {
+		extra += fmt.Sprintf("，帧率 %d", cfg.MultiQualityFps)
+	}
+	logf("镜像设置已独立并预写（%s）: %s", extra, rel)
 }
 
 // stopAccount 结束某个账号正在运行的游戏（连同它的子进程）。

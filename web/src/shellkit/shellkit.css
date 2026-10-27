@@ -1,0 +1,205 @@
+/* 演示页全局基础 + 跨壳共享的原语类。
+   令牌变量（--bg/--acc/...）由每个壳的根节点定义，这里只写形状。 */
+
+html,
+body,
+#demo {
+  height: 100%;
+  margin: 0;
+}
+body {
+  font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  background: #0a0a0d;
+}
+
+.mono {
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 11.5px;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- 图标按钮 ---- */
+.ico {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  padding: 0;
+  color: var(--faint);
+  cursor: pointer;
+  font-style: normal;
+  transition: background-color 0.15s ease-out, color 0.15s ease-out;
+}
+.ico:hover {
+  background: color-mix(in srgb, var(--tx) 6%, transparent);
+  color: var(--tx);
+}
+.ico svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* ---- 按钮 ---- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.15s ease-out, color 0.15s ease-out, border-color 0.15s ease-out, filter 0.15s ease-out;
+}
+.btn svg {
+  width: 14px;
+  height: 14px;
+}
+.btn:hover {
+  background: color-mix(in srgb, var(--tx) 5%, transparent);
+  color: var(--tx);
+  border-color: var(--line2);
+}
+.btn.soft {
+  background: color-mix(in srgb, var(--acc) 14%, transparent);
+  border-color: transparent;
+  color: var(--acc);
+}
+.btn.soft:hover {
+  background: color-mix(in srgb, var(--acc) 22%, transparent);
+}
+.btn.primary {
+  background: var(--acc);
+  border-color: transparent;
+  color: var(--on);
+  font-weight: 600;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+.btn.primary:hover {
+  filter: brightness(1.05);
+}
+.btn.sm {
+  height: 28px;
+  padding: 0 11px;
+  border-radius: 7px;
+  font-size: 12px;
+  gap: 6px;
+}
+.btn.sm svg {
+  width: 12px;
+  height: 12px;
+}
+.btn.danger {
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 30%, transparent);
+}
+.btn.danger:hover {
+  background: var(--badbg);
+  color: var(--bad);
+}
+
+/* ---- 状态 pill / 圆点 ---- */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: 11.5px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+.pill.ok,
+.pill.live {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 32%, transparent);
+  background: var(--okbg);
+}
+.pill.exp {
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 32%, transparent);
+  background: var(--badbg);
+}
+.dot {
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+.dot.ok {
+  background: var(--ok);
+}
+.dot.bad {
+  background: var(--bad);
+}
+.dot.live {
+  animation: dmlive 1.8s ease-in-out infinite;
+}
+@keyframes dmlive {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 45%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 4px transparent;
+  }
+}
+
+/* ---- 标题栏（各壳通用骨架） ---- */
+.tbar {
+  display: flex;
+  align-items: center;
+  flex: none;
+  height: 46px;
+  padding: 0 10px 0 18px;
+  border-bottom: 1px solid var(--line);
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--dim);
+}
+.brand svg {
+  width: 14px;
+  height: 14px;
+  color: var(--acc);
+}
+.wc {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+  color: var(--faint);
+}
+.wc svg {
+  width: 13px;
+  height: 13px;
+}
+.wc i {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 24px;
+  font-style: normal;
+}

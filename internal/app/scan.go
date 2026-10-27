@@ -64,7 +64,7 @@ func StartScanLogin() (ScanState, error) {
 	scanStop = stop
 	scanMu.Unlock()
 
-	devID, err := ensureDeviceID()
+	devID, err := ensureA50DeviceID()
 	if err != nil && devID == "" {
 		return ScanState{Status: "error", Message: "设备标识不可用"}, err
 	}
@@ -126,7 +126,7 @@ func waitScan(uuid string, c *mpay.Client, stop chan struct{}) {
 			// 关键一步：二维码只是凭据编号，游戏要的是 AAAA 票。
 			// 用发烧平台自己的换票接口把它换成票（不需要登录态）。
 			// 换票必须带**建码时用的同一个设备号**，否则服务器回 "登录已失效"
-			xdev, _ := ensureDeviceID()
+			xdev, _ := ensureA50DeviceID()
 			saved := false
 			if t, xerr := launcher.ExchangeTicket(code, xdev); xerr != nil {
 				logf("换票失败（退回原始 code）: %v", xerr)
@@ -223,7 +223,9 @@ func scanToMap(st ScanState) map[string]any {
 // 返回给游戏用的票。
 func persistNetEase(ticket, devID string) (string, error) {
 	c := mpay.New()
-	out, err := c.LoginTicket(ticket, devID, proto().LongGameID, profile.ShortGameID)
+	// 用 a50（发烧平台）上下文兑换：建码就是 a50 托管会话，上下文要一致。
+	// 换出来的 token 也是 a50 原生的，和密码 / 短信登录的账号行为完全一致。
+	out, err := loginTicketAuto(c, ticket, devID)
 	if err != nil {
 		return "", fmt.Errorf("兑换票据失败: %w", err)
 	}

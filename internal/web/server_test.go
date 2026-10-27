@@ -20,7 +20,7 @@ func newTestServer() *Server {
 		Rename:   func(string, string) error { return nil },
 		Delete:   func(string) error { return nil },
 		Settings: func() map[string]any { return map[string]any{"version": "test"} },
-		SaveSettings: func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool) error {
+		SaveSettings: func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int) error {
 			return nil
 		},
 		Cleanup:     func(accounts, cache, logs bool) ([]string, error) { return []string{"x"}, nil },

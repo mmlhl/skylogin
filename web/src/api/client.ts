@@ -47,9 +47,42 @@ export const api = {
   /** 启动游戏：Go 会关掉发烧平台、取票、冒充平台窗口 */
   launch: () => request("/api/launch", { method: "POST" }),
 
-	/** 多开：每个账号起一个客户端 */
-	launchMulti: (ids: string[]) =>
-		request("/api/launch-multi", { method: "POST", body: JSON.stringify({ ids }) }),
+	/** 多开：每个账号起一个客户端；带 cols/rows 时窗口就绪后渐进平铺；w/h 自定义窗口尺寸；
+	 *  display "cascade" = 窗口堆叠（文件窗式错开），"fullscreen" = 全屏（不排列，切换靠监控墙） */
+	launchMulti: (
+		ids: string[],
+		layout?: { cols: number; rows: number },
+		size?: { w: number; h: number },
+		display?: "tile" | "cascade" | "fullscreen"
+	) =>
+		request("/api/launch-multi", {
+			method: "POST",
+			body: JSON.stringify({
+				ids,
+				cols: layout?.cols,
+				rows: layout?.rows,
+				w: size?.w,
+				h: size?.h,
+				display: display && display !== "tile" ? display : undefined,
+			}),
+		}),
+
+	/** 把正在运行的客户端窗口按 cols×rows 网格铺到主屏；w/h 自定义窗口尺寸 */
+	arrange: (cols: number, rows: number, size?: { w: number; h: number }) =>
+		request("/api/arrange", {
+			method: "POST",
+			body: JSON.stringify({ cols, rows, w: size?.w, h: size?.h }),
+		}),
+
+	/** 开/关监控墙（正在运行客户端的实时缩略图，点格子切到前台） */
+	wallToggle: () => request<ApiResult & { message?: string }>("/api/wall", { method: "POST" }),
+
+	/** 记住界面壳偏好（WebView2 端口随机，localStorage 记不住，存后端配置） */
+	saveShell: (shell: number) =>
+		request("/api/ui/shell", { method: "POST", body: JSON.stringify({ shell }) }),
+
+	/** 读取界面壳偏好（没有记录时返回 -1） */
+	loadShell: () => request<ApiResult & { shell?: number }>("/api/ui/shell"),
 
   /** 切换当前账号 */
   selectAccount: (id: string) => request(`/api/accounts/select${qs({ id })}`, { method: "POST" }),
@@ -76,12 +109,26 @@ export const api = {
   /** 网易扫码：停止 */
   stopScan: () => request("/api/scan/stop", { method: "POST" }),
 
+  /**
+   * 渠道网页登录（B站 / 4399 / vivo 共用一套流程，key 区分渠道）。
+   * 打开官方登录页子进程，捕获凭证后在线验证并存账号。
+   */
+  startChannelLogin: (key: "bili" | "m4399" | "vivo", targetUserID = "") =>
+    request(`/api/${key}/login/start`, { method: "POST", body: JSON.stringify({ targetUserId: targetUserID }) }),
+
+  /** 渠道网页登录进度（waiting / done / failed） */
+  channelLoginStatus: (key: "bili" | "m4399" | "vivo") => request(`/api/${key}/login/status`),
+
   /** 保存设置（只传要改的字段） */
   saveSettings: (payload: {
     skyExe?: string;
     deviceId?: string;
     mirrorDir?: string;
     closeLauncher?: boolean;
+    multiQualityMode?: string;
+    multiQualityFps?: number;
+    mouseArbiter?: boolean;
+    mouseArbiterMin?: number;
   }) => request("/api/settings", { method: "POST", body: JSON.stringify(payload) }),
 
   /** 选择游戏 exe（会弹系统文件框） */

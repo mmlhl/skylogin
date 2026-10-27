@@ -61,7 +61,10 @@ func OpenWebView(url, title, dataPath string, width, height uint) error {
 //
 // 单独做成一个函数是因为网页登录跑在子进程里（一个进程一个 WebView2），
 // 主界面的窗口和它不能共用同一个消息循环。
-func OpenWebLogin(url, title, dataPath string, width, height uint, script string, onPayload func(string), onWindow func(hwnd uintptr)) error {
+//
+// hidden = true 时窗口不可见（静默续期用）：加载、脚本、网络照常，只是用户
+// 看不到。做法是创建后立刻挪到屏幕外并隐藏（makeSilent）。
+func OpenWebLogin(url, title, dataPath string, width, height uint, script string, onPayload func(string), onWindow func(hwnd uintptr), hidden bool) error {
 	if width == 0 {
 		width = 520
 	}
@@ -86,6 +89,9 @@ func OpenWebLogin(url, title, dataPath string, width, height uint, script string
 
 	hwnd := uintptr(w.Window())
 	atomic.StoreUintptr(&mainWindowHwnd, hwnd)
+	if hidden {
+		makeSilent(hwnd)
+	}
 	applyDarkFrame(hwnd)
 	if exe, err := os.Executable(); err == nil {
 		SetWindowIcon(hwnd, exe)
@@ -114,4 +120,30 @@ func OpenWebLogin(url, title, dataPath string, width, height uint, script string
 
 	w.Run()
 	return nil
+}
+
+var procSetWindowLongPtrW = user32dll.NewProc("SetWindowLongPtrW")
+
+// makeSilent 需要的几个系统常量（只在这里用，不进公共常量块）。
+const (
+	swHide         = 0
+	wsExNoActivate = 0x08000000
+	swpNoSize      = 0x1
+	swpNoZOrder    = 0x4
+	swpNoActivate  = 0x10
+)
+
+// makeSilent 把刚创建的 WebView 窗口变成"不可见"：挪到屏幕外、不进任务栏、
+// 不抢焦点，再整体隐藏。加载、脚本、网络照常工作。
+// （库不支持注入自建宿主窗口，所以只能在创建后处理。）
+func makeSilent(hwnd uintptr) {
+	if style, _, _ := procGetWindowLongW.Call(hwnd, gwlExStyle); style != 0 {
+		procSetWindowLongPtrW.Call(hwnd, gwlExStyle, style|wsExToolWindow|wsExNoActivate)
+	}
+	// -32000 与系统"最小化窗口"用的屏幕外坐标一致，任何分辨率都出不来
+	off := int32(-32000)
+	procSetWindowPos.Call(hwnd,
+		0, uintptr(off), uintptr(off), 0, 0,
+		swpNoSize|swpNoZOrder|swpNoActivate)
+	procShowWindow.Call(hwnd, swHide)
 }

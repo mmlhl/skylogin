@@ -21,6 +21,27 @@ import (
 	"skylogin/internal/protocol"
 )
 
+// ChannelInfo 描述渠道身份差异：SAUTH 和登录包里的 login_channel /
+// app_channel / pay_channel / sdk_version，以及 get_access_token / realname
+// 这两个按渠道不同的固定字段。
+type ChannelInfo struct {
+	Login          string
+	SDKVersion     string
+	GetAccessToken string
+	Realname       string
+}
+
+// HuaweiChannelInfo 华为渠道（存量账号，默认值）。
+// 渠道服（B站/4399/vivo）的身份参数在 internal/channel 包里维护。
+func HuaweiChannelInfo() ChannelInfo {
+	return ChannelInfo{
+		Login:          profile.HuaweiChannel,
+		SDKVersion:     protocol.Get().SdkVersion,
+		GetAccessToken: "0",
+		Realname:       `{"realname_type": 0, "duration": 0}`,
+	}
+}
+
 // NewSAUTH 生成 uni_sauth 的请求体。custom 里的字段会覆盖同名默认值。
 func NewSAUTH(uid, session, gameID string, custom map[string]any, dev *device.ClientProfile) map[string]any {
 	sdklog, _ := json.Marshal(dev)
@@ -103,32 +124,46 @@ type LoginPayload struct {
 	UserName        string
 }
 
-// NewLoginPayload 把 uni_sauth 的结果组装成 MPay 认的登录包。
+// NewLoginPayload 把 uni_sauth 的结果组装成 MPay 认的登录包（华为渠道，默认值）。
 func NewLoginPayload(authResp map[string]any, gameAuthSign, playerID, playerLevel, ts string, dev *device.ClientProfile) (*LoginPayload, error) {
-	userName, err := decodeUnisdkUserName(authResp)
+	return NewLoginPayloadChan(authResp, gameAuthSign, gameAuthSign, playerID, playerLevel, ts, dev, HuaweiChannelInfo())
+}
+
+// NewLoginPayloadChan 把 uni_sauth 的结果组装成 MPay 认的登录包，
+// 渠道字段（login_channel / sdk_version / get_access_token / realname）按 ch 取值。
+//
+// sauthSession 是 SAUTH 的 sessionid；payloadToken 是 confirm 表单里的 token。
+// 大多数渠道两者是同一个值；4399 例外——SAUTH 用业务 state，表单 token 用
+// access_token，所以要拆开传。
+func NewLoginPayloadChan(authResp map[string]any, sauthSession, payloadToken, playerID, playerLevel, ts string, dev *device.ClientProfile, ch ChannelInfo) (*LoginPayload, error) {
+	userName, err := DecodeUnisdkUserName(authResp)
 	if err != nil {
 		return nil, err
 	}
 
 	custom := map[string]any{
-		"anonymous":        "",
-		"get_access_token": "0",
-		"extra_data":       playerLevel,
-		"timestamp":        ts,
-		"realname":         `{"realname_type": 0, "duration": 0}`,
+		"anonymous":          "",
+		"get_access_token":   ch.GetAccessToken,
+		"extra_data":         playerLevel,
+		"timestamp":          ts,
+		"realname":           ch.Realname,
+		"login_channel":      ch.Login,
+		"app_channel":        ch.Login,
+		"source_app_channel": ch.Login,
+		"sdk_version":        ch.SDKVersion,
 	}
-	extraUnisdk := buildExtraUnisdk(NewSAUTH(playerID, gameAuthSign, profile.ShortGameID, custom, dev), userName, playerLevel, ts, dev)
+	extraUnisdk := buildExtraUnisdk(NewSAUTH(playerID, sauthSession, profile.ShortGameID, custom, dev), userName, playerLevel, ts, dev, ch)
 	extraJSON, _ := json.Marshal(extraUnisdk)
 
 	body := map[string]string{
 		"user_id":           playerID,
-		"token":             base64.StdEncoding.EncodeToString([]byte(gameAuthSign)),
-		"login_channel":     profile.HuaweiChannel,
+		"token":             base64.StdEncoding.EncodeToString([]byte(payloadToken)),
+		"login_channel":     ch.Login,
 		"udid":              dev.Udid,
-		"app_channel":       profile.HuaweiChannel,
-		"sdk_version":       protocol.Get().SdkVersion,
+		"app_channel":       ch.Login,
+		"sdk_version":       ch.SDKVersion,
 		"jf_game_id":        profile.ShortGameID,
-		"pay_channel":       profile.HuaweiChannel,
+		"pay_channel":       ch.Login,
 		"extra_data":        "",
 		"extra_unisdk_data": string(extraJSON),
 		"gv":                profile.MpayGV,
@@ -138,8 +173,8 @@ func NewLoginPayload(authResp map[string]any, gameAuthSign, playerID, playerLeve
 	return &LoginPayload{Body: body, ExtraUnisdkData: string(extraJSON), UserName: userName}, nil
 }
 
-// decodeUnisdkUserName 从 uni_sauth 响应里解出 unisdk_login_json 里的用户名。
-func decodeUnisdkUserName(resp map[string]any) (string, error) {
+// DecodeUnisdkUserName 从 uni_sauth 响应里解出 unisdk_login_json 里的用户名。
+func DecodeUnisdkUserName(resp map[string]any) (string, error) {
 	encoded, ok := resp["unisdk_login_json"].(string)
 	if !ok || encoded == "" {
 		return "", fmt.Errorf("uni_sauth 未返回 unisdk_login_json: %v", resp)
@@ -160,12 +195,12 @@ func decodeUnisdkUserName(resp map[string]any) (string, error) {
 //
 // 里面有两份"同一份 SAUTH"：SAUTH_JSON 是原样的 JSON，
 // SAUTH_STR 则是 k=v&k=v 拼接后再 base64（顺序无所谓）。
-func buildExtraUnisdk(sauth map[string]any, userName, playerLevel, ts string, dev *device.ClientProfile) map[string]any {
+func buildExtraUnisdk(sauth map[string]any, userName, playerLevel, ts string, dev *device.ClientProfile, ch ChannelInfo) map[string]any {
 	fields := map[string]any{
 		"extra_data":       playerLevel,
-		"get_access_token": "0",
+		"get_access_token": ch.GetAccessToken,
 		"sdk_udid":         dev.Udid,
-		"realname":         `{"realname_type": 0, "duration": 0}`,
+		"realname":         ch.Realname,
 	}
 	for k, v := range sauth {
 		fields[k] = v

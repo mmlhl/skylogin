@@ -54,5 +54,6 @@ __pycache__/
 # 注意：/web/dist/ 是**要提交**的——Go 用 go:embed 把它打进 exe，
 # 不提交的话新克隆的仓库直接 go build 会失败。它由 `npm run build` 生成。
 
-# 替换正在运行的 exe 时留下的旧文件
+# 替换正在运行的 exe 时留下的旧文件/备份
 *.exe.old*
+*.exe.bak

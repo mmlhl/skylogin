@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"skylogin/internal/channel"
 	"skylogin/internal/device"
 	"skylogin/internal/fever"
 	"skylogin/internal/mpay"
@@ -62,7 +63,13 @@ func launchGame() (string, error) {
 
 	// 已经有一个客户端在跑时，不要动它的宿主窗口
 	firstClient := host == nil
-	if acc.Channel != "netease" {
+	if acc.Channel == "bilibili" || acc.Channel == "m4399" || acc.Channel == "vivo" {
+		// 渠道账号：启动前做凭证保活（能静默续期就续期，全失败才拦下）
+		if err := ensureChannelCredential(&acc); err != nil {
+			return "", err
+		}
+		logf("%s账号 %s：凭证就绪", channel.LabelOf(acc.Channel), acc.Username)
+	} else if acc.Channel != "netease" {
 		// 华为账号才需要刷新 ST / 生成登录包；网易账号走 token 现签票
 		if refreshed, rerr := refreshFn(acc); rerr == nil {
 			acc = refreshed
@@ -88,6 +95,18 @@ func launchGame() (string, error) {
 	var payload struct{ Body map[string]string }
 	if acc.Channel != "netease" {
 		p, _, perr := buildPayloadFn(acc, dev)
+		// vivo 的 openToken 很短命（实测一小时内就失效），uni_sauth 会拒绝：
+		// 这不是"凭证过期"，是设计如此——参考客户端每次启动前都换新票。
+		// 用 Cookie 会话静默换一张新票再试一次；Cookie 也失效了才会弹登录页。
+		if perr != nil && acc.Channel == channel.KeyVivo {
+			if rerr := refreshVivoCredential(&acc); rerr != nil {
+				setAccountCredState(acc.PlayerID, "expired", "vivo登录已失效")
+				setAuthHint("vivo_expired", "vivo登录已过期",
+					fmt.Sprintf("%s 的 vivo 登录已失效，请重新登录该账号", displayName(acc)), acc.Username, acc.PlayerID)
+				return "", rerr
+			}
+			p, _, perr = buildPayloadFn(acc, dev)
+		}
 		if perr != nil {
 			return "", fmt.Errorf("生成登录包失败: %w", perr)
 		}
@@ -118,7 +137,7 @@ func launchGame() (string, error) {
 		if terr != nil {
 			logf("现签票据失败（已重试）: %v", terr)
 			setAuthHint("netease_expired", "网易账号凭证已过期",
-				"登录信息已过期，请在账号菜单里刷新凭证", acc.Username)
+				"登录信息已过期，请在账号菜单里刷新凭证", acc.Username, acc.UserID)
 			// 没有票就别启动游戏了，否则玩家只会看到一次失败
 			return "", fmt.Errorf("网易账号凭证已过期，请在账号菜单里点「刷新凭证」")
 		}
@@ -173,6 +192,48 @@ func canUseNetEase(a Account) bool {
 	return a.Channel == "netease" && a.MpayToken != "" && a.UserID != ""
 }
 
+// refreshVivoCredential 用 vivo 的 Cookie 会话静默换一张新 openToken。
+//
+// 做法：重开该小号的登录窗。Cookie 会话还活着时，页面脚本会自动完成
+// 取号 + 换票（几秒钟，窗口自己关闭）；Cookie 也失效了才需要用户在
+// 窗口里重新登录。拿到新凭证后刷进 acc，启动流程接着走。
+func refreshVivoCredential(acc *Account) error {
+	logf("vivo账号 %s：openToken 已失效，用 Cookie 会话静默续期（窗口不可见）…", displayName(*acc))
+	if err := StartChannelWebLoginHidden(channel.KeyVivo, acc.PlayerID); err != nil {
+		return fmt.Errorf("vivo 静默续期没能启动（%s）", err.Error())
+	}
+
+	// 等登录流程出结果：静默时几秒钟；要重新登录时给足 3 分钟
+	deadline := time.Now().Add(3 * time.Minute)
+	for time.Now().Before(deadline) {
+		time.Sleep(500 * time.Millisecond)
+		st := ChannelLoginStatus(channel.KeyVivo)
+		if st["phase"] == "done" {
+			// 新凭证已由落库流程写进账号文件，刷回来接着用
+			list, err := loadAccounts()
+			if err != nil {
+				return fmt.Errorf("vivo 续期完成但读账号失败")
+			}
+			for _, a := range list {
+				if a.Channel == channel.KeyVivo && a.PlayerID == acc.PlayerID {
+					*acc = a
+					logf("vivo账号 %s：已续期", displayName(*acc))
+					return nil
+				}
+			}
+			return fmt.Errorf("vivo 续期完成但没找到账号数据")
+		}
+		if st["phase"] == "failed" {
+			msg, _ := st["message"].(string)
+			if msg == "" {
+				msg = "未知原因"
+			}
+			return fmt.Errorf("vivo 静默续期失败（%s），请在窗口里重新登录", msg)
+		}
+	}
+	return fmt.Errorf("vivo 静默续期超时，请重新登录该账号")
+}
+
 // refreshNetEaseTicketTime 记一下发票时间（失败不影响启动）。
 func refreshNetEaseTicketTime(a Account) {
 	a.LastTicket = time.Now().Unix()
@@ -201,7 +262,9 @@ type multiSlot struct {
 	ticket     string
 	channel    string
 	pid        uint32
+	seq        int64 // 启动顺序（窗口排列按这个顺序铺格子）
 	createdAt  time.Time
+	firstReply time.Time // 本轮应答窗口起点（超过 replyWindow 重新计数）
 	lastTicket time.Time
 }
 
@@ -269,29 +332,46 @@ func launchMany(ids []string) (string, error) {
 	if derr != nil {
 		return "", derr
 	}
-	for i := range picked {
-		if !canUseNetEase(picked[i]) {
-			if refreshed, rerr := refreshFn(picked[i]); rerr == nil {
-				picked[i] = refreshed
+	// 逐个验证 / 刷新凭证：网易账号先验 token 活性（失效的签出的是废票，
+	// 游戏里只会看到网络错误），华为账号刷新 ST
+	alive := picked[:0]
+	for _, a := range picked {
+		if a.Channel == channel.KeyBili || a.Channel == channel.KeyM4399 || a.Channel == channel.KeyVivo {
+			// 渠道账号：凭证保活，失败的这个多开就不带
+			if err := ensureChannelCredential(&a); err != nil {
+				logf("多开：%s 的凭证校验未通过，跳过（%v）", displayName(a), err)
+				continue
+			}
+		} else if canUseNetEase(a) {
+			if verr := validateNetEaseToken(a); verr != nil {
+				setAccountCredState(a.UserID, "expired", verr.Error())
+				logf("多开：%s 凭证已失效，跳过（%v）", displayName(a), verr)
+				continue
+			}
+		} else {
+			if refreshed, rerr := refreshFn(a); rerr == nil {
+				a = refreshed
 			} else {
-				logf("多开：华为账号 %s 刷新凭证失败，用缓存: %v", picked[i].NickName, rerr)
+				logf("多开：华为账号 %s 刷新凭证失败，用缓存: %v", a.NickName, rerr)
 			}
 		}
+		alive = append(alive, a)
 	}
+	if len(alive) < 2 {
+		return "", fmt.Errorf("凭证有效的账号不足两个，无法多开（失效的请先刷新凭证）")
+	}
+	picked = alive
 
 	if err := ensureHostLocked(); err != nil {
 		return "", err
 	}
 
-	// 先把所有安装目录准备好（第一个用原目录，其余各建一套镜像），
+	// 先把所有安装目录准备好（每个客户端各一套独立镜像，第一个也用镜像：
+	// 这样启动前预写的窗口模式 / 画质 / 帧率才能覆盖到所有客户端），
 	// 再几乎同时把游戏拉起来：建目录要几十毫秒，夹在启动之间会让
 	// 第一个客户端的窗口先弹出来，后面的就被单实例检测拦下。
 	installs := make([]string, len(picked))
 	for i := range picked {
-		if i == 0 {
-			installs[i] = exe
-			continue
-		}
 		m, err := prepareMirror(exe)
 		if err != nil {
 			logf("多开：准备镜像失败: %v", err)
@@ -328,30 +408,109 @@ func launchMany(ids []string) (string, error) {
 	if len(names) < 2 {
 		return "", fmt.Errorf("可用账号不足两个（启动失败）")
 	}
+	ArmMouseArbiter()
 	return fmt.Sprintf("已启动 %d 个客户端：%s", len(names), strings.Join(names, "、")), nil
+}
+
+// launchManyLayout 多开。display = "fullscreen" 预写全屏、不做窗口排列，
+// 窗口出来后自动开监控墙；"cascade" 窗口级联堆叠（文件窗式错开）；
+// 其余（"tile"/空）窗口模式 + 渐进式网格平铺，cols/rows 生效；
+// w/h > 0 为自定义窗口尺寸（0 = 铺满格子 / 引擎最小尺寸）。
+func launchManyLayout(ids []string, cols, rows, w, h int, display string) (string, error) {
+	fullscreen := display == "fullscreen"
+	nextFullscreen.Store(fullscreen)
+	defer nextFullscreen.Store(false)
+	msg, err := launchMany(ids)
+	if err != nil {
+		return msg, err
+	}
+	switch {
+	case fullscreen:
+		fullscreenWhenReady()
+		return msg + "（全屏：用监控墙或 Alt+Tab 切换）", nil
+	case display == "cascade":
+		arrangeWhenReady(cols, rows, w, h, "cascade")
+		return msg + "（窗口堆叠：每个都露出标题条，点标题切换）", nil
+	}
+	if cols >= 1 && rows >= 1 {
+		arrangeWhenReady(cols, rows, w, h, "tile")
+		msg = fmt.Sprintf("%s（将按 %d×%d 平铺）", msg, cols, rows)
+	}
+	return msg, nil
 }
 
 // replyCountRunning 是多开用的辅助函数，暂时只做日志用途。
 func replyCountRunning() int { return 0 }
 
+// validateNetEaseToken 用 MPay 的用户资料接口验证 token 是否还活着。
+//
+// 为什么要这一步：失效的 token 有时也能"成功签出票"（create_ticket 对
+// 会话校验很松），游戏拿到才发现是废票——玩家看到的就是游戏里一直
+// "网络错误"，工具侧毫无感知（199****3859 那个问题）。用户资料接口是
+// 真实验证：token 死了必然报错。两个上下文都试，任一成功即认为活着。
+func validateNetEaseToken(acc Account) error {
+	c := mpay.New()
+	ownLong, ownShort := ticketContextForToken(acc.MpayToken)
+	for _, ctx := range []struct{ long, short string }{{ownLong, ownShort}, {a50Long, a50Short}} {
+		if _, err := c.GetUserInfo(acc.MpayToken, acc.UserID, acc.DeviceID, ctx.long, ctx.short); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("token 已失效（用户资料查询失败）")
+}
+
 // mintTicket 给指定账号现签一张一次性票据。
 //
 // 单客户端和多开共用：每次游戏来取票都调这里，
 // 保证不会把已经消费掉的票重复发出去。
+//
+// 签票上下文：PC 版光遇以发烧平台（a50）的票入场。实测用游戏上下文
+// （ma75，扫码 / 短信登录拿到的 token 所属应用）签出的票 MPay 不报错，
+// 但游戏服务端不认——进游戏一直"网络错误"，就是 199****3859 那个问题。
+// 所以固定优先 a50 上下文，失败再退回 token 自带的上下文，
+// 两条路都断才标记凭证过期（界面上会出现刷新入口）。
 func mintTicket(acc Account, dev *device.ClientProfile) (string, string, error) {
 	if canUseNetEase(acc) {
-		longID, shortID := ticketContextForToken(acc.MpayToken)
-		// 签票失败可能只是网络抖动，重试 2 次再判定失效；
-		// 连续失败就标记 expired，界面会提示用户刷新凭证。
-		var lastErr error
-		for attempt := 0; attempt < 3; attempt++ {
-			t, _, err := mpay.New().CreateTicketFor(acc.MpayToken, acc.UserID, acc.DeviceID, longID, shortID)
-			if err == nil {
-				return t, "netease", nil
+		// 先验证 token 活性：失效的 token 也能签出废票，等游戏里报
+		// "网络错误"才知道就太晚了。验证失败当场拦下并推刷新提示。
+		if verr := validateNetEaseToken(acc); verr != nil {
+			setAccountCredState(acc.UserID, "expired", verr.Error())
+			setAuthHint("netease_expired", "网易账号凭证已过期",
+				fmt.Sprintf("%s 的凭证已失效，请刷新凭证", displayName(acc)),
+				acc.Username, acc.UserID)
+			return "", "", fmt.Errorf("网易账号 %s 凭证已失效，请刷新凭证", displayName(acc))
+		}
+		ownLong, ownShort := ticketContextForToken(acc.MpayToken)
+		// a50 上下文要用 a50 登记过的设备号：token 不是 a50 原生时
+		// （扫码 / 短信），acc.DeviceID 属于 ma75，a50 不认识
+		a50Dev := acc.DeviceID
+		if ownLong != a50Long {
+			if d, derr := ensureA50DeviceID(); derr == nil {
+				a50Dev = d
+			} else {
+				logf("a50 设备登记失败，退回本账号设备号: %v", derr)
 			}
-			lastErr = err
-			logf("签票失败（第 %d 次）: %v", attempt+1, err)
-			if attempt < 2 {
+		}
+		contexts := []struct {
+			long, short, name, device string
+		}{
+			{a50Long, a50Short, "a50", a50Dev},
+			{ownLong, ownShort, "token 自带", acc.DeviceID},
+		}
+		var lastErr error
+		tried := 0
+		for _, ctx := range contexts {
+			for attempt := 0; attempt < 2; attempt++ {
+				t, _, err := mpay.New().CreateTicketFor(acc.MpayToken, acc.UserID, ctx.device, ctx.long, ctx.short)
+				if err == nil {
+					if tried > 0 {
+						logf("网易账号 %s：改用 %s 上下文签票成功", acc.Username, ctx.name)
+					}
+					return t, "netease", nil
+				}
+				tried++
+				lastErr = err
+				logf("签票失败（%s 上下文，第 %d 次）: %v", ctx.name, attempt+1, err)
 				time.Sleep(700 * time.Millisecond)
 			}
 		}
@@ -388,21 +547,30 @@ func (c *pidCounter) Add(pid uint32, d int) int {
 	return c.m[pid]
 }
 
-// ticketContextForToken 根据 token 里绑定的应用，决定用哪个游戏上下文签票。
+// Reset 清零某个 pid 的应答计数（应答窗口过期时调用）。
+func (c *pidCounter) Reset(pid uint32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.m, pid)
+}
+
+// 签票上下文（MPay 的 long/short game id）。
 //
-// MPay token 是 base64 的 JSON（前缀 1-），其中 g_i 是签发它的应用 id：
+// a50 = 发烧平台应用。PC 版光遇按"平台发的票"校验，所以优先用它；
+// ma75 = 光遇游戏应用，扫码 / 短信登录拿到的 token 属于它。
+const (
+	a50Long   = "aecglf6ee4aaaarz-g-a50"
+	a50Short  = "a50"
+	gameLong  = "aecfs5n2y4aaaakd-g-ma75"
+	gameShort = "ma75"
+)
+
+// ticketContextForToken 根据 token 里绑定的应用，返回它所属的签票上下文。
 //
-//	aecfs5n2y4aaaakd → 光遇（扫码登录拿到的）
-//	aecglf6ee4aaaarz → 发烧平台 a50（网页登录拿到的）
-//
-// 用错上下文会返回 1306 用户登录失效。
+// MPay token 是 base64 的 JSON（前缀 1-），其中 g_i 是签发它的应用 id。
+// 认不出来时按光遇处理（扫码登录的老路径）。注意 mintTicket 会优先尝试
+// a50，这里返回的只是回退项。
 func ticketContextForToken(token string) (longID, shortID string) {
-	const (
-		gameLong  = "aecfs5n2y4aaaakd-g-ma75"
-		gameShort = "ma75"
-		a50Long   = "aecglf6ee4aaaarz-g-a50"
-		a50Short  = "a50"
-	)
 	if strings.HasPrefix(token, "1-") {
 		raw := strings.TrimPrefix(token, "1-")
 		if pad := len(raw) % 4; pad != 0 {

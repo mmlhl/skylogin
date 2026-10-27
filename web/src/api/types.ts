@@ -5,8 +5,8 @@
  * 改后端字段时，这里必须同步改——这是前后端唯一的"契约"。
  */
 
-/** 渠道：华为渠道 / 网易官方 */
-export type Channel = "huawei" | "netease";
+/** 渠道：华为渠道 / 网易官方 / B站渠道 */
+export type Channel = "huawei" | "netease" | "bilibili" | "m4399" | "vivo";
 
 /** 左栏里的一个账号（由 Go 侧的 accountView 组装） */
 export interface AccountView {
@@ -80,6 +80,14 @@ export interface Settings {
     mode: string;
   };
   closeLauncher: boolean;
+  /** 多开默认画质（游戏内部档位名：LowPower / Presentation；空 = 跟随游戏） */
+  multiQualityMode: string;
+  /** 多开默认帧率（0 = 跟随游戏） */
+  multiQualityFps: number;
+  /** 鼠标仲裁开关（多开后防后台客户端抢鼠标） */
+  mouseArbiter: boolean;
+  /** 仲裁持续时长（分钟） */
+  mouseArbiterMin: number;
   /** 左栏宽度（像素，0 表示用默认值） */
   railWidth: number;
   /** 多开镜像目录（第 2 个客户端从这里启动） */

@@ -320,7 +320,7 @@ func resolveMPayCredentials(res mpayhost.Result) (token, userID, account string,
 
 	if res.Ticket != "" {
 		c := mpay.New()
-		out, e := c.LoginTicket(res.Ticket, dev, profile.HostedGameID, "a50")
+		out, e := loginTicketAuto(c, res.Ticket, dev)
 		if e != nil {
 			if token == "" || userID == "" {
 				return "", "", account, fmt.Errorf("用官方登录窗的票据换 token 失败: %w", e)

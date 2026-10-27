@@ -6,12 +6,39 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+
+	"skylogin/internal/channel"
 )
 
 func accountsPath() string { return filepath.Join(dataDir(), "accounts.json") }
 func currentPath() string  { return filepath.Join(dataDir(), "current.txt") }
+
+// normalizeSciID 把科学计数法格式的 id（"4.13918109e+08"）还原成整数
+// 字符串（"413918109"）。早期 B站 登录把 auto.login 返回的 float64 直接
+// fmt.Sprint 存进了账号文件，游戏服务器认不了这种 id；读档时顺手修掉。
+func normalizeSciID(s string) (string, bool) {
+	if !strings.Contains(s, "e+") {
+		return s, false
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return s, false
+	}
+	return strconv.FormatInt(int64(f), 10), true
+}
+
+// managedChannel 这个渠道的凭证状态需要本工具管理
+// （华为账号的凭证走另一套刷新机制，不在范围内）。
+func managedChannel(ch string) bool {
+	switch ch {
+	case "netease", channel.KeyBili, channel.KeyM4399, channel.KeyVivo:
+		return true
+	}
+	return false
+}
 
 func loadAccounts() ([]Account, error) {
 	b, err := os.ReadFile(accountsPath())
@@ -21,6 +48,31 @@ func loadAccounts() ([]Account, error) {
 	var list []Account
 	if err := json.Unmarshal(b, &list); err != nil {
 		return nil, err
+	}
+	// 脏数据修复：改过就回写一次，下次读到的就是干净的
+	fixed := false
+	for i := range list {
+		if v, ok := normalizeSciID(list[i].UserID); ok {
+			list[i].UserID = v
+			fixed = true
+		}
+		if v, ok := normalizeSciID(list[i].PlayerID); ok {
+			list[i].PlayerID = v
+			fixed = true
+		}
+	}
+	if fixed {
+		if err := saveList(list); err != nil {
+			logf("修复账号 id 失败: %v", err)
+		} else {
+			logf("已修复账号文件里的科学计数法 id")
+		}
+		// current.txt 里存的"当前账号"也是同一个坏 id，一起修
+		if b, err := os.ReadFile(currentPath()); err == nil {
+			if v, ok := normalizeSciID(strings.TrimSpace(string(b))); ok {
+				_ = os.WriteFile(currentPath(), []byte(v), 0o600)
+			}
+		}
 	}
 	return list, nil
 }
@@ -205,12 +257,19 @@ func displayName(a Account) string {
 
 // accountView 把账号转成 UI 用的结构（不含"是否当前"）。
 func accountView(a Account) map[string]any {
-	// 两个渠道统一叫「账号 ID」：
-	// 华为存的是渠道侧玩家 id，网易存的是 MPay 账号 id，
+	// 各渠道统一叫「账号 ID」：
+	// 华为存的是渠道侧玩家 id，网易存的是 MPay 账号 id，B站存的是 B站 uid，
 	// 都不是游戏内角色 id（那个只在游戏服务器侧，拿不到）。
 	ch, label := "huawei", "华为渠道"
-	if a.Channel == "netease" {
+	switch a.Channel {
+	case "netease":
 		ch, label = "netease", "网易官方"
+	default:
+		if channel.Known(a.Channel) {
+			// 渠道服：key 直接用账号文件里的渠道名，展示名带"渠道"后缀
+			ch = a.Channel
+			label = channel.LabelOf(a.Channel) + "渠道"
+		}
 	}
 	// 凭证状态：给界面显示"这个账号还能不能直接用"
 	state := a.CredState
@@ -265,7 +324,7 @@ func setAccountCredState(userID, state, reason string) {
 	}
 	changed := false
 	for i := range list {
-		if list[i].Channel != "netease" {
+		if !managedChannel(list[i].Channel) {
 			continue
 		}
 		if list[i].UserID != userID && list[i].PlayerID != userID {
@@ -282,7 +341,7 @@ func setAccountCredState(userID, state, reason string) {
 			return
 		}
 		if state == "expired" {
-			setAuthHint("netease_expired", "登录凭证已过期", "登录信息已过期，请刷新凭证", "")
+			setAuthHint("netease_expired", "登录凭证已过期", "登录信息已过期，请刷新凭证", "", userID)
 		}
 	}
 }

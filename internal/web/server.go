@@ -44,6 +44,9 @@ type Hooks struct {
 	Accounts        func() []map[string]any
 	Start           func() (string, error)
 	StartMany       func(ids []string) (string, error)
+	StartManyLayout func(ids []string, cols, rows, w, h int, display string) (string, error)
+	Arrange         func(cols, rows, w, h int) error
+	WallToggle      func() (string, error)
 	StopAccount     func(id string) error
 	Status          func() string
 	Select          func(string) error
@@ -51,7 +54,7 @@ type Hooks struct {
 	SetGameID       func(string, string) error
 	Delete          func(string) error
 	Settings        func() map[string]any
-	SaveSettings    func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool) error
+	SaveSettings    func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int) error
 	Cleanup         func(accounts, cache, logs bool) ([]string, error)
 	OpenLogs        func() error
 	PickPath        func() (string, error)
@@ -59,18 +62,23 @@ type Hooks struct {
 	ScanStart       func() (map[string]any, error)
 	ScanStop        func()
 	ScanNow         func() map[string]any
-	AuthHint        func() map[string]any
-	Version         func() string
-	Reregister      func(mode string) (string, error)
-	SetDeviceID     func(id string) error
-	SMSSend         func(mobile string) error
-	SMSLogin        func(mobile, code, targetUserID string) error
-	WebLoginStart   func(targetUserID string) error
-	WebLoginStatus  func() map[string]any
-	MpayLoginStart  func(targetUserID string) error
-	MpayLoginStatus func() map[string]any
-	MpayLoginCancel func()
-	SaveRailWidth   func(width int) error
+	// 渠道网页登录（B站 / 4399 / vivo 共用一套，key 区分）
+	ChannelLoginStart  func(key, targetUserID string) error
+	ChannelLoginStatus func(key string) map[string]any
+	AuthHint           func() map[string]any
+	Version            func() string
+	Reregister         func(mode string) (string, error)
+	SetDeviceID        func(id string) error
+	SMSSend            func(mobile string) error
+	SMSLogin           func(mobile, code, targetUserID string) error
+	WebLoginStart      func(targetUserID string) error
+	WebLoginStatus     func() map[string]any
+	MpayLoginStart     func(targetUserID string) error
+	MpayLoginStatus    func() map[string]any
+	MpayLoginCancel    func()
+	SaveRailWidth      func(width int) error
+	SaveShell          func(shell int) error
+	LoadShell          func() int
 }
 
 // Server 是对外的本地 Web 服务。
@@ -124,6 +132,7 @@ func (s *Server) Handler() http.Handler {
 			"accounts": safeAccounts(s.hooks.Accounts),
 			"settings": safeSettings(s.hooks.Settings),
 			"scan":     safeScan(s.hooks.ScanNow),
+
 			"authHint": safeMap(s.hooks.AuthHint),
 			"version":  safeStatus(s.hooks.Version),
 		})
@@ -164,18 +173,98 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, map[string]any{"ok": true, "message": msg})
 	})
 
-	// 多开：一次启动多个客户端，每个账号一个
+	// 多开：一次启动多个客户端，每个账号一个。
+	// 带 cols/rows 时，窗口就绪后由后端自动按网格排列（正方形网格，保持画面比例）；
+	// w/h 是自定义窗口尺寸（0 = 铺满格子）。
 	mux.HandleFunc("/api/launch-multi", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			IDs []string `json:"ids"`
+			IDs     []string `json:"ids"`
+			Cols    int      `json:"cols"`
+			Rows    int      `json:"rows"`
+			W       int      `json:"w"`
+			H       int      `json:"h"`
+			Display string   `json:"display"` // 空 / "tile" = 窗口平铺；"cascade" = 窗口堆叠；"fullscreen" = 全屏
 		}
 		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&body)
-		msg, err := s.hooks.StartMany(body.IDs)
+		var msg string
+		var err error
+		if body.Display != "" || (body.Cols >= 1 && body.Rows >= 1) {
+			if s.hooks.StartManyLayout != nil {
+				msg, err = s.hooks.StartManyLayout(body.IDs, body.Cols, body.Rows, body.W, body.H, body.Display)
+			} else {
+				msg, err = s.hooks.StartMany(body.IDs)
+			}
+		} else {
+			msg, err = s.hooks.StartMany(body.IDs)
+		}
 		if err != nil {
 			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
 			return
 		}
 		writeJSON(w, map[string]any{"ok": true, "message": msg})
+	})
+
+	// 手动排列：把当前正在运行的客户端窗口按 cols×rows 网格铺开
+	mux.HandleFunc("/api/arrange", func(w http.ResponseWriter, r *http.Request) {
+		if s.hooks.Arrange == nil {
+			writeJSON(w, map[string]any{"ok": false, "message": "不支持窗口排列"})
+			return
+		}
+		var body struct {
+			Cols int `json:"cols"`
+			Rows int `json:"rows"`
+			W    int `json:"w"`
+			H    int `json:"h"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&body)
+		if err := s.hooks.Arrange(body.Cols, body.Rows, body.W, body.H); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
+	})
+
+	// 监控墙：把正在运行客户端的实时画面缩进格子里，点格子切到前台
+	mux.HandleFunc("/api/wall", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, map[string]any{"ok": false, "message": "用 POST 开/关监控墙"})
+			return
+		}
+		if s.hooks.WallToggle == nil {
+			writeJSON(w, map[string]any{"ok": false, "message": "不支持监控墙"})
+			return
+		}
+		msg, err := s.hooks.WallToggle()
+		if err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "message": msg})
+	})
+
+	// 界面壳偏好（控制台 / 账号库…）：WebView2 端口随机，localStorage 记不住，存后端
+	mux.HandleFunc("/api/ui/shell", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			shell := 0
+			if s.hooks.LoadShell != nil {
+				shell = s.hooks.LoadShell()
+			}
+			writeJSON(w, map[string]any{"ok": true, "shell": shell})
+			return
+		}
+		if s.hooks.SaveShell == nil {
+			writeJSON(w, map[string]any{"ok": true})
+			return
+		}
+		var body struct {
+			Shell int `json:"shell"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&body)
+		if err := s.hooks.SaveShell(body.Shell); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
 	})
 
 	// 手机号验证码登录：纯 HTTP，不需要浏览器
@@ -283,16 +372,20 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		var body struct {
-			SkyExe        *string `json:"skyExe"`
-			DeviceID      *string `json:"deviceId"`
-			MirrorDir     *string `json:"mirrorDir"`
-			CloseLauncher *bool   `json:"closeLauncher"`
+			SkyExe           *string `json:"skyExe"`
+			DeviceID         *string `json:"deviceId"`
+			MirrorDir        *string `json:"mirrorDir"`
+			CloseLauncher    *bool   `json:"closeLauncher"`
+			MultiQualityMode *string `json:"multiQualityMode"`
+			MultiQualityFps  *int    `json:"multiQualityFps"`
+			MouseArbiter     *bool   `json:"mouseArbiter"`
+			MouseArbiterMin  *int    `json:"mouseArbiterMin"`
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
 			writeJSON(w, map[string]any{"ok": false, "message": "请求格式有误"})
 			return
 		}
-		if err := s.hooks.SaveSettings(body.SkyExe, body.DeviceID, body.MirrorDir, body.CloseLauncher); err != nil {
+		if err := s.hooks.SaveSettings(body.SkyExe, body.DeviceID, body.MirrorDir, body.CloseLauncher, body.MultiQualityMode, body.MultiQualityFps, body.MouseArbiter, body.MouseArbiterMin); err != nil {
 			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
 			return
 		}
@@ -334,6 +427,27 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, map[string]any{"ok": true, "done": done})
 	})
+
+	// 渠道网页登录（B站 / 4399 / vivo）：子进程打开官方登录页，
+	// 捕获凭证后在线验证并存账号。路径保留各渠道原入口。
+	channelKeys := []string{"bili", "m4399", "vivo"}
+	for _, ck := range channelKeys {
+		key := ck
+		mux.HandleFunc("/api/"+key+"/login/start", func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				TargetUserID string
+			}
+			_ = json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&body)
+			if err := s.hooks.ChannelLoginStart(key, body.TargetUserID); err != nil {
+				writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+				return
+			}
+			writeJSON(w, map[string]any{"ok": true})
+		})
+		mux.HandleFunc("/api/"+key+"/login/status", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, s.hooks.ChannelLoginStatus(key))
+		})
+	}
 
 	mux.HandleFunc("/api/scan/start", func(w http.ResponseWriter, r *http.Request) {
 		st, err := s.hooks.ScanStart()

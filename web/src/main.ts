@@ -9,6 +9,7 @@
 import { createApp } from "vue";
 import App from "./App.vue";
 import "./styles/global.css";
+import "./shellkit/shellkit.css";
 import { state, refresh } from "./composables/useAppState";
 
 /** 是否处于"只看界面"的预览模式 */

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"skylogin/internal/channel"
 	"skylogin/internal/device"
 	"skylogin/internal/fever"
 	"skylogin/internal/huawei"
@@ -34,9 +35,9 @@ type Account struct {
 	//
 	// 网易账号靠 MPay token 持久化：token → create_ticket → 票。
 	// 只要 token 存着，下次启动就不用再扫码。
-	Channel    string `json:"channel,omitempty"`     // "netease" 或空（华为）
+	Channel    string `json:"channel,omitempty"`     // netease / bilibili / m4399，空 = 华为
 	Username   string `json:"username,omitempty"`    // 网易账号显示名（手机号/邮箱）
-	UserID     string `json:"user_id,omitempty"`     // MPay 用户 id
+	UserID     string `json:"user_id,omitempty"`     // MPay 用户 id / 渠道侧 uid
 	MpayToken  string `json:"mpay_token,omitempty"`  // MPay token（1-eyJ…）
 	DeviceID   string `json:"device_id,omitempty"`   // 建码/换票用的设备号
 	LastTicket int64  `json:"last_ticket,omitempty"` // 上次发票时间（排查用）
@@ -49,11 +50,12 @@ type Account struct {
 	//   channel  其它渠道服（华为等）
 	//
 	// 状态机：ok（可用）→ stale（可能过期，待验证）→ expired（确认失效，需要重新登录）
-	Source      string `json:"source,omitempty"`       // scan | weblogin | channel
-	LoginMethod string `json:"login_method,omitempty"` // qrcode | password | sms
-	CredState   string `json:"cred_state,omitempty"`   // ok | stale | expired
-	LastCheck   int64  `json:"last_check,omitempty"`   // 上次验证凭证的时间
-	LastError   string `json:"last_error,omitempty"`   // 上次失败原因（给用户看）
+	Source       string `json:"source,omitempty"`        // scan | weblogin | channel
+	LoginMethod  string `json:"login_method,omitempty"`  // qrcode | password | sms
+	CredState    string `json:"cred_state,omitempty"`    // ok | stale | expired
+	LastCheck    int64  `json:"last_check,omitempty"`    // 上次验证凭证的时间
+	LastError    string `json:"last_error,omitempty"`    // 上次失败原因（给用户看）
+	RefreshToken string `json:"refresh_token,omitempty"` // 4399 专用：callback URL 里的长效续期凭证
 
 	// 自动登录用。密码用 Windows DPAPI 加密后存，只有当前用户能解。
 	// 用户不开启"记住登录"时这里为空。
@@ -82,6 +84,25 @@ func RunUI(title string) error {
 	uiTitle = title
 	logf("光遇账号登录器 %s 启动", Version)
 
+	// 非 op13 的 IPC 包：原样记进日志。游戏登录失败时若会上报结果
+	// （带错误状态的其它操作码），靠这个才能看见，否则包被静默丢弃。
+	fever.SetPacketLogHook(func(op int32, body []byte) {
+		const maxDump = 160
+		text := make([]byte, 0, len(body))
+		for _, c := range body {
+			if c >= 0x20 && c < 0x7f {
+				text = append(text, c)
+			} else {
+				text = append(text, '.')
+			}
+		}
+		n := len(text)
+		if n > maxDump {
+			n = maxDump
+		}
+		logf("IPC 收到非取票包: op=%d len=%d body=%q", op, len(body), text[:n])
+	})
+
 	// 协议参数：内置默认 → 本地缓存 → 远程配置（都失败就用内置值）
 	protocol.Init(dataDir(), os.Getenv("SKYLOGIN_PROTOCOL_URL"))
 	logf("协议参数已载入（%s）", protocolSource())
@@ -94,17 +115,23 @@ func RunUI(title string) error {
 			}
 			return acc.NickName, acc.PlayerID, nil
 		},
-		Accounts:    accountsView,
-		Start:       launchGame,
-		StartMany:   launchMany,
+		Accounts:        accountsView,
+		Start:           launchGame,
+		StartMany:       launchMany,
+		StartManyLayout: launchManyLayout,
+		Arrange: func(cols, rows, w, h int) error {
+			_, err := arrangeClients(cols, rows, w, h)
+			return err
+		},
+		WallToggle:  ToggleWall,
 		StopAccount: stopAccount,
 		Status:      gameStatus,
 		Select:      setCurrent,
 		Rename:      renameAccount,
 		Delete:      deleteAccount,
 		Settings:    settingsView,
-		SaveSettings: func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool) error {
-			return applySettings(skyExe, deviceID, mirrorDir, closeLauncher)
+		SaveSettings: func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int) error {
+			return applySettings(skyExe, deviceID, mirrorDir, closeLauncher, multiQuality, multiFps, mouseArbiter, arbiterMin)
 		},
 		Cleanup: func(accounts, cache, logs bool) ([]string, error) {
 			return cleanupData(cleanupOptions{Accounts: accounts, Cache: cache, Logs: logs})
@@ -125,11 +152,15 @@ func RunUI(title string) error {
 			st, err := StartScanLogin()
 			return scanToMap(st), err
 		},
-		ScanStop:      StopScanLogin,
-		ScanNow:       func() map[string]any { return scanToMap(currentScan()) },
-		AuthHint:      authHintView,
-		Version:       func() string { return Version },
-		SaveRailWidth: saveRailWidth,
+		ScanStop:           StopScanLogin,
+		ScanNow:            func() map[string]any { return scanToMap(currentScan()) },
+		ChannelLoginStart:  StartChannelWebLogin,
+		ChannelLoginStatus: ChannelLoginStatus,
+		AuthHint:           authHintView,
+		Version:            func() string { return Version },
+		SaveRailWidth:      saveRailWidth,
+		SaveShell:          saveShell,
+		LoadShell:          func() int { return loadConfig().UiShell },
 		PickPath: func() (string, error) {
 			return win.PickExeFile("选择光遇主程序 sky.exe")
 		},
@@ -146,6 +177,10 @@ func RunUI(title string) error {
 	// 后台修一下历史遗留的"别名是用户 id"的记录（不阻塞界面）
 	go repairBareAccountNames()
 	go cleanupStaleMirrors()
+
+	// 鼠标仲裁：多开时防止后台客户端自认持有鼠标（进大厅后抢焦点、
+	// 持续把光标拉回窗口中心）。客户端 <2 个时空转。
+	StartMouseArbiter()
 
 	// 托盘：常驻图标，右键有「显示主界面 / 启动光遇 / 退出」
 	win.StartTray(win.TrayOptions{
@@ -183,19 +218,33 @@ func gameStatus() string {
 
 // buildPayload 组装发往网易的登录包（SAUTH + uni_sauth + confirm 表单）。
 func buildPayload(acc Account, dev *device.ClientProfile) (*netsec.LoginPayload, map[string]any, error) {
+	ch := netsec.HuaweiChannelInfo()
+	if channel.Known(acc.Channel) {
+		ch = channel.InfoOf(acc.Channel)
+	}
 	custom := map[string]any{
-		"anonymous":        "",
-		"get_access_token": "0",
-		"extra_data":       acc.PlayerLevel,
-		"timestamp":        acc.Ts,
-		"realname":         `{"realname_type": 0, "duration": 0}`,
+		"anonymous":          "",
+		"get_access_token":   ch.GetAccessToken,
+		"extra_data":         acc.PlayerLevel,
+		"timestamp":          acc.Ts,
+		"realname":           ch.Realname,
+		"login_channel":      ch.Login,
+		"app_channel":        ch.Login,
+		"source_app_channel": ch.Login,
+		"sdk_version":        ch.SDKVersion,
 	}
 	sauth := netsec.NewSAUTH(acc.PlayerID, acc.GameAuthSign, profile.ShortGameID, custom, dev)
 	resp, err := netsec.PostSigned(sauth, profile.ShortGameID)
 	if err != nil {
 		return nil, nil, err
 	}
-	payload, err := netsec.NewLoginPayload(resp, acc.GameAuthSign, acc.PlayerID, acc.PlayerLevel, acc.Ts, dev)
+	// 4399 的 confirm token 是 access_token；SAUTH 的 session（GameAuthSign）
+	// 是 state，两个值不同。其它渠道两者同值，不受影响。
+	payloadToken := acc.GameAuthSign
+	if acc.Channel == "m4399" && acc.AccessToken != "" {
+		payloadToken = acc.AccessToken
+	}
+	payload, err := netsec.NewLoginPayloadChan(resp, acc.GameAuthSign, payloadToken, acc.PlayerID, acc.PlayerLevel, acc.Ts, dev, ch)
 	if err != nil {
 		return nil, resp, err
 	}

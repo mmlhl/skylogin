@@ -85,6 +85,51 @@ func ensureDeviceID() (string, error) {
 	return deviceID, deviceErr
 }
 
+// ensureA50DeviceID 返回在 a50（发烧平台）上下文登记过的设备号。
+//
+// 为什么需要：设备号是按上下文发的——本机指纹登记的号属于 ma75（游戏），
+// a50 不认识。签票走 a50 优先后（见 start.go mintTicket），拿着 ma75 的
+// 设备号签 a50 的票，平台每张票都当成一台新设备，账号安全页里的
+// "登录设备"就会一条条涨。用同一个 unique_id 在 a50 再登记一遍，
+// 服务器就会把它认成同一台设备，之后长期复用。
+func ensureA50DeviceID() (string, error) {
+	if c := loadConfig(); c.A50DeviceID != "" {
+		return c.A50DeviceID, nil
+	}
+	deviceMu.Lock()
+	defer deviceMu.Unlock()
+	if c := loadConfig(); c.A50DeviceID != "" {
+		return c.A50DeviceID, nil
+	}
+
+	c := loadConfig()
+	unique := c.DeviceUniqueID
+	if unique == "" {
+		unique = win.DeviceFingerprint()
+	}
+	if unique == "" {
+		unique = randomHex(16)
+	}
+	logf("正在登记 a50 设备（与 ma75 同一指纹）…")
+	id, key, err := mpay.New().RegisterDevice(a50Long, a50Short, mpay.DeviceInfo{
+		Name:       hostName(),
+		Mac:        primaryMac(),
+		Resolution: win.ScreenResolution(),
+		UniqueID:   unique,
+		ProcessID:  os.Getpid(),
+	})
+	if err != nil {
+		return "", err
+	}
+	c.A50DeviceID = id
+	c.A50DeviceKey = key
+	if err := saveConfig(c); err != nil {
+		logf("保存 a50 设备号失败: %v", err)
+	}
+	logf("已登记 a50 设备: %s", id)
+	return id, nil
+}
+
 // registerDevice 用指定模式生成 unique_id 并注册，成功后写回 config。
 func registerDevice(c *Config, mode string) (string, error) {
 	if mode != modeRandom && mode != modeFingerprint {

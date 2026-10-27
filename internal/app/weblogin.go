@@ -199,14 +199,15 @@ func watchWebLogin(cmd *exec.Cmd, outPath, targetUserID string) {
 	setState("done", "登录成功，已保存", account, userID)
 }
 
-// findAccountByUserID 按 MPay user id 找已保存的账号。
+// findAccountByUserID 按渠道侧账号 id 找已保存的账号
+// （网易 MPay id / B站 uid / 4399 uid / vivo 小号 subOpenId）。
 func findAccountByUserID(userID string) (Account, bool) {
 	list, err := loadAccounts()
 	if err != nil {
 		return Account{}, false
 	}
 	for _, a := range list {
-		if a.Channel == "netease" && (a.UserID == userID || a.PlayerID == userID) {
+		if managedChannel(a.Channel) && (a.UserID == userID || a.PlayerID == userID) {
 			return a, true
 		}
 	}

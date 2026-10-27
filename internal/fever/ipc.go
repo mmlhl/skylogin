@@ -267,6 +267,24 @@ func (h *Host) run() error {
 }
 
 func (h *Host) handlePacket(sender windows.Handle, raw []byte) {
+	// 非 op13 的包：解混淆后交给观察者（app 写日志）。游戏登录失败时
+	// 会不会上报结果（带错误状态的其它操作码），靠这里才能发现。
+	op := int32(-1)
+	if len(raw) >= 8 {
+		op = int32(binary.LittleEndian.Uint32(raw[4:8]))
+	}
+	if op != 13 {
+		payload := []byte{}
+		if len(raw) > 12 {
+			payload = xorBytes(raw[12:])
+		}
+		if debugIPC {
+			cls := WindowClass(sender)
+			fmt.Printf("[ipc] op=%d len=%d from class=%q payload=%q\n", op, len(payload), cls, payload)
+		}
+		logPacket(op, payload)
+	}
+
 	instance, identifier, ok := ParseTicketRequest(raw)
 	if !ok {
 		return

@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"skylogin/internal/mpay"
-	"skylogin/internal/profile"
 )
 
 // SendSMS 发验证码。
@@ -48,7 +47,7 @@ func CompleteSMSLogin(mobile, code, targetUserID string) error {
 		return fmt.Errorf("验证码是 6 位数字")
 	}
 
-	dev, derr := ensureDeviceID()
+	dev, derr := ensureA50DeviceID()
 	if derr != nil {
 		return derr
 	}
@@ -58,7 +57,9 @@ func CompleteSMSLogin(mobile, code, targetUserID string) error {
 	}
 	logf("验证码校验通过，拿到票据（%s）", maskTicket(ticket))
 	c := mpay.New()
-	out, err := c.LoginTicket(ticket, dev, profile.LongGameID, profile.ShortGameID)
+	// a50（发烧平台）上下文兑换：和验证码 / 建码保持同一上下文，
+	// 换出来的 token 是 a50 原生的，签票、设备绑定都与密码登录一致。
+	out, err := loginTicketAuto(c, ticket, dev)
 	if err != nil {
 		return fmt.Errorf("用票据换登录态失败: %w", err)
 	}

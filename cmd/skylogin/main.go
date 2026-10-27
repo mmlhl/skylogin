@@ -14,9 +14,11 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"skylogin/internal/app"
+	"skylogin/internal/channel"
 	"skylogin/internal/mpayhost"
 	"skylogin/internal/win"
 )
@@ -36,6 +38,9 @@ type webLoginResult struct {
 
 func main() {
 	weblogin := flag.Bool("weblogin", false, "以网页登录子进程模式运行")
+	channelLogin := flag.String("channellogin", "", "以渠道网页登录子进程模式运行（bilibili/m4399/vivo）")
+	loginURL := flag.String("url", "", "渠道登录页地址（主进程解析后传入）")
+	loginTarget := flag.String("target", "", "要刷新的账号 id（空 = 新登录）")
 	mpaylogin := flag.Bool("mpaylogin", false, "以官方 mpay.dll 登录子进程模式运行")
 	profile := flag.String("profile", "", "WebView2 数据目录（用于保存登录态）")
 	out := flag.String("out", "", "结果输出文件")
@@ -45,10 +50,15 @@ func main() {
 	logPath := flag.String("log", "", "诊断日志文件")
 	centerX := flag.Int("center-x", 0, "登录窗中心 X（屏幕坐标）")
 	centerY := flag.Int("center-y", 0, "登录窗中心 Y（屏幕坐标）")
+	hidden := flag.Bool("hidden", false, "登录窗口不可见（静默续期用，页面脚本照常执行）")
 	flag.Parse()
 
 	if *weblogin {
 		runWebLogin(*profile, *out)
+		return
+	}
+	if *channelLogin != "" {
+		runChannelLogin(*channelLogin, *loginURL, *profile, *out, *loginTarget, *hidden)
 		return
 	}
 	if *mpaylogin {
@@ -143,12 +153,72 @@ func runWebLogin(profileDir, outPath string) {
 		write(webLoginResult{OK: true, UserID: p.UserID, Token: p.Token, Account: p.Account, Method: p.Method})
 	}
 
-	if err := win.OpenWebLogin("https://fever.163.com/", "网易账号登录", profileDir, 1280, 900, app.WebLoginScript(), onPayload, func(h uintptr) { hwnd = h }); err != nil {
+	if err := win.OpenWebLogin("https://fever.163.com/", "网易账号登录", profileDir, 1280, 900, app.WebLoginScript(), onPayload, func(h uintptr) { hwnd = h }, false); err != nil {
 		write(webLoginResult{OK: false, Error: err.Error()})
 		return
 	}
-	// 窗口被用户关掉但没拿到 token：给主进程一个明确的失败
 	if _, statErr := os.Stat(outPath); statErr != nil {
 		write(webLoginResult{OK: false, Error: "窗口已关闭，未获取到登录信息"})
+	}
+}
+
+// runChannelLogin 渠道网页登录子进程：打开主进程解析好的登录页，
+// 注入该渠道的捕获脚本，把结果（统一 schema：uid + secret + extra）写到结果文件。
+//
+// net 诊断日志记什么由脚本决定（B站记完整 URL 和响应片段；4399/vivo 的
+// 跳转 URL 带敏感参数，只记 host+path），这里原样落盘。
+func runChannelLogin(key, loginURL, profileDir, outPath, target string, hidden bool) {
+	if profileDir == "" || outPath == "" || loginURL == "" {
+		fmt.Fprintln(os.Stderr, "channellogin 需要 --channellogin --url --profile 和 --out")
+		os.Exit(2)
+	}
+
+	write := func(res app.CapturedLoginResult) {
+		res.Finished = time.Now().Unix()
+		b, _ := json.Marshal(res)
+		_ = os.WriteFile(outPath, b, 0o600)
+	}
+
+	onPayload := func(payload string) {
+		var p struct {
+			Kind   string            `json:"kind"`
+			URL    string            `json:"url"`
+			Status int               `json:"status"`
+			Body   string            `json:"body"`
+			UID    string            `json:"uid"`
+			Secret string            `json:"secret"`
+			Uname  string            `json:"uname"`
+			Extra  map[string]string `json:"extra"`
+		}
+		if err := json.Unmarshal([]byte(payload), &p); err != nil {
+			return
+		}
+		// 网络诊断：脚本已按渠道脱敏，这里原样追加
+		if p.Kind == "net" {
+			f, err := os.OpenFile(filepath.Join(filepath.Dir(outPath), key+"-net.log"),
+				os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+			if err == nil {
+				fmt.Fprintf(f, "%s %s %d %s\n", time.Now().Format("15:04:05"), p.URL, p.Status, p.Body)
+				f.Close()
+			}
+			return
+		}
+		if p.UID == "" || p.Secret == "" {
+			return
+		}
+		write(app.CapturedLoginResult{OK: true, UID: p.UID, Secret: p.Secret, Uname: p.Uname, Extra: p.Extra})
+	}
+
+	w := channel.LoginWindowOf(key)
+	if w.Script == nil {
+		write(app.CapturedLoginResult{Error: "不支持的渠道: " + key})
+		return
+	}
+	if err := win.OpenWebLogin(loginURL, w.Title, profileDir, w.Width, w.Height, w.Script(target), onPayload, nil, hidden); err != nil {
+		write(app.CapturedLoginResult{Error: err.Error()})
+		return
+	}
+	if _, statErr := os.Stat(outPath); statErr != nil {
+		write(app.CapturedLoginResult{Error: "窗口已关闭，未获取到登录信息"})
 	}
 }

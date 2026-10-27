@@ -27,6 +27,28 @@ type Config struct {
 
 	// 左栏宽度（像素）。用户能拖，拖完存这里；0 表示用默认值。
 	RailWidth int `json:"rail_width,omitempty"`
+
+	// 界面壳偏好：0=账号库 1=此刻 2=控制台 3=晨白（见前端 shellkit）。
+	// WebView2 每次端口随机，localStorage 记不住，所以存后端。
+	UiShell int `json:"ui_shell,omitempty"`
+
+	// 多开默认设置：启动前写进每个客户端的 preferences.sav（internal/prefs）。
+	// 画质用游戏认识的名字（实测见过 LowPower / Presentation），空 = 跟随游戏；
+	// 帧率 0 = 跟随游戏。窗口模式恒为开（排列的前提）。
+	MultiQualityMode string `json:"multi_quality_mode,omitempty"`
+	MultiQualityFps  int    `json:"multi_quality_fps,omitempty"`
+
+	// 鼠标仲裁：多开启动后的一段时间里，防止后台客户端自认持有鼠标
+	// （进大厅后抢焦点、持续把光标拉回窗口中心）。分钟数 0 = 用默认 3。
+	MouseArbiterEnabled bool `json:"mouse_arbiter_enabled,omitempty"`
+	MouseArbiterMin     int  `json:"mouse_arbiter_min,omitempty"`
+
+	// a50（发烧平台）上下文的设备号：签票走 a50 优先时用它。
+	// MPay 的设备号按上下文发：本机指纹登记的号属于 ma75，a50 不认识，
+	// 拿去签 a50 的票每张都会被当成新设备（登录设备列表一条条涨）。
+	// 用同一个 unique_id 在 a50 再登记一遍即可长期复用。
+	A50DeviceID  string `json:"a50_device_id,omitempty"`
+	A50DeviceKey string `json:"a50_device_key,omitempty"`
 }
 
 // CloseLauncherEnabled 返回设置值，未设置时默认开启。
@@ -73,5 +95,15 @@ func saveRailWidth(w int) error {
 	}
 	c := loadConfig()
 	c.RailWidth = w
+	return saveConfig(c)
+}
+
+// saveShell 保存界面壳偏好（越界回 0）。
+func saveShell(shell int) error {
+	if shell < 0 || shell > 9 {
+		shell = 0
+	}
+	c := loadConfig()
+	c.UiShell = shell
 	return saveConfig(c)
 }

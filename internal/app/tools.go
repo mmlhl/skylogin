@@ -51,6 +51,10 @@ func settingsView() map[string]any {
 		"mirrorDefault":    fever.DefaultMirrorRoot(exe),
 		"mirrorSameVolume": fever.SameVolume(fever.MirrorRoot(exe, c.MirrorDir), filepath.Dir(exe)),
 		"mirrorSizeText":   fever.HumanSize(fever.DirLogicalSize(filepath.Dir(exe))),
+		"multiQualityMode":  c.MultiQualityMode,
+		"multiQualityFps":   c.MultiQualityFps,
+		"mouseArbiter":      c.MouseArbiterEnabled,
+		"mouseArbiterMin":   c.MouseArbiterMin,
 		"dataDir":          dataDir(),
 		"version":          Version,
 		"repo":             RepoURL,
@@ -59,8 +63,8 @@ func settingsView() map[string]any {
 	}
 }
 
-// applySettings 保存界面上改动的设置；传空串表示不改这一项。
-func applySettings(skyExe, deviceID, mirrorDir *string, closeLauncher *bool) error {
+// applySettings 保存界面上改动的设置；传 nil 表示不改这一项。
+func applySettings(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int) error {
 	c := loadConfig()
 	if skyExe != nil {
 		p := *skyExe
@@ -102,6 +106,21 @@ func applySettings(skyExe, deviceID, mirrorDir *string, closeLauncher *bool) err
 	}
 	if closeLauncher != nil {
 		c.CloseLauncher = closeLauncher
+	}
+	if multiQuality != nil {
+		c.MultiQualityMode = strings.TrimSpace(*multiQuality)
+	}
+	if mouseArbiter != nil {
+		c.MouseArbiterEnabled = *mouseArbiter
+	}
+	if arbiterMin != nil {
+		c.MouseArbiterMin = *arbiterMin
+	}
+	if multiFps != nil {
+		if *multiFps < 0 {
+			*multiFps = 0
+		}
+		c.MultiQualityFps = *multiFps
 	}
 	return saveConfig(c)
 }

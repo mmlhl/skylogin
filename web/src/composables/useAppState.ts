@@ -25,6 +25,10 @@ function emptyState(): AppState {
       deviceIdSource: "",
       deviceInfo: { fingerprint: "", uniqueId: "", hasKey: false, mode: "" },
       closeLauncher: true,
+      multiQualityMode: "",
+      multiQualityFps: 0,
+  mouseArbiter: false,
+  mouseArbiterMin: 0,
       railWidth: 0,
       mirrorDir: "",
       mirrorDefault: "",
@@ -45,32 +49,7 @@ function emptyState(): AppState {
 /** 整个应用共享的状态对象 */
 export const state = reactive<AppState>(emptyState());
 
-/** 打码开关：按账号 id 记录，或全局打开 */
-export const reveal = reactive({
-  all: false,
-  ids: {} as Record<string, boolean>,
-});
-
-/** 判断某个账号当前是否显示明文 */
-export function isRevealed(id: string): boolean {
-  return reveal.all || !!reveal.ids[id];
-}
-
-/** 切换单个账号的显示状态 */
-export function toggleReveal(id: string) {
-  reveal.ids[id] = !reveal.ids[id];
-}
-
-/** 顶部总开关 */
-export function toggleRevealAll() {
-  reveal.all = !reveal.all;
-  reveal.ids = {};
-}
-
 /** 当前选中的账号 */
-export const currentAccount = computed<AccountView | undefined>(() =>
-  state.accounts.find((a) => a.current)
-);
 
 /** 最近一次轮询的错误（网络断了之类），给界面提示用 */
 export const pollError = reactive({ message: "" });

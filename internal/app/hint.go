@@ -10,19 +10,21 @@ import (
 // 这类问题不该只躺在日志里——玩家看不到日志，只会觉得"点了没反应"。
 // 记在内存里，由界面读取并显示成可点击的提示。
 type authHint struct {
-	Mu      sync.Mutex
-	Active  bool
-	Kind    string // 目前只有 "netease_expired"
-	Title   string
-	Message string
-	Account string
-	Since   time.Time
+	Mu        sync.Mutex
+	Active    bool
+	Kind      string
+	Title     string
+	Message   string
+	Account   string // 展示用（用户名 / 手机号）
+	AccountID string // 定位用（PlayerID）；横幅的"一键刷新"按它找账号
+	Since     time.Time
 }
 
 var currentHint authHint
 
 // setAuthHint 记下一条需要用户处理的提示。
-func setAuthHint(kind, title, message, account string) {
+// account 是展示名，accountID 用于界面精确回跳到要刷新的账号。
+func setAuthHint(kind, title, message, account, accountID string) {
 	currentHint.Mu.Lock()
 	defer currentHint.Mu.Unlock()
 	currentHint.Active = true
@@ -30,6 +32,7 @@ func setAuthHint(kind, title, message, account string) {
 	currentHint.Title = title
 	currentHint.Message = message
 	currentHint.Account = account
+	currentHint.AccountID = accountID
 	currentHint.Since = time.Now()
 }
 
@@ -52,9 +55,10 @@ func authHintView() map[string]any {
 		return map[string]any{}
 	}
 	return map[string]any{
-		"kind":    currentHint.Kind,
-		"title":   currentHint.Title,
-		"message": currentHint.Message,
-		"account": currentHint.Account,
+		"kind":      currentHint.Kind,
+		"title":     currentHint.Title,
+		"message":   currentHint.Message,
+		"account":   currentHint.Account,
+		"accountId": currentHint.AccountID,
 	}
 }
