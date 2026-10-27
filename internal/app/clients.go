@@ -468,8 +468,8 @@ func watchMirrors(exe string) {
 			time.Sleep(3 * time.Second) // 给游戏收尾留时间
 			restoreAllShims(exe, root)  // 先把浏览器还原，再删目录
 			fever.RemoveMirrors(exe, root)
-			if !fever.MirrorRootExists(root) {
-				logf("客户端已全部退出，镜像目录已释放")
+			if fever.MirrorsRemaining(exe, root) == 0 {
+				logf("客户端已全部退出，镜像已清理（保留根目录）")
 				return
 			}
 		}

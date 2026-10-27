@@ -148,10 +148,29 @@ func removeDir(dir string) bool {
 	return false
 }
 
-// MirrorRootExists 判断镜像根目录是否还在（清理后用来确认）。
+// MirrorRootExists 判断镜像根目录是否还在。
 func MirrorRootExists(root string) bool {
 	_, err := os.Stat(root)
 	return err == nil
+}
+
+// MirrorsRemaining 数一下某份安装还剩几套镜像目录。
+//
+// 根目录故意保留（用户要求，也避免反复创建删除），所以清理完不能再用
+// "根目录不存在"来判断，要看里面还有没有 <游戏目录名>- 开头的子目录。
+func MirrorsRemaining(skyExe, root string) int {
+	prefix := filepath.Base(filepath.Dir(skyExe)) + "-"
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, e := range entries {
+		if e.IsDir() && strings.HasPrefix(e.Name(), prefix) {
+			n++
+		}
+	}
+	return n
 }
 
 // RemoveMirrors 删掉某份安装对应的镜像（其它游戏的不动）。

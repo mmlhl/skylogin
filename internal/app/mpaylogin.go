@@ -430,7 +430,7 @@ func cleanupStaleMirrors() {
 				time.Sleep(5 * time.Second) // 给游戏收尾留点时间
 				restoreAllShims(sky, root)
 				fever.RemoveMirrors(sky, root)
-				if !fever.MirrorRootExists(root) {
+				if fever.MirrorsRemaining(sky, root) == 0 {
 					logf("启动清理：光遇已退出，上次的镜像目录已清理")
 				}
 				return
