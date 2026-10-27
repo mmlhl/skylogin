@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"time"
 	"unsafe"
@@ -41,7 +42,7 @@ func main() {
 	// 不切的话 SetCursorPos 会被系统再放大 1.25 倍点到隔壁格子
 	u32.NewProc("SetProcessDpiAwarenessContext").Call(^uintptr(3))
 
-	shotPath := `E:\devtools-local\tools\wall-shot.png`
+	shotPath := filepath.Join(os.TempDir(), "wall-shot.png")
 
 	// 1) 两个替身客户端
 	p1 := startNotepad()

@@ -57,7 +57,7 @@ func TestNormalizeSciIDIgnoresNormalIDs(t *testing.T) {
 	if v, ok := normalizeSciID("abc"); ok || v != "abc" {
 		t.Fatalf("非数字不应被改动，得到 %q ok=%v", v, ok)
 	}
-	if v, ok := normalizeSciID("1.5e+10"); !ok || v != "15000000000" {
+	if v, ok := normalizeSciID("1.5e+09"); !ok || v != "1500000000" {
 		t.Fatalf("科学计数法应转整数，得到 %q ok=%v", v, ok)
 	}
 }

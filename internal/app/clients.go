@@ -119,7 +119,22 @@ func handleTicket(h *fever.Host, req fever.TicketRequest) bool {
 		clientsMu.Lock()
 		t, ch := slot.ticket, slot.channel
 		slot.ticket = "" // 票是一次性的
+		ready := slot.ready
 		clientsMu.Unlock()
+
+		// 预签还在路上就等它一下（通常启动后一两秒就好了），
+		// 比现在才开始签快得多，能避开游戏的应答超时。
+		if t == "" && ready != nil {
+			select {
+			case <-ready:
+				clientsMu.Lock()
+				t, ch = slot.ticket, slot.channel
+				slot.ticket = ""
+				clientsMu.Unlock()
+			case <-time.After(6 * time.Second):
+				logf("等预签票据超时（%s），改为现签", displayName(*slot.acc))
+			}
+		}
 
 		if t == "" {
 			var err error
@@ -298,7 +313,16 @@ func launchAt(acc Account, dev *device.ClientProfile, ticket, channel, launchExe
 		return "", fmt.Errorf("启动光遇失败: %w", err)
 	}
 
-	registerClient(uint32(p.Pid), &multiSlot{acc: &acc, dev: dev, ticket: ticket, channel: channel})
+	slot := &multiSlot{acc: &acc, dev: dev, ticket: ticket, channel: channel}
+	if ticket == "" {
+		// 没带预签票：启动后立刻并行签一张，等游戏来要时直接回，
+		// 避免 op13→op14 这段走网络导致游戏超时弹错误页。
+		slot.ready = make(chan struct{})
+	}
+	registerClient(uint32(p.Pid), slot)
+	if slot.ready != nil {
+		go preMint(slot)
+	}
 	logf("光遇已启动: %s（pid=%d）", launchExe, p.Pid)
 	if exe := resolveSkyPath(); exe != "" {
 		go watchMirrors(exe)
@@ -355,6 +379,9 @@ func prepareMirror(exe string) (string, error) {
 		logf("镜像目录已建但有告警（%v）", err)
 	}
 	makeIndependentPrefs(exe, m)
+	if err := installWebviewShim(m); err != nil {
+		logf("浏览器壳安装失败: %v", err)
+	}
 	logf("第 %d 套镜像已就绪: %s", seq+1, m)
 	return filepath.Join(m, filepath.Base(exe)), nil
 }
@@ -446,4 +473,26 @@ func watchMirrors(exe string) {
 		}
 		time.Sleep(5 * time.Second)
 	}
+}
+
+// preMint 提前签一张票（启动后立刻并行做）。
+//
+// 为什么要提前：游戏向平台要票是带超时的，如果我们收到请求才开始
+// 校验凭证 + create_ticket（两三次网络往返），多开时几个客户端一起要票，
+// 应答就容易超过游戏的等待时间，表现为"与平台通信失败"的错误页
+// （那个错误页其实是游戏内置的浏览器兜底界面）。
+func preMint(slot *multiSlot) {
+	t, ch, err := mintTicket(*slot.acc, slot.dev)
+	clientsMu.Lock()
+	if err == nil && slot.ticket == "" {
+		slot.ticket, slot.channel = t, ch
+	}
+	slot.ticketErr = err
+	close(slot.ready)
+	clientsMu.Unlock()
+	if err != nil {
+		logf("预签票据失败（%s）: %v", displayName(*slot.acc), err)
+		return
+	}
+	logf("已预签票据（%s），等游戏来取", displayName(*slot.acc))
 }

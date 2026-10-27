@@ -37,6 +37,10 @@ type webLoginResult struct {
 }
 
 func main() {
+	// 被游戏当成 CEF 浏览器拉起时（镜像里的壳）：改参数后转发给真身
+	if app.IsWebviewShim() {
+		os.Exit(app.RunWebviewShim())
+	}
 	weblogin := flag.Bool("weblogin", false, "以网页登录子进程模式运行")
 	channelLogin := flag.String("channellogin", "", "以渠道网页登录子进程模式运行（bilibili/m4399/vivo）")
 	loginURL := flag.String("url", "", "渠道登录页地址（主进程解析后传入）")

@@ -264,6 +264,8 @@ type multiSlot struct {
 	createdAt  time.Time
 	firstReply time.Time // 本轮应答窗口起点（超过 replyWindow 重新计数）
 	lastTicket time.Time
+	ready      chan struct{} // 预签完成（无论成败都会 close；nil 表示没有预签）
+	ticketErr  error         // 预签结果
 }
 
 // launchMany 同时启动多个客户端，每个账号一个。
@@ -441,7 +443,7 @@ func launchManyLayout(ids []string, cols, rows, w, h int, display string) (strin
 //
 // 为什么要这一步：失效的 token 有时也能"成功签出票"（create_ticket 对
 // 会话校验很松），游戏拿到才发现是废票——玩家看到的就是游戏里一直
-// "网络错误"，工具侧毫无感知（199****3859 那个问题）。用户资料接口是
+// "网络错误"，工具侧毫无感知（某个网易账号"签出废票"那个问题）。用户资料接口是
 // 真实验证：token 死了必然报错。两个上下文都试，任一成功即认为活着。
 func validateNetEaseToken(acc Account) error {
 	c := mpay.New()
@@ -461,7 +463,7 @@ func validateNetEaseToken(acc Account) error {
 //
 // 签票上下文：PC 版光遇以发烧平台（a50）的票入场。实测用游戏上下文
 // （ma75，扫码 / 短信登录拿到的 token 所属应用）签出的票 MPay 不报错，
-// 但游戏服务端不认——进游戏一直"网络错误"，就是 199****3859 那个问题。
+// 但游戏服务端不认——进游戏一直"网络错误"，就是 某个网易账号"签出废票"那个问题。
 // 所以固定优先 a50 上下文，失败再退回 token 自带的上下文，
 // 两条路都断才标记凭证过期（界面上会出现刷新入口）。
 func mintTicket(acc Account, dev *device.ClientProfile) (string, string, error) {
