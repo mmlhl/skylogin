@@ -132,33 +132,27 @@ func adoptVivoProfile(dir, uid string) {
 	logf("vivo 会话归档失败（%s → %s），下次刷新需要重新登录", dir, dst)
 }
 
-// loginProgress 渠道网页登录的进行状态，界面轮询它。
-type loginProgress struct {
-	Running bool   `json:"running"`
-	Phase   string `json:"phase"` // waiting | done | failed
-	Message string `json:"message"`
-	Account string `json:"account"`
-	UID     string `json:"uid"`
-}
-
+// 每个渠道一个进度跟踪器；proc 记着子进程（失败时收掉）。
 var (
-	loginProgressMu   sync.Mutex
-	loginProgressByCh = map[string]*loginProgress{}
-	loginProgressProc = map[string]*os.Process{}
+	loginTrackersMu sync.Mutex
+	loginTrackers   = map[string]*loginTracker{}
+	loginProcs      = map[string]*os.Process{}
 )
 
-func loginProgressOf(key string) loginProgress {
-	if s := loginProgressByCh[key]; s != nil {
-		return *s
+func trackerOf(key string) *loginTracker {
+	loginTrackersMu.Lock()
+	defer loginTrackersMu.Unlock()
+	t := loginTrackers[key]
+	if t == nil {
+		t = newLoginTracker()
+		loginTrackers[key] = t
 	}
-	return loginProgress{Phase: "idle"}
+	return t
 }
 
 // ChannelLoginStatus 给界面查询某个渠道的登录进度。
 func ChannelLoginStatus(key string) map[string]any {
-	loginProgressMu.Lock()
-	defer loginProgressMu.Unlock()
-	s := loginProgressOf(key)
+	s := trackerOf(key).snapshot()
 	return map[string]any{
 		"running": s.Running,
 		"phase":   s.Phase,
@@ -186,17 +180,14 @@ func startChannelWebLogin(key, targetUserID string, hidden bool) error {
 		return fmt.Errorf("不支持的渠道: %s", key)
 	}
 
-	loginProgressMu.Lock()
-	if s := loginProgressOf(key); s.Running {
-		loginProgressMu.Unlock()
-		return fmt.Errorf("%s登录窗口已经打开了", channel.LabelOf(key))
-	}
 	msg := "等待在窗口里登录"
 	if hidden {
 		msg = "正在静默续期"
 	}
-	loginProgressByCh[key] = &loginProgress{Running: true, Phase: "waiting", Message: msg}
-	loginProgressMu.Unlock()
+	tr := trackerOf(key)
+	if !tr.begin(msg) {
+		return fmt.Errorf("%s登录窗口已经打开了", channel.LabelOf(key))
+	}
 
 	exe, err := os.Executable()
 	if err != nil {
@@ -213,9 +204,8 @@ func startChannelWebLogin(key, targetUserID string, hidden bool) error {
 	}
 	loginURL, err := spec.loginURL(targetUserID)
 	if err != nil {
-		loginProgressMu.Lock()
-		loginProgressByCh[key] = &loginProgress{Running: true, Phase: "failed", Message: err.Error()}
-		loginProgressMu.Unlock()
+		tr.set("failed", err.Error(), "", "")
+		tr.finish()
 		return err
 	}
 	outPath := filepath.Join(dataDir(), spec.resultFile)
@@ -228,15 +218,14 @@ func startChannelWebLogin(key, targetUserID string, hidden bool) error {
 	cmd := exec.Command(exe, args...)
 	cmd.Dir = filepath.Dir(exe)
 	if err := cmd.Start(); err != nil {
-		loginProgressMu.Lock()
-		loginProgressByCh[key] = &loginProgress{Running: true, Phase: "failed", Message: "打不开登录窗口: " + err.Error()}
-		loginProgressMu.Unlock()
+		tr.set("failed", "打不开登录窗口: "+err.Error(), "", "")
+		tr.finish()
 		return err
 	}
 
-	loginProgressMu.Lock()
-	loginProgressProc[key] = cmd.Process
-	loginProgressMu.Unlock()
+	loginTrackersMu.Lock()
+	loginProcs[key] = cmd.Process
+	loginTrackersMu.Unlock()
 
 	go watchChannelLogin(key, cmd, outPath, targetUserID, profileDir)
 	return nil
@@ -244,29 +233,26 @@ func startChannelWebLogin(key, targetUserID string, hidden bool) error {
 
 // watchChannelLogin 等子进程写出结果，然后走渠道的 finalize 落库。
 func watchChannelLogin(key string, cmd *exec.Cmd, outPath, targetUserID, profileDir string) {
-	loginProgressMu.Lock()
-	proc := loginProgressProc[key]
-	loginProgressMu.Unlock()
+	loginTrackersMu.Lock()
+	proc := loginProcs[key]
+	loginTrackersMu.Unlock()
 
 	// 子进程崩溃（比如会话目录被残留进程占用导致 WebView2 创建失败）时
 	// 快速失败，不让用户干等超时
 	childDone := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(childDone) }()
 
+	tr := trackerOf(key)
 	defer func() {
-		loginProgressMu.Lock()
-		if s := loginProgressByCh[key]; s != nil {
-			s.Running = false
-		}
-		delete(loginProgressProc, key)
-		loginProgressMu.Unlock()
+		tr.finish()
+		loginTrackersMu.Lock()
+		delete(loginProcs, key)
+		loginTrackersMu.Unlock()
 		_ = os.Remove(outPath)
 	}()
 
 	fail := func(msg string) {
-		loginProgressMu.Lock()
-		loginProgressByCh[key] = &loginProgress{Phase: "failed", Message: msg}
-		loginProgressMu.Unlock()
+		tr.set("failed", msg, "", "")
 		if proc != nil {
 			_ = proc.Kill()
 		}
@@ -326,12 +312,7 @@ func watchChannelLogin(key string, cmd *exec.Cmd, outPath, targetUserID, profile
 		spec.adoptProfile(profileDir, acc.PlayerID)
 	}
 
-	loginProgressMu.Lock()
-	loginProgressByCh[key] = &loginProgress{
-		Phase: "done", Message: channel.LabelOf(key) + "账号登录成功，已保存",
-		Account: acc.Name, UID: acc.PlayerID,
-	}
-	loginProgressMu.Unlock()
+	tr.set("done", channel.LabelOf(key)+"账号登录成功，已保存", acc.Name, acc.PlayerID)
 	logf("%s账号登录成功并已保存: %s (uid=%s)", channel.LabelOf(key), acc.Name, acc.PlayerID)
 }
 

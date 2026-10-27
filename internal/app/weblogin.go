@@ -17,7 +17,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sync"
 	"time"
 )
 
@@ -26,31 +25,18 @@ const (
 	webLoginTmpName = "weblogin-result.json"
 )
 
-// webLoginState 网页登录的进行状态，界面轮询它。
-type webLoginState struct {
-	Running bool   `json:"running"`
-	Phase   string `json:"phase"` // waiting | done | failed
-	Message string `json:"message"`
-	Account string `json:"account"`
-	UserID  string `json:"userId"`
-}
-
-var (
-	webLoginMu   sync.Mutex
-	webLoginCur  = webLoginState{Phase: "idle"}
-	webLoginProc *os.Process
-)
+// webLoginTr 网页登录的进行状态（状态机见 loginprogress.go）。
+var webLoginTr = newLoginTracker()
 
 // WebLoginStatus 给界面查询当前网页登录进度。
 func WebLoginStatus() map[string]any {
-	webLoginMu.Lock()
-	defer webLoginMu.Unlock()
+	s := webLoginTr.snapshot()
 	return map[string]any{
-		"running": webLoginCur.Running,
-		"phase":   webLoginCur.Phase,
-		"message": webLoginCur.Message,
-		"account": webLoginCur.Account,
-		"userId":  webLoginCur.UserID,
+		"running": s.Running,
+		"phase":   s.Phase,
+		"message": s.Message,
+		"account": s.Account,
+		"userId":  s.UID,
 	}
 }
 
@@ -60,13 +46,9 @@ func WebLoginStatus() map[string]any {
 // 登录完成后会校验拿到的 user_id 是否一致，不一致就拒绝写入，
 // 避免用户登错账号把 A 的凭证覆盖成 B 的。
 func StartWebLogin(targetUserID string) error {
-	webLoginMu.Lock()
-	if webLoginCur.Running {
-		webLoginMu.Unlock()
+	if !webLoginTr.begin("等待在窗口里登录") {
 		return fmt.Errorf("网页登录窗口已经打开了")
 	}
-	webLoginCur = webLoginState{Running: true, Phase: "waiting", Message: "等待在窗口里登录"}
-	webLoginMu.Unlock()
 
 	exe, err := os.Executable()
 	if err != nil {
@@ -87,15 +69,10 @@ func StartWebLogin(targetUserID string) error {
 	// 子进程里 WebView2 是第一个实例，环境变量不会被已有实例吃掉。
 	cmd.Env = append(os.Environ(), "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9223")
 	if err := cmd.Start(); err != nil {
-		webLoginMu.Lock()
-		webLoginCur = webLoginState{Phase: "failed", Message: "打不开登录窗口: " + err.Error()}
-		webLoginMu.Unlock()
+		webLoginTr.set("failed", "打不开登录窗口: "+err.Error(), "", "")
+		webLoginTr.finish()
 		return err
 	}
-
-	webLoginMu.Lock()
-	webLoginProc = cmd.Process
-	webLoginMu.Unlock()
 
 	go watchWebLogin(cmd, outPath, targetUserID)
 	return nil
@@ -104,10 +81,7 @@ func StartWebLogin(targetUserID string) error {
 // watchWebLogin 等子进程写出结果，然后落库。
 func watchWebLogin(cmd *exec.Cmd, outPath, targetUserID string) {
 	defer func() {
-		webLoginMu.Lock()
-		webLoginCur.Running = false
-		webLoginProc = nil
-		webLoginMu.Unlock()
+		webLoginTr.finish()
 		_ = os.Remove(outPath)
 	}()
 
@@ -123,9 +97,7 @@ func watchWebLogin(cmd *exec.Cmd, outPath, targetUserID string) {
 	}
 
 	setState := func(phase, msg, account, uid string) {
-		webLoginMu.Lock()
-		webLoginCur = webLoginState{Phase: phase, Message: msg, Account: account, UserID: uid}
-		webLoginMu.Unlock()
+		webLoginTr.set(phase, msg, account, uid)
 	}
 
 	if result == nil {

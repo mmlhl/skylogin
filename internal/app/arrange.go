@@ -102,13 +102,32 @@ func clientLabels() map[uint32]string {
 
 // arrangeWhenReady 多开后渐进排列：客户端窗口出一个摆一个，不等全部出完
 // （排在后面的要登录加载，等齐再排，前面的窗口得干瞪眼十几秒）。
-// mode = "cascade" 级联堆叠（文件窗式），"tile"/空 = 网格平铺。
-// 全部就位后，3 个以上会自动打开监控墙（多开的主要查看方式）。
+// mode = "cascade" 级联堆叠（文件窗式），"fullscreen" 全屏（不排窗口，
+// 排也排不动）；"tile"/空 = 网格平铺。
+// 全部就位后，3 个以上会自动打开监控墙（多开的主要查看方式，
+// 全屏模式下切换客户端全靠它）。
 func arrangeWhenReady(cols, rows, w, h int, mode string) {
-	if mode != "cascade" && (cols < 1 || rows < 1) {
+	if mode != "cascade" && mode != "fullscreen" && (cols < 1 || rows < 1) {
 		return
 	}
 	go func() {
+		if mode == "fullscreen" {
+			// 等第一个窗口出来，再给游戏两秒自行恢复全屏
+			deadline := time.Now().Add(3 * time.Minute)
+			for time.Now().Before(deadline) {
+				time.Sleep(1 * time.Second)
+				if len(runningPids()) == 0 {
+					return
+				}
+				if win.CountClientWindows(runningPids()) >= 1 {
+					break
+				}
+			}
+			time.Sleep(2 * time.Second)
+			autoOpenWall()
+			return
+		}
+
 		// 等第一个窗口出来就立刻开排（pid 启动瞬间就有，不能当信号）；
 		// 探测间隔压到 300ms，窗口一创建马上就会被摆进格位
 		deadline := time.Now().Add(3 * time.Minute)
@@ -129,37 +148,18 @@ func arrangeWhenReady(cols, rows, w, h int, mode string) {
 			return
 		}
 		logf("自动排列: %d/%d 个客户端已就位", moved, len(cells))
-		// 游戏窗口最小 1024×720，3 个以上屏幕必然互相遮挡——排完自动把
-		// 监控墙带出来
-		if !win.WallOpen() && len(runningPids()) >= 3 {
-			if _, err := ToggleWall(); err != nil {
-				logf("自动打开监控墙失败: %v", err)
-			} else {
-				logf("已自动打开监控墙")
-			}
-		}
+		autoOpenWall()
 	}()
 }
 
-// fullscreenWhenReady 全屏：窗口不做任何移动（全屏排不了），等出来后把
-// 监控墙带出来——全屏模式下切换客户端全靠它。
-func fullscreenWhenReady() {
-	go func() {
-		deadline := time.Now().Add(3 * time.Minute)
-		for time.Now().Before(deadline) {
-			time.Sleep(1 * time.Second)
-			if len(runningPids()) == 0 {
-				return
-			}
-			if win.CountClientWindows(runningPids()) >= 1 {
-				break
-			}
+// autoOpenWall 3 个以上客户端时自动打开监控墙：游戏窗口最小 1024×720，
+// 3 个以上屏幕必然互相遮挡。
+func autoOpenWall() {
+	if !win.WallOpen() && len(runningPids()) >= 3 {
+		if _, err := ToggleWall(); err != nil {
+			logf("自动打开监控墙失败: %v", err)
+		} else {
+			logf("已自动打开监控墙")
 		}
-		time.Sleep(2 * time.Second)
-		if !win.WallOpen() && len(runningPids()) >= 3 {
-			if _, err := ToggleWall(); err == nil {
-				logf("已自动打开监控墙（全屏切换用）")
-			}
-		}
-	}()
+	}
 }

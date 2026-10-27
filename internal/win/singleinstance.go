@@ -6,9 +6,7 @@ import (
 )
 
 var (
-	kernel32dll       = syscall.NewLazyDLL("kernel32.dll")
 	procCreateMutexW  = kernel32dll.NewProc("CreateMutexW")
-	user32dll         = syscall.NewLazyDLL("user32.dll")
 	procFindWindowW   = user32dll.NewProc("FindWindowW")
 	procSetForeground = user32dll.NewProc("SetForegroundWindow")
 	procShowWindow    = user32dll.NewProc("ShowWindow")

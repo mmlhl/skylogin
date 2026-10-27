@@ -9,16 +9,13 @@ package win
 import (
 	"time"
 	"unsafe"
-
-	"golang.org/x/sys/windows"
 )
 
 var (
-	user32Click         = windows.NewLazySystemDLL("user32.dll")
-	procSetCursorPos    = user32Click.NewProc("SetCursorPos")
-	procClientToScreen  = user32Click.NewProc("ClientToScreen")
-	procMouseEvent      = user32Click.NewProc("mouse_event")
-	procShowWindowClick = user32Click.NewProc("ShowWindow")
+	procSetCursorPos    = user32dll.NewProc("SetCursorPos")
+	procClientToScreen  = user32dll.NewProc("ClientToScreen")
+	procMouseEvent      = user32dll.NewProc("mouse_event")
+	procShowWindowClick = user32dll.NewProc("ShowWindow")
 )
 
 const (
@@ -26,11 +23,6 @@ const (
 	mouseEventLeftDown = 0x0002
 	mouseEventLeftUp   = 0x0004
 )
-
-type point struct {
-	X int32
-	Y int32
-}
 
 // ClickClientPoint 在窗口客户区的 (x, y) 处做一次真实左键点击。
 //

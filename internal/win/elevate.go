@@ -10,7 +10,6 @@ import (
 )
 
 var (
-	shell32dll          = windows.NewLazySystemDLL("shell32.dll")
 	procShellExecuteExW = shell32dll.NewProc("ShellExecuteExW")
 	elevateOnce         sync.Once
 )

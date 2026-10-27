@@ -132,10 +132,7 @@ func handleTicket(h *fever.Host, req fever.TicketRequest) bool {
 					// 需要重新登录。
 					if rerr := refreshVivoCredential(slot.acc); rerr != nil {
 						err = rerr
-						setAccountCredState(slot.acc.UserID, "expired", "vivo登录已失效")
-						setAuthHint("vivo_expired", "vivo登录已过期",
-							fmt.Sprintf("%s 的 vivo 登录已失效，请重新登录该账号", displayName(*slot.acc)),
-							slot.acc.Username, slot.acc.UserID)
+						expireChannelCredential(slot.acc, "vivo登录已失效", "vivo_expired", "vivo登录已过期", "请重新登录该账号")
 					} else {
 						t, ch, err = mintTicket(*slot.acc, slot.dev)
 					}
@@ -145,10 +142,7 @@ func handleTicket(h *fever.Host, req fever.TicketRequest) bool {
 					// 兜底）再重签；链路全断才需要重新登录。
 					if rerr := ensureM4399Credential(slot.acc); rerr != nil {
 						err = rerr
-						setAccountCredState(slot.acc.UserID, "expired", "4399登录已失效")
-						setAuthHint("m4399_expired", "4399登录已过期",
-							fmt.Sprintf("%s 的 4399 登录已失效，请重新登录该账号", displayName(*slot.acc)),
-							slot.acc.Username, slot.acc.UserID)
+						expireChannelCredential(slot.acc, "4399登录已失效", "m4399_expired", "4399登录已过期", "请重新登录该账号")
 					} else {
 						t, ch, err = mintTicket(*slot.acc, slot.dev)
 					}

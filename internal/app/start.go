@@ -100,9 +100,7 @@ func launchGame() (string, error) {
 		// 用 Cookie 会话静默换一张新票再试一次；Cookie 也失效了才会弹登录页。
 		if perr != nil && acc.Channel == channel.KeyVivo {
 			if rerr := refreshVivoCredential(&acc); rerr != nil {
-				setAccountCredState(acc.PlayerID, "expired", "vivo登录已失效")
-				setAuthHint("vivo_expired", "vivo登录已过期",
-					fmt.Sprintf("%s 的 vivo 登录已失效，请重新登录该账号", displayName(acc)), acc.Username, acc.PlayerID)
+				expireChannelCredential(&acc, "vivo登录已失效", "vivo_expired", "vivo登录已过期", "请重新登录该账号")
 				return "", rerr
 			}
 			p, _, perr = buildPayloadFn(acc, dev)
@@ -426,7 +424,7 @@ func launchManyLayout(ids []string, cols, rows, w, h int, display string) (strin
 	}
 	switch {
 	case fullscreen:
-		fullscreenWhenReady()
+		arrangeWhenReady(0, 0, 0, 0, "fullscreen")
 		return msg + "（全屏：用监控墙或 Alt+Tab 切换）", nil
 	case display == "cascade":
 		arrangeWhenReady(cols, rows, w, h, "cascade")
@@ -438,9 +436,6 @@ func launchManyLayout(ids []string, cols, rows, w, h int, display string) (strin
 	}
 	return msg, nil
 }
-
-// replyCountRunning 是多开用的辅助函数，暂时只做日志用途。
-func replyCountRunning() int { return 0 }
 
 // validateNetEaseToken 用 MPay 的用户资料接口验证 token 是否还活着。
 //

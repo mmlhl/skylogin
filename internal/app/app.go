@@ -81,7 +81,6 @@ func defaultDataDir() string {
 
 // RunUI 启动本地控制面板，并用 WebView2 窗口显示（没有 WebView2 时退回默认浏览器）。
 func RunUI(title string) error {
-	uiTitle = title
 	logf("光遇账号登录器 %s 启动", Version)
 
 	// 非 op13 的 IPC 包：原样记进日志。游戏登录失败时若会上报结果

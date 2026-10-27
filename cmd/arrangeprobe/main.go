@@ -189,4 +189,3 @@ func main() {
 }
 
 func osArgs() []string { return os.Args }
-

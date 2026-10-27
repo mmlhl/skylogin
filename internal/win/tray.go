@@ -7,28 +7,25 @@ import (
 )
 
 var (
-	u32               = syscall.NewLazyDLL("user32.dll")
-	k32               = syscall.NewLazyDLL("kernel32.dll")
-	sh32              = syscall.NewLazyDLL("shell32.dll")
-	procRegisterCls   = u32.NewProc("RegisterClassExW")
-	procCreateWinEx   = u32.NewProc("CreateWindowExW")
-	procDefWinProc    = u32.NewProc("DefWindowProcW")
-	procDestroyWin    = u32.NewProc("DestroyWindow")
-	procGetMessage    = u32.NewProc("GetMessageW")
-	procTranslateMsg  = u32.NewProc("TranslateMessage")
-	procDispatchMsg   = u32.NewProc("DispatchMessageW")
-	procPostQuitMsg   = u32.NewProc("PostQuitMessage")
-	procCreatePopup   = u32.NewProc("CreatePopupMenu")
-	procAppendMenu    = u32.NewProc("AppendMenuW")
-	procTrackPopup    = u32.NewProc("TrackPopupMenu")
-	procDestroyMenu   = u32.NewProc("DestroyMenu")
-	procGetCursorPos  = u32.NewProc("GetCursorPos")
-	procLoadIcon      = u32.NewProc("LoadIconW")
-	procSendMessage   = u32.NewProc("SendMessageW")
-	procGetModule     = k32.NewProc("GetModuleHandleW")
-	procGetModuleFile = k32.NewProc("GetModuleFileNameW")
-	procShellNotify   = sh32.NewProc("Shell_NotifyIconW")
-	procExtractIcon   = sh32.NewProc("ExtractIconExW")
+	procRegisterCls   = user32dll.NewProc("RegisterClassExW")
+	procCreateWinEx   = user32dll.NewProc("CreateWindowExW")
+	procDefWinProc    = user32dll.NewProc("DefWindowProcW")
+	procDestroyWin    = user32dll.NewProc("DestroyWindow")
+	procGetMessage    = user32dll.NewProc("GetMessageW")
+	procTranslateMsg  = user32dll.NewProc("TranslateMessage")
+	procDispatchMsg   = user32dll.NewProc("DispatchMessageW")
+	procPostQuitMsg   = user32dll.NewProc("PostQuitMessage")
+	procCreatePopup   = user32dll.NewProc("CreatePopupMenu")
+	procAppendMenu    = user32dll.NewProc("AppendMenuW")
+	procTrackPopup    = user32dll.NewProc("TrackPopupMenu")
+	procDestroyMenu   = user32dll.NewProc("DestroyMenu")
+	procGetCursorPos  = user32dll.NewProc("GetCursorPos")
+	procLoadIcon      = user32dll.NewProc("LoadIconW")
+	procSendMessage   = user32dll.NewProc("SendMessageW")
+	procGetModule     = kernel32dll.NewProc("GetModuleHandleW")
+	procGetModuleFile = kernel32dll.NewProc("GetModuleFileNameW")
+	procShellNotify   = shell32dll.NewProc("Shell_NotifyIconW")
+	procExtractIcon   = shell32dll.NewProc("ExtractIconExW")
 )
 
 const (
@@ -89,15 +86,13 @@ type wndClassEx struct {
 	HIconSm       uintptr
 }
 
-type trayPoint struct{ X, Y int32 }
-
 type trayMsg struct {
 	HWnd    uintptr
 	Message uint32
 	WParam  uintptr
 	LParam  uintptr
 	Time    uint32
-	Pt      trayPoint
+	Pt      point
 }
 
 // TrayOptions 是托盘菜单的回调。
@@ -248,29 +243,11 @@ func showTrayMenu(hwnd uintptr) {
 	procAppendMenu.Call(menu, mfSeparator, 0, 0)
 	procAppendMenu.Call(menu, mfString, menuQuit, uintptr(unsafe.Pointer(quit)))
 
-	var pt trayPoint
+	var pt point
 	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
 	procSetForeground.Call(hwnd)
 	procTrackPopup.Call(menu, tpmReturnCmd|tpmRightButton, uintptr(pt.X), uintptr(pt.Y), 0, hwnd, 0)
 	procSendMessage.Call(hwnd, 0, 0, 0) // WM_NULL，让菜单正常收起
-}
-
-// applyDarkFrame 让标题栏跟随深色主题（Windows 11 还会给圆角）。
-func applyDarkFrame(hwnd uintptr) {
-	if hwnd == 0 {
-		return
-	}
-	dwm := syscall.NewLazyDLL("dwmapi.dll")
-	proc := dwm.NewProc("DwmSetWindowAttribute")
-	if err := proc.Find(); err != nil {
-		return
-	}
-	dark := int32(1)
-	// 20 是 Windows 11 / 19045 的属性号，19 是老版本的，两个都设一遍更稳
-	proc.Call(hwnd, 20, uintptr(unsafe.Pointer(&dark)), 4)
-	proc.Call(hwnd, 19, uintptr(unsafe.Pointer(&dark)), 4)
-	round := int32(2)
-	proc.Call(hwnd, 33, uintptr(unsafe.Pointer(&round)), 4) // DWMWA_WINDOW_CORNER_PREFERENCE
 }
 
 // SetWindowIcon 把 exe 内嵌的第一个图标设为窗口图标。

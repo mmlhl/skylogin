@@ -30,33 +30,23 @@ import (
 
 const mpayLoginTmpName = "mpaylogin-result.json"
 
-// mpayLoginState 是界面上"正在等官方窗口登录"的状态。
-type mpayLoginState struct {
-	Running bool   `json:"running"`
-	Phase   string `json:"phase"` // waiting | done | failed
-	Message string `json:"message"`
-	Account string `json:"account"`
-	UserID  string `json:"userId"`
-}
-
 var (
+	// mpayLoginTr 登录进度（状态机见 loginprogress.go）
+	mpayLoginTr     = newLoginTracker()
 	mpayLoginMu     sync.Mutex
-	mpayLoginCur    = mpayLoginState{Phase: "idle"}
 	mpayLoginProc   *os.Process
-	mpayLoginCancel bool   // 用户主动点了"取消"
-	uiTitle         string // 主界面标题，用来算弹窗位置
+	mpayLoginCancel bool // 用户主动点了"取消"
 )
 
 // MpayLoginStatus 给界面查询进度。
 func MpayLoginStatus() map[string]any {
-	mpayLoginMu.Lock()
-	defer mpayLoginMu.Unlock()
+	s := mpayLoginTr.snapshot()
 	return map[string]any{
-		"running": mpayLoginCur.Running,
-		"phase":   mpayLoginCur.Phase,
-		"message": mpayLoginCur.Message,
-		"account": mpayLoginCur.Account,
-		"userId":  mpayLoginCur.UserID,
+		"running": s.Running,
+		"phase":   s.Phase,
+		"message": s.Message,
+		"account": s.Account,
+		"userId":  s.UID,
 	}
 }
 
@@ -66,7 +56,7 @@ func MpayLoginStatus() map[string]any {
 // 避免把 A 的凭证覆盖成 B 的。
 func StartMpayLogin(targetUserID string) error {
 	mpayLoginMu.Lock()
-	if mpayLoginCur.Running {
+	if mpayLoginTr.snapshot().Running {
 		mpayLoginMu.Unlock()
 		return fmt.Errorf("登录窗口已经打开了")
 	}
@@ -74,17 +64,17 @@ func StartMpayLogin(targetUserID string) error {
 
 	sky := resolveSkyPath()
 	if sky == "" {
-		setMpayLoginState("failed", "还没找到光遇，请先在设置里指定 sky.exe", "", "")
+		mpayLoginTr.set("failed", "还没找到光遇，请先在设置里指定 sky.exe", "", "")
 		return fmt.Errorf("还没找到光遇，请先在设置里指定 sky.exe")
 	}
 	skyDir := filepath.Dir(sky)
 	if _, err := os.Stat(filepath.Join(skyDir, "mpay.dll")); err != nil {
-		setMpayLoginState("failed", "游戏目录里没有 mpay.dll，光遇可能没装完整", "", "")
+		mpayLoginTr.set("failed", "游戏目录里没有 mpay.dll，光遇可能没装完整", "", "")
 		return fmt.Errorf("游戏目录里没有 mpay.dll")
 	}
 	skin := fever.FindMpaySkin()
 	if skin == "" {
-		setMpayLoginState("failed", "没找到网易发烧平台的皮肤资源，请先安装或更新发烧平台", "", "")
+		mpayLoginTr.set("failed", "没找到网易发烧平台的皮肤资源，请先安装或更新发烧平台", "", "")
 		return fmt.Errorf("没找到发烧平台的 skin.zip")
 	}
 
@@ -97,7 +87,7 @@ func StartMpayLogin(targetUserID string) error {
 	logPath := filepath.Join(dataDir(), "log.txt")
 
 	mpayLoginMu.Lock()
-	mpayLoginCur = mpayLoginState{Running: true, Phase: "waiting", Message: "请在弹出的网易登录窗口里完成登录"}
+	mpayLoginTr.begin("请在弹出的网易登录窗口里完成登录")
 	mpayLoginCancel = false
 	mpayLoginMu.Unlock()
 
@@ -109,24 +99,17 @@ func StartMpayLogin(targetUserID string) error {
 		"--out", outPath,
 		"--log", logPath,
 	}
-	// 官方登录窗以宿主窗口为中心弹出，所以把主界面的中心点告诉子进程。
-	// 先用 OpenWebView 记下来的窗口句柄（可靠），再退回按标题找。
-	cx, cy, ok := win.MainWindowCenter()
-	if !ok {
-		cx, cy, ok = win.WindowCenterByTitle(uiTitle)
-	}
-	// 坐标异常（0 或负）就当没拿到：宁可让子进程用屏幕中心，
-	// 也不能把登录窗丢到左上角去。
-	if ok && cx > 0 && cy > 0 {
+	// 官方登录窗以主界面为中心弹出，把主界面的中心点告诉子进程；
+	// 拿不到（浏览器模式没有原生窗口）就让子进程用屏幕中心
+	if cx, cy, ok := win.MainWindowCenter(); ok && cx > 0 && cy > 0 {
 		logf("网易登录窗将居中到 (%d,%d)", cx, cy)
 		args = append(args, "--center-x", strconv.Itoa(cx), "--center-y", strconv.Itoa(cy))
-	} else {
-		logf("没拿到有效的主界面位置（%d,%d），登录窗改用屏幕中心", cx, cy)
 	}
 	cmd := exec.Command(exe, args...)
 	cmd.Dir = skyDir
 	if err := cmd.Start(); err != nil {
-		setMpayLoginState("failed", "打不开登录窗口: "+err.Error(), "", "")
+		mpayLoginTr.set("failed", "打不开登录窗口: "+err.Error(), "", "")
+		mpayLoginTr.finish()
 		return err
 	}
 
@@ -156,17 +139,11 @@ func wasCancelled() bool {
 	return mpayLoginCancel
 }
 
-func setMpayLoginState(phase, msg, account, uid string) {
-	mpayLoginMu.Lock()
-	mpayLoginCur = mpayLoginState{Phase: phase, Message: msg, Account: account, UserID: uid}
-	mpayLoginMu.Unlock()
-}
-
 // watchMpayLogin 等子进程写出结果，然后换 token 落库。
 func watchMpayLogin(cmd *exec.Cmd, outPath, targetUserID string) {
 	defer func() {
+		mpayLoginTr.finish()
 		mpayLoginMu.Lock()
-		mpayLoginCur.Running = false
 		mpayLoginProc = nil
 		mpayLoginMu.Unlock()
 		_ = os.Remove(outPath)
@@ -203,7 +180,7 @@ func watchMpayLogin(cmd *exec.Cmd, outPath, targetUserID string) {
 		select {
 		case <-exited:
 			if !readResult() {
-				setMpayLoginState("failed", "登录窗口已关闭，没有拿到登录结果", "", "")
+				mpayLoginTr.set("failed", "登录窗口已关闭，没有拿到登录结果", "", "")
 				return
 			}
 		default:
@@ -213,7 +190,7 @@ func watchMpayLogin(cmd *exec.Cmd, outPath, targetUserID string) {
 
 	if res.Finished == 0 {
 		_ = cmd.Process.Kill()
-		setMpayLoginState("failed", "等待登录超时，请重试", "", "")
+		mpayLoginTr.set("failed", "等待登录超时，请重试", "", "")
 		return
 	}
 
@@ -232,23 +209,23 @@ func watchMpayLogin(cmd *exec.Cmd, outPath, targetUserID string) {
 			logf("官方登录窗失败: %s %s", msg, mpayhost.Describe(res.Slots))
 			msg = "登录没有完成，请重试"
 		}
-		setMpayLoginState("failed", msg, "", "")
+		mpayLoginTr.set("failed", msg, "", "")
 		return
 	}
 
 	token, userID, account, err := resolveMPayCredentials(res)
 	if err != nil {
-		setMpayLoginState("failed", err.Error(), res.Account, "")
+		mpayLoginTr.set("failed", err.Error(), res.Account, "")
 		return
 	}
 	if userID == "" || token == "" {
-		setMpayLoginState("failed", "没有拿到有效的登录凭证", res.Account, "")
+		mpayLoginTr.set("failed", "没有拿到有效的登录凭证", res.Account, "")
 		return
 	}
 
 	// 防串号：给已有账号刷新时，必须还是同一个账号
 	if targetUserID != "" && targetUserID != userID {
-		setMpayLoginState("failed",
+		mpayLoginTr.set("failed",
 			fmt.Sprintf("登录的账号与要刷新的账号不一致（期望 %s，实际 %s），已取消", targetUserID, userID),
 			account, userID)
 		return
@@ -291,13 +268,13 @@ func watchMpayLogin(cmd *exec.Cmd, outPath, targetUserID string) {
 	}
 
 	if err := saveAccount(acc); err != nil {
-		setMpayLoginState("failed", "保存账号失败: "+err.Error(), account, userID)
+		mpayLoginTr.set("failed", "保存账号失败: "+err.Error(), account, userID)
 		return
 	}
 	_ = setCurrent(acc.PlayerID)
 	clearAuthHint()
 	logf("官方窗口登录成功，账号已保存")
-	setMpayLoginState("done", "登录成功，已保存", account, userID)
+	mpayLoginTr.set("done", "登录成功，已保存", account, userID)
 }
 
 // resolveMPayCredentials 把子进程的结果变成 (token, userId, 账号名)。

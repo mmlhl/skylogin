@@ -20,18 +20,16 @@ import (
 )
 
 var (
-	procDwmRegister    = syscall.NewLazyDLL("dwmapi.dll").NewProc("DwmRegisterThumbnail")
-	procDwmUpdateProps = syscall.NewLazyDLL("dwmapi.dll").NewProc("DwmUpdateThumbnailProperties")
-	procDwmUnregister  = syscall.NewLazyDLL("dwmapi.dll").NewProc("DwmUnregisterThumbnail")
+	procDwmRegister    = dwm32.NewProc("DwmRegisterThumbnail")
+	procDwmUpdateProps = dwm32.NewProc("DwmUpdateThumbnailProperties")
+	procDwmUnregister  = dwm32.NewProc("DwmUnregisterThumbnail")
 
-	procPostMessageW  = user32dll.NewProc("PostMessageW")
-	procGetClientRect = user32dll.NewProc("GetClientRect")
-	procIsWindow      = user32dll.NewProc("IsWindow")
-	procLoadCursor    = user32dll.NewProc("LoadCursorW")
-	procGetDpiForWin  = user32dll.NewProc("GetDpiForWindow")
-	procInvalidate    = user32dll.NewProc("InvalidateRect")
-	procClientToScr   = user32dll.NewProc("ClientToScreen")
-	procSetWindowPos  = user32dll.NewProc("SetWindowPos")
+	procPostMessageW = user32dll.NewProc("PostMessageW")
+	procIsWindow     = user32dll.NewProc("IsWindow")
+	procLoadCursor   = user32dll.NewProc("LoadCursorW")
+	procGetDpiForWin = user32dll.NewProc("GetDpiForWindow")
+	procInvalidate   = user32dll.NewProc("InvalidateRect")
+	procSetWindowPos = user32dll.NewProc("SetWindowPos")
 
 	procBeginPaint  = user32dll.NewProc("BeginPaint")
 	procEndPaint    = user32dll.NewProc("EndPaint")
@@ -76,26 +74,23 @@ const (
 
 // WallClient 监控墙的一格：主窗口句柄 + 格子下方显示的标签（账号名）。
 // Ratio 是格子布局用的基准宽高比（一般传主窗口的）；0 = 用主窗口自己的。
-// Overlay 非空时是叠在画面上层的弹窗（等比居中），0 = 没有。
+// Rebind = 这格的缩略图注销重建一次（弹窗出现/消失后让 DWM 重新绑定
+// 主窗表面，弹窗本身由系统合成器自动叠显）。
 type WallClient struct {
-	Hwnd    uintptr
-	Label   string
-	Ratio   float64
-	Overlay uintptr // 保留：双缩略图叠加层（当前未启用）
-	Rebind  bool    // true = 这格的缩略图全部注销重建一次（重新渲染）
+	Hwnd   uintptr
+	Label  string
+	Ratio  float64
+	Rebind bool
 }
 
 // wallTile 一个格子的全部状态（只在墙线程上访问）。
 type wallTile struct {
-	hwnd    uintptr
-	label   string
-	thumb   uintptr    // 主窗口缩略图（铺满格子）
-	hwnd2   uintptr    // 叠加弹窗窗口，0 = 没有
-	thumb2  uintptr    // 弹窗缩略图（等比居中叠在主窗画面上）
-	rect    windowRect // 画面区（墙客户区坐标）
-	stripR  windowRect // 标签条
-	aspect  float64    // 主窗口当前宽高比
-	aspect2 float64    // 弹窗窗口宽高比
+	hwnd   uintptr
+	label  string
+	thumb  uintptr    // 主窗口缩略图（铺满格子）
+	rect   windowRect // 画面区（墙客户区坐标）
+	stripR windowRect // 标签条
+	aspect float64    // 主窗口当前宽高比
 }
 
 var (
@@ -284,9 +279,6 @@ func wallWndProc(hwnd, msg, wparam, lparam uintptr) uintptr {
 			if wallTiles[i].thumb != 0 {
 				procDwmUnregister.Call(wallTiles[i].thumb)
 			}
-			if wallTiles[i].thumb2 != 0 {
-				procDwmUnregister.Call(wallTiles[i].thumb2)
-			}
 		}
 		// 缩略图句柄跟着窗口一起失效，清掉旧格子，下次开墙从零注册
 		wallTiles = nil
@@ -311,60 +303,41 @@ func applyWallUpdate(clients []WallClient) {
 		if r, _, _ := procIsWindow.Call(c.Hwnd); r == 0 {
 			continue
 		}
-		overlay := c.Overlay
-		if overlay == c.Hwnd {
-			overlay = 0
-		}
-		if overlay != 0 {
-			if r, _, _ := procIsWindow.Call(overlay); r == 0 {
-				overlay = 0
-			}
-		}
-		// 复用同主窗的缩略图；窗口数量变化（Rebind）或叠加层换窗时
-		// 全部注销重建——DWM 从头绑定源表面，陈旧的空白帧一并清掉
-		var thumb, thumb2 uintptr
+		// 复用同主窗的缩略图；Rebind（窗口数量变化）时注销重建——
+		// DWM 从头绑定源表面，陈旧的空白帧一并清掉
+		var thumb uintptr
 		for _, old := range wallTiles {
 			if old.hwnd != c.Hwnd {
 				continue
 			}
-			if !c.Rebind && old.hwnd2 == overlay {
-				thumb, thumb2 = old.thumb, old.thumb2
-			} else {
-				if old.thumb != 0 {
-					procDwmUnregister.Call(old.thumb)
-				}
-				if old.thumb2 != 0 {
-					procDwmUnregister.Call(old.thumb2)
-				}
+			if !c.Rebind {
+				thumb = old.thumb
+			} else if old.thumb != 0 {
+				procDwmUnregister.Call(old.thumb)
 			}
 			break
 		}
 		kept = append(kept, wallTile{
-			hwnd:    c.Hwnd,
-			label:   c.Label,
-			thumb:   thumb,
-			hwnd2:   overlay,
-			thumb2:  thumb2,
-			aspect:  clientRatio(c.Ratio, c.Hwnd),
-			aspect2: clientRatio(0, overlay),
+			hwnd:   c.Hwnd,
+			label:  c.Label,
+			thumb:  thumb,
+			aspect: clientRatio(c.Ratio, c.Hwnd),
 		})
 	}
 	// 没被复用的旧缩略图注销
 	for _, old := range wallTiles {
-		for _, th := range []uintptr{old.thumb, old.thumb2} {
-			if th == 0 {
-				continue
+		if old.thumb == 0 {
+			continue
+		}
+		reused := false
+		for _, k := range kept {
+			if k.thumb == old.thumb {
+				reused = true
+				break
 			}
-			reused := false
-			for _, k := range kept {
-				if k.thumb == th || k.thumb2 == th {
-					reused = true
-					break
-				}
-			}
-			if !reused {
-				procDwmUnregister.Call(th)
-			}
+		}
+		if !reused {
+			procDwmUnregister.Call(old.thumb)
 		}
 	}
 
@@ -481,25 +454,6 @@ func relayoutWall() {
 			}
 			procDwmUpdateProps.Call(t.thumb, uintptr(unsafe.Pointer(&props)))
 		}
-		// 弹窗层：等比居中叠在主窗画面上（后注册的在 DWM 合成里靠上）
-		if t.hwnd2 != 0 {
-			if t.thumb2 == 0 {
-				var th32 uintptr
-				if hr, _, _ := procDwmRegister.Call(h, t.hwnd2, uintptr(unsafe.Pointer(&th32))); hr == 0 {
-					wallTiles[i].thumb2 = th32
-					t.thumb2 = th32
-				}
-			}
-			if t.thumb2 != 0 {
-				props := dwmThumbProps{
-					dwFlags:  dwmTnpRectDest | dwmTnpOpacity | dwmTnpVisible,
-					rcDest:   fitInside(wallTiles[i].rect, t.aspect2),
-					opacity:  255,
-					fVisible: 1,
-				}
-				procDwmUpdateProps.Call(t.thumb2, uintptr(unsafe.Pointer(&props)))
-			}
-		}
 	}
 	// 发布位置快照，跨线程的 WallTileCenter 只读这份
 	rects := make([]windowRect, len(wallTiles))
@@ -521,8 +475,8 @@ func WallTileCenter(i int) (int, int, bool) {
 		return 0, 0, false
 	}
 	r := rects[i]
-	pt := trayPoint{X: (r.left + r.right) / 2, Y: (r.top + r.bottom) / 2}
-	procClientToScr.Call(h, uintptr(unsafe.Pointer(&pt)))
+	pt := point{X: (r.left + r.right) / 2, Y: (r.top + r.bottom) / 2}
+	procClientToScreen.Call(h, uintptr(unsafe.Pointer(&pt)))
 	return int(pt.X), int(pt.Y), true
 }
 
