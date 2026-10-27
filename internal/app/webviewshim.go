@@ -16,15 +16,18 @@ package app
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const (
 	shimBrowserName = "webview_support_browser.exe"
 	shimRealName    = "webview_support_browser.real.exe"
+	shimMarkerName  = ".shim-backup"
 )
 
 // IsWebviewShim 判断当前进程是不是被游戏当成浏览器拉起来的。
@@ -137,8 +140,13 @@ func decodeWebviewConfig(s string) (map[string]any, bool) {
 
 // installWebviewShim 在镜像里把浏览器换成本程序的硬链接。
 //
-// 真身改名 .real.exe；我们的 exe 以硬链接方式放进去（同盘零占用）。
+// 真身改名 .real.exe（这就是备份）；我们的 exe 以硬链接方式放进去。
+// 硬防护：只允许改我们自己建的镜像目录，绝不碰游戏本体。
 func installWebviewShim(mirrorRoot string) error {
+	if !isOurMirror(mirrorRoot) {
+		logf("浏览器壳：%s 不是镜像目录，拒绝修改", mirrorRoot)
+		return fmt.Errorf("拒绝修改非镜像目录: %s", mirrorRoot)
+	}
 	cefDir := filepath.Join(mirrorRoot, "webviewsupport.cef904430")
 	browser := filepath.Join(cefDir, shimBrowserName)
 	if _, err := os.Stat(browser); err != nil {
@@ -150,10 +158,13 @@ func installWebviewShim(mirrorRoot string) error {
 	}
 	realExe := filepath.Join(cefDir, shimRealName)
 	if _, err := os.Stat(realExe); err != nil {
+		// 改名就是备份：真身留在同目录，随时可以还原
 		if err := os.Rename(browser, realExe); err != nil {
 			return err
 		}
+		logf("浏览器壳：已备份真身 %s", shimRealName)
 	}
+	_ = os.WriteFile(filepath.Join(cefDir, shimMarkerName), []byte(time.Now().Format(time.RFC3339)+"\n"), 0o644)
 	_ = os.Remove(browser)
 	if err := os.Link(self, browser); err != nil {
 		if err := copyFile(self, browser); err != nil {
@@ -161,6 +172,55 @@ func installWebviewShim(mirrorRoot string) error {
 		}
 	}
 	return nil
+}
+
+// restoreWebviewShim 把镜像里的浏览器还原成真身（删壳、改回原名）。
+//
+// 客户端全部退出后、启动器退出前、下次启动清理残留时都会调。
+// 镜像本来就要删，还原是为了"即使删不掉也不留一个被改过的浏览器"。
+func restoreWebviewShim(mirrorRoot string) {
+	if !isOurMirror(mirrorRoot) {
+		return
+	}
+	cefDir := filepath.Join(mirrorRoot, "webviewsupport.cef904430")
+	browser := filepath.Join(cefDir, shimBrowserName)
+	realExe := filepath.Join(cefDir, shimRealName)
+	if _, err := os.Stat(realExe); err != nil {
+		return // 没有备份，说明没装过壳
+	}
+	if _, err := os.Stat(browser); err == nil {
+		for i := 0; i < 20; i++ { // 游戏可能还没完全退，等它释放文件
+			if err := os.Remove(browser); err == nil {
+				break
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+	}
+	if _, err := os.Stat(browser); err == nil {
+		return // 删不掉就别动真身，免得两个都没了
+	}
+	if err := os.Rename(realExe, browser); err == nil {
+		_ = os.Remove(filepath.Join(cefDir, shimMarkerName))
+	}
+}
+
+// isOurMirror 判断目录是不是我们建的镜像（名字形如 sky-<数字>-<数字>）。
+func isOurMirror(dir string) bool {
+	parts := strings.Split(filepath.Base(dir), "-")
+	if len(parts) != 3 || parts[0] == "" {
+		return false
+	}
+	for _, p := range parts[1:] {
+		if p == "" {
+			return false
+		}
+		for _, r := range p {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // copyFile 整文件复制（硬链接不可用时兜底）。

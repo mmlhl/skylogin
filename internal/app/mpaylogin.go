@@ -418,6 +418,7 @@ func cleanupStaleMirrors() {
 	}
 	root := fever.MirrorRoot(sky, loadConfig().MirrorDir)
 	if fever.CountProcess("sky.exe") == 0 {
+		restoreAllShims(sky, root)
 		fever.RemoveMirrors(sky, root)
 		return
 	}
@@ -427,6 +428,7 @@ func cleanupStaleMirrors() {
 			time.Sleep(5 * time.Second)
 			if fever.CountProcess("sky.exe") == 0 {
 				time.Sleep(5 * time.Second) // 给游戏收尾留点时间
+				restoreAllShims(sky, root)
 				fever.RemoveMirrors(sky, root)
 				if !fever.MirrorRootExists(root) {
 					logf("启动清理：光遇已退出，上次的镜像目录已清理")

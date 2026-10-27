@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -465,6 +466,7 @@ func watchMirrors(exe string) {
 	for i := 0; i < 360; i++ { // 最多盯 30 分钟
 		if liveClients() == 0 {
 			time.Sleep(3 * time.Second) // 给游戏收尾留时间
+			restoreAllShims(exe, root)  // 先把浏览器还原，再删目录
 			fever.RemoveMirrors(exe, root)
 			if !fever.MirrorRootExists(root) {
 				logf("客户端已全部退出，镜像目录已释放")
@@ -495,4 +497,21 @@ func preMint(slot *multiSlot) {
 		return
 	}
 	logf("已预签票据（%s），等游戏来取", displayName(*slot.acc))
+}
+
+// restoreAllShims 把某个游戏的所有镜像里的浏览器壳还原（删壳、真身改回原名）。
+//
+// 客户端退出后、启动器退出前、下次启动清理残留时都调一次；
+// 即使镜像目录删不掉，里面也不会留一个被换过的浏览器。
+func restoreAllShims(exe, root string) {
+	prefix := filepath.Base(filepath.Dir(exe)) + "-"
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() && strings.HasPrefix(e.Name(), prefix) {
+			restoreWebviewShim(filepath.Join(root, e.Name()))
+		}
+	}
 }

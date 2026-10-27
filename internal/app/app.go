@@ -194,7 +194,7 @@ func RunUI(title string) error {
 				logf("托盘启动: %s", msg)
 			}
 		},
-		OnQuit: func() { os.Exit(0) },
+		OnQuit: func() { cleanupOnExit(); os.Exit(0) },
 	})
 
 	if err := win.OpenWebView(url, title, filepath.Join(dataDir(), "webview"), 1400, 900); err != nil {
@@ -202,6 +202,7 @@ func RunUI(title string) error {
 		_ = exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
 		select {}
 	}
+	cleanupOnExit()
 	logf("窗口已关闭，退出")
 	os.Exit(0)
 	return nil
@@ -264,4 +265,18 @@ func toStr(v any) string {
 	default:
 		return fmt.Sprint(t)
 	}
+}
+
+// cleanupOnExit 启动器退出前把镜像里的浏览器壳还原，再尽量删掉镜像目录。
+//
+// 退出路径有三条（关窗口、托盘退出、正常返回），都走这里，
+// 保证即使目录删不掉，也不会在磁盘上留下一个被换过的浏览器。
+func cleanupOnExit() {
+	sky := resolveSkyPath()
+	if sky == "" {
+		return
+	}
+	root := fever.MirrorRoot(sky, loadConfig().MirrorDir)
+	restoreAllShims(sky, root)
+	fever.RemoveMirrors(sky, root)
 }
