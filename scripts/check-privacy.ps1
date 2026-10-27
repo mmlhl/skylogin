@@ -1,4 +1,4 @@
-﻿# 推送前隐私检查：扫描「将要推送的内容」里有没有敏感信息。
+# 推送前隐私检查：扫描「将要推送的内容」里有没有敏感信息。
 #
 # 用法（也可以由 .git/hooks/pre-push 自动调用）：
 #   pwsh -File scripts/check-privacy.ps1
@@ -18,16 +18,21 @@ $allow = @(
     'amdemo0000000000-d',
     '0123456789abcdef',
     'abc***@163.com',
-    'C:\Users\you'
+    'C:\Users\you',
+    'aecfs5n2y4aaaakd',      # 游戏长 id（协议参数，不是个人信息）
+    'aecglf6ee4aaaarz',      # 同上
+    'aebdemo0000000000',
+    'aedemo0000000000'
 )
 
 # 规则：名字 -> 正则
 $rules = [ordered]@{
-    '手机号'   = '\b1[3-9][0-9]{9}\b'
-    '真实邮箱' = '[A-Za-z0-9._%+-]{4,}@(163|126|yeah|qq|gmail|outlook)\.(com|net)'
-    'MPay票据' = '1-eyJ[A-Za-z0-9+/=_-]{40,}'
-    '本机路径' = 'C:\\Users\\[A-Za-z0-9._-]+'
-    '开发路径' = 'E:\\devtools-local'
+    '手机号'     = '\b1[3-9][0-9]{9}\b'
+    '真实邮箱'   = '[A-Za-z0-9._%+-]{4,}@(163|126|yeah|qq|gmail|outlook)\.(com|net)'
+    'MPay票据'   = '1-eyJ[A-Za-z0-9+/=_-]{40,}'
+    '网易用户id' = '\bae[bc][a-z0-9]{10,}\b'
+    '本机路径'   = 'C:\\Users\\[A-Za-z0-9._-]+'
+    '开发路径'   = 'E:\\devtools-local'
 }
 
 $failed = $false
