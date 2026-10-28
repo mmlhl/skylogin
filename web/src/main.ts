@@ -3,14 +3,12 @@
  *
  * 开发预览：URL 带 `?mock=1` 时启用假数据（api/mock.ts），
  * 不需要 Go 后端、不需要编译 exe、不会弹 UAC。
- *
- * 顺带把状态对象挂到 window 上（__skylogin），方便用 DevTools 或 CDP 脚本检查。
+ * 这是纯前端的本地开发模式，发布产物里不带任何假数据，正常使用永远不会进到它。
  */
 import { createApp } from "vue";
 import App from "./App.vue";
 import "./styles/global.css";
 import "./shellkit/shellkit.css";
-import { state, refresh } from "./composables/useAppState";
 
 /** 是否处于"只看界面"的预览模式 */
 const mock = new URLSearchParams(location.search).has("mock");
@@ -21,13 +19,6 @@ async function boot() {
     installMock();
   }
   createApp(App).mount("#app");
-  window.__skylogin = { state, refresh };
 }
 
 boot();
-
-declare global {
-  interface Window {
-    __skylogin?: { state: typeof state; refresh: typeof refresh };
-  }
-}
