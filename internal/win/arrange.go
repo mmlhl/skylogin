@@ -399,6 +399,43 @@ func ArrangeByGrid(cells []ClientCell, cols, rows, wantW, wantH int) int {
 	return moved
 }
 
+// ArrangeByCascade 把客户端窗口按级联堆叠摆一次（监控墙快捷菜单用）。
+// 与 ArrangeByGrid 同款的前置处理（全屏切窗口化、最小化还原、改名），
+// 摆完不做二次校准：级联是带步长的错位扇，引擎把窗口撑到最小尺寸
+// 也不会遮住别的标题条。不使用渐进排列——那会带 5 分钟的漂移回夹，
+// 用户手动挪窗口会被弹回来。
+func ArrangeByCascade(cells []ClientCell, wantW, wantH int) int {
+	if len(cells) == 0 {
+		return 0
+	}
+	g, _ := enterPhysicalPixels()
+	defer g.restore()
+	wa := primaryWorkArea()
+	rects := planCascade(len(cells), wantW, wantH, wa)
+	moved := 0
+	for i, c := range cells {
+		h := MainWindowOfPID(c.PID)
+		if h == 0 {
+			continue
+		}
+		// 全屏的先切窗口化：切换后引擎要重建交换链，稍等再摆
+		if isProbablyFullscreen(h) {
+			forceWindowed(h)
+			time.Sleep(900 * time.Millisecond)
+			if h2 := MainWindowOfPID(c.PID); h2 != 0 {
+				h = h2
+			}
+		}
+		_, _, _ = procShowWindow.Call(h, swRestore)
+		if ret, _, _ := procMoveWindow.Call(h, uintptr(rects[i].left), uintptr(rects[i].top),
+			uintptr(rects[i].right-rects[i].left), uintptr(rects[i].bottom-rects[i].top), 1); ret != 0 {
+			moved++
+		}
+		renameWindow(h, c.Label, i+1)
+	}
+	return moved
+}
+
 // retileIfResized 量实际矩形，有窗口没被摆到位（被引擎撑大/缩小）就按
 // 实际尺寸重排。引擎普遍有最小窗口尺寸（实测 1024×720）：请求的网格比
 // 它小时窗口会被撑大、把网格撑出屏幕——这时按"屏幕能放下几列"收缩列数

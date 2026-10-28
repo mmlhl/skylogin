@@ -124,13 +124,12 @@ func OpenWebLogin(url, title, dataPath string, width, height uint, script string
 
 var procSetWindowLongPtrW = user32dll.NewProc("SetWindowLongPtrW")
 
-// makeSilent 需要的几个系统常量（只在这里用，不进公共常量块）。
+// makeSilent 需要的几个系统常量（wsExNoActivate 定义在 wall.go）。
 const (
-	swHide         = 0
-	wsExNoActivate = 0x08000000
-	swpNoSize      = 0x1
-	swpNoZOrder    = 0x4
-	swpNoActivate  = 0x10
+	swHide        = 0
+	swpNoSize     = 0x1
+	swpNoZOrder   = 0x4
+	swpNoActivate = 0x10
 )
 
 // makeSilent 把刚创建的 WebView 窗口变成"不可见"：挪到屏幕外、不进任务栏、

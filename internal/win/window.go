@@ -19,6 +19,7 @@ var (
 var (
 	procGetWindowRect         = user32dll.NewProc("GetWindowRect")
 	procGetClientRect         = user32dll.NewProc("GetClientRect")
+	procGetClassNameW         = user32dll.NewProc("GetClassNameW")
 	procDwmSetWindowAttribute = dwm32.NewProc("DwmSetWindowAttribute")
 )
 

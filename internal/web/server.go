@@ -79,6 +79,7 @@ type Hooks struct {
 	SaveRailWidth      func(width int) error
 	SaveShell          func(shell int) error
 	LoadShell          func() int
+	MouseState         func() map[string]any // 诊断：多开时鼠标占用与仲裁状态
 }
 
 // Server 是对外的本地 Web 服务。

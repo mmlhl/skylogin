@@ -61,6 +61,7 @@ type Account struct {
 	// 用户不开启"记住登录"时这里为空。
 	SavedUser string `json:"saved_user,omitempty"`
 	SavedPass string `json:"saved_pass,omitempty"` // DPAPI 加密后的 base64
+
 }
 
 // dataDirFn 便于测试时替换成临时目录。
