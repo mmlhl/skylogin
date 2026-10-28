@@ -156,6 +156,9 @@ func stopWallLocked() {
 func wallRefresh() int {
 	pids := runningPids()
 	if len(pids) == 0 {
+		// 客户端全没了：把空列表推给墙清掉旧格子——不推的话墙上会
+		// 永远留着源窗口已消失的白块
+		win.WallUpdate(nil)
 		return 0
 	}
 	labels := clientLabels()
