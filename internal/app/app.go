@@ -198,7 +198,20 @@ func RunUI(title string) error {
 		OnQuit: func() { cleanupOnExit(); os.Exit(0) },
 	})
 
-	if err := win.OpenWebView(url, title, filepath.Join(dataDir(), "webview"), 1400, 900); err != nil {
+	// 主窗口几何记忆：记录在 config 里（物理像素），屏幕换过就不恢复、
+	// 按默认算法重新开，判断在 win 层做（它才知道当前主屏多大）
+	if err := win.OpenWebView(url, title, filepath.Join(dataDir(), "webview"), 1400, 900, win.WebViewHooks{
+		SavedRect: func() (int, int, int, int, int, int, bool) {
+			c := loadConfig()
+			if c.WinW <= 0 || c.WinH <= 0 || c.WinScreenW <= 0 || c.WinScreenH <= 0 {
+				return 0, 0, 0, 0, 0, 0, false
+			}
+			return c.WinX, c.WinY, c.WinW, c.WinH, c.WinScreenW, c.WinScreenH, true
+		},
+		SaveRect: func(x, y, w, h, screenW, screenH int) {
+			_ = saveWinRect(x, y, w, h, screenW, screenH)
+		},
+	}); err != nil {
 		logf("WebView2 窗口启动失败（%v），改用系统浏览器", err)
 		_ = exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
 		select {}
