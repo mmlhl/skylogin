@@ -14,7 +14,9 @@ import (
 	"unsafe"
 )
 
-var procGetForegroundW = user32dll.NewProc("GetForegroundWindow")
+var (
+	procGetForegroundW = user32dll.NewProc("GetForegroundWindow")
+)
 
 // CursorPos 当前光标位置（物理像素）。
 func CursorPos() (int32, int32, bool) {

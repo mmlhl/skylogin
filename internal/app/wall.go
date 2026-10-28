@@ -1,28 +1,109 @@
 package app
 
-// 监控墙管理：开关切换 + 开着时把活着的客户端实时喂给墙。
+// 监控墙管理：开关切换 + 开着时把客户端观测每秒喂给墙。
 //
-// 墙窗口本身在 internal/win（原生窗口 + DWM 缩略图）；这里只负责
-// 每 2 秒枚举一次正在运行的客户端（排列同款的顺序和标签），全量
-// 推给墙。窗口关了轮询自动停，客户端增减、退出都会跟着变。
+// 墙窗口本身在 internal/win（原生窗口 + DWM 缩略图）。这里不做任何
+// "变了没有"的判定——投递纯粹是观测（主窗、标签、有无弹窗），缩略图
+// 何时重建由墙线程根据自己持有的状态决定（episode 收尾模型），投递
+// 丢失也不会漂移。
 
 import (
 	"fmt"
-	"os"
-	"strings"
+	"math"
 	"sync"
 	"time"
 
+	"skylogin/internal/fever"
 	"skylogin/internal/win"
 )
 
 var (
-	wallMu   sync.Mutex
-	wallPoll chan struct{} // 非 nil = 轮询中
+	wallMu       sync.Mutex
+	wallPoll     chan struct{} // 非 nil = 轮询中
+	wallHooksOne sync.Once
 )
+
+// ensureWallHooks 把墙需要的 app 层交互点注入 win 层（开墙前调用一次）。
+func ensureWallHooks() {
+	wallHooksOne.Do(func() {
+		win.SetWallHooks(win.WallHooks{
+			SavedRect: func() (x, y, w, h int, ok bool) {
+				c := loadConfig()
+				if c.WallW > 0 && c.WallH > 0 {
+					return c.WallX, c.WallY, c.WallW, c.WallH, true
+				}
+				return 0, 0, 0, 0, false
+			},
+			RectSink: func(x, y, w, h int) { _ = saveWallRect(x, y, w, h) },
+			Actions: map[string]func(){
+				"tile":    func() { _ = wallArrange("tile") },
+				"cascade": func() { _ = wallArrange("cascade") },
+				"stopall": wallStopAll,
+			},
+			StopClient: wallStopClient,
+		})
+	})
+}
+
+// wallArrange 监控墙快捷菜单：立即重排当前客户端窗口。
+// tile = 自适应正方形网格（16:9 不变形），cascade = 级联堆叠。
+// 一次性摆放，不带渐进排列的漂移回夹——用户手动挪窗口不该被弹回来。
+func wallArrange(mode string) error {
+	cells := clientCells()
+	if len(cells) == 0 {
+		return fmt.Errorf("没有正在运行的客户端")
+	}
+	var moved int
+	if mode == "cascade" {
+		moved = win.ArrangeByCascade(cells, 0, 0)
+	} else {
+		n := len(cells)
+		cols := int(math.Ceil(math.Sqrt(float64(n))))
+		rows := (n + cols - 1) / cols
+		moved = win.ArrangeByGrid(cells, cols, rows, 0, 0)
+	}
+	if moved == 0 {
+		return fmt.Errorf("窗口找到了但移不动（可能权限不够）")
+	}
+	logf("监控墙：快捷菜单重排（%s），%d 个客户端", mode, moved)
+	return nil
+}
+
+// wallStopAll 监控墙快捷菜单：强行停止全部运行中的客户端。
+func wallStopAll() {
+	clientsMu.Lock()
+	ids := make([]string, 0, len(runningByAccount))
+	for id, pid := range runningByAccount {
+		if pid != 0 && fever.ProcessAlive(pid) {
+			ids = append(ids, id)
+		}
+	}
+	clientsMu.Unlock()
+	for _, id := range ids {
+		_ = stopAccount(id)
+	}
+}
+
+// wallStopClient 监控墙格子右上角 ×：按 pid 找到账号并强行停止。
+func wallStopClient(pid uint32) {
+	clientsMu.Lock()
+	var accID string
+	for id, p := range runningByAccount {
+		if p == pid {
+			accID = id
+			break
+		}
+	}
+	clientsMu.Unlock()
+	if accID == "" {
+		return // 窗口还在但路由已回收（正在退出），不必再停
+	}
+	_ = stopAccount(accID)
+}
 
 // ToggleWall 开着就关、关着就开，返回给界面显示的消息。
 func ToggleWall() (string, error) {
+	ensureWallHooks()
 	wallMu.Lock()
 	defer wallMu.Unlock()
 	if win.WallOpen() {
@@ -68,76 +149,29 @@ func stopWallLocked() {
 	}
 }
 
-// wallRefresh 把当前活着的客户端窗口全量推给墙，返回推上去的数量。
+// wallRefresh 把当前活着的客户端观测全量推给墙，返回推上去的数量。
 //
-// 监控源 = 该客户端 Z 序最上层的可见窗口：用户眼睛看到什么，墙就显示
-// 什么——登录骨架/渠道弹窗开着时显示它们（它们盖在游戏上面），关了自动
-// 回到主窗口。格子布局比例固定按主窗口算，源窗口不同就在格子里等比
-// 居中，布局不跳。
+// 监控源 = 客户端主窗口（画面是游戏本身）；登录骨架 / 渠道弹窗开着时
+// 墙仍显示主窗（表面挂起，episode 收尾后墙线程自动重建接回活画面）。
 func wallRefresh() int {
 	pids := runningPids()
 	if len(pids) == 0 {
-		lastWinCount = map[uint32]int{}
 		return 0
 	}
-
-	// 指纹 = 全部客户端的主窗句柄 + 各自窗口数 + 账号文件修改时间。
-	// 指纹没变 = 屏幕上什么都没发生，整轮跳过（每秒巡检的大头就省了）。
-	type item struct {
-		pid   uint32
-		main  uintptr
-		count int
-	}
-	items := make([]item, 0, len(pids))
-	fp := []string{}
+	labels := clientLabels()
+	list := make([]win.WallClient, 0, len(pids))
 	for _, pid := range pids {
 		main := win.MainWindowOfPID(pid)
 		if main == 0 {
 			continue
 		}
-		count := len(win.ZOrderedWindowsOfPid(pid, 200, 150))
-		fp = append(fp, fmt.Sprintf("%d:%#x:%d", pid, main, count))
-		items = append(items, item{pid: pid, main: main, count: count})
-	}
-	if mod := accountsModTime(); !mod.IsZero() {
-		fp = append(fp, mod.Format("20060102150405"))
-	}
-	fingerprint := strings.Join(fp, "|")
-	if fingerprint == lastFingerprint {
-		return len(items)
-	}
-	lastFingerprint = fingerprint
-
-	labels := clientLabels()
-	list := make([]win.WallClient, 0, len(items))
-	for _, it := range items {
-		// 窗口数量变化（登录窗/弹窗出现或消失）→ 该实例缩略图重建一次，
-		// 让 DWM 重新绑定主窗表面；登录窗本身由系统合成显示
-		rebind := lastWinCount[it.pid] != it.count
-		if rebind {
-			lastWinCount[it.pid] = it.count
-			logf("监控墙：pid=%d 窗口数量变为 %d，缩略图重新渲染", it.pid, it.count)
-		}
 		list = append(list, win.WallClient{
-			Hwnd:   it.main,
-			Label:  labels[it.pid],
-			Ratio:  win.WindowAspect(it.main),
-			Rebind: rebind,
+			Hwnd:  main,
+			Pid:   pid,
+			Label: labels[pid],
+			Ratio: win.WindowAspect(main),
 		})
 	}
 	win.WallUpdate(list)
 	return len(list)
-}
-
-var lastFingerprint string
-
-var lastWinCount = map[uint32]int{}
-
-// accountsModTime 账号文件的修改时间（标签缓存失效判定用），拿不到返回零值。
-func accountsModTime() time.Time {
-	fi, err := os.Stat(accountsPath())
-	if err != nil {
-		return time.Time{}
-	}
-	return fi.ModTime()
 }

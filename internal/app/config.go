@@ -32,6 +32,13 @@ type Config struct {
 	// WebView2 每次端口随机，localStorage 记不住，所以存后端。
 	UiShell int `json:"ui_shell,omitempty"`
 
+	// 监控墙上次的窗口位置尺寸（W/H 为 0 = 还没记过，用默认值）。
+	WallX int `json:"wall_x,omitempty"`
+	WallY int `json:"wall_y,omitempty"`
+	WallW int `json:"wall_w,omitempty"`
+	WallH int `json:"wall_h,omitempty"`
+
+
 	// 多开默认设置：启动前写进每个客户端的 preferences.sav（internal/prefs）。
 	// 画质用游戏认识的名字（实测见过 LowPower / Presentation），空 = 跟随游戏；
 	// 帧率 0 = 跟随游戏。窗口模式恒为开（排列的前提）。
@@ -95,6 +102,13 @@ func saveRailWidth(w int) error {
 	}
 	c := loadConfig()
 	c.RailWidth = w
+	return saveConfig(c)
+}
+
+// saveWallRect 保存监控墙窗口的位置尺寸（拖拽结束/关闭时回传）。
+func saveWallRect(x, y, w, h int) error {
+	c := loadConfig()
+	c.WallX, c.WallY, c.WallW, c.WallH = x, y, w, h
 	return saveConfig(c)
 }
 
