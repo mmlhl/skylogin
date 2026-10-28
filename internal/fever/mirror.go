@@ -174,6 +174,9 @@ func MirrorsRemaining(skyExe, root string) int {
 }
 
 // RemoveMirrors 删掉某份安装对应的镜像（其它游戏的不动）。
+// 仍有 sky.exe 在其中运行的镜像会跳过：上一批的清理协程可能和下一批
+// 的启动并发（新镜像刚建好、游戏正在从里面拉起），整目录删除会让新
+// 客户端"UniCrashReporter.exe is missing"式批量闪退。
 func RemoveMirrors(skyExe, root string) {
 	src := filepath.Dir(skyExe)
 	if root == "" {
@@ -186,7 +189,11 @@ func RemoveMirrors(skyExe, root string) {
 	prefix := filepath.Base(src) + "-"
 	for _, e := range entries {
 		if e.IsDir() && strings.HasPrefix(e.Name(), prefix) {
-			removeDir(filepath.Join(root, e.Name()))
+			dir := filepath.Join(root, e.Name())
+			if len(ProcessesFrom(dir)) > 0 {
+				continue
+			}
+			removeDir(dir)
 		}
 	}
 	_ = os.Remove(root)

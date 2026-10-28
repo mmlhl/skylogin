@@ -468,10 +468,11 @@ func watchMirrors(exe string) {
 			time.Sleep(3 * time.Second) // 给游戏收尾留时间
 			restoreAllShims(exe, root)  // 先把浏览器还原，再删目录
 			fever.RemoveMirrors(exe, root)
-			if fever.MirrorsRemaining(exe, root) == 0 {
-				logf("客户端已全部退出，镜像已清理（保留根目录）")
-				return
-			}
+			// 做一轮清理就收工：仍有游戏在用的镜像会被跳过，它们的
+			// 清理由自己批次的观察者或下次启动的清理兜底。旧观察者
+			// 继续空转只会和新批次的启动赛跑。
+			logf("客户端已全部退出，镜像已清理（在用的已跳过）")
+			return
 		}
 		time.Sleep(5 * time.Second)
 	}
@@ -511,7 +512,11 @@ func restoreAllShims(exe, root string) {
 	}
 	for _, e := range entries {
 		if e.IsDir() && strings.HasPrefix(e.Name(), prefix) {
-			restoreWebviewShim(filepath.Join(root, e.Name()))
+			dir := filepath.Join(root, e.Name())
+			if len(fever.ProcessesFrom(dir)) > 0 {
+				continue // 还在用的镜像不动（浏览器壳还原会让运行中的游戏找不到文件）
+			}
+			restoreWebviewShim(dir)
 		}
 	}
 }
