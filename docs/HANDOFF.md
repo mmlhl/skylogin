@@ -53,11 +53,15 @@ web UI (Vue, dist 内嵌) ──/api/*──> 登录器 (Go, 管理员运行)
 
 ## 已知坑（都有过血的教训）
 
-1. **DPI 虚拟化**：登录器进程不是 DPI 感知的。普通 goroutine 里
+1. **DPI 虚拟化**：进程整体不是 DPI 感知的，普通 goroutine 里
    `GetWindowRect`/`SetCursorPos` 拿到和设置的都是虚拟坐标（125% 缩放下
-   差 25%），点击全部落空。需要物理坐标时先
-   `SetProcessDpiAwarenessContext(-4)` 或用 `win.enterPhysicalPixels`
-   （arrange.go）。排查输入"不生效"时先查这个。
+   差 25%）。两个例外都靠"锁 OS 线程 + 临时切 PMv2"：游戏窗口排列
+   （arrange.go `enterPhysicalPixels`）和主界面窗口（webview.go，建窗前
+   切换并 `LockOSThread` 钉死，窗口因此恒为 PMv2、坐标全是物理像素）。
+   感知切换只对本线程生效，goroutine 迁移会把切换留在旧线程上——所以
+   这两处必须锁线程。排查输入"不生效"或几何对不上时先查这个。
+   主窗位置尺寸的记忆在 win/wingeo.go：物理像素存 config（win_x/...），
+   恢复前先对主屏分辨率，对不上就走默认算法（设计尺寸 × DPI 夹进工作区）。
 2. **单实例互斥 + 提权**：skylogin 和 Sky.exe 都是管理员；用普通权限
    进程测试它们的 IPC/窗口行为会拿到误导性结果。
 3. **镜像清理竞态**（已修，9618b26）：镜像清理观察者按 `sky-*` 前缀

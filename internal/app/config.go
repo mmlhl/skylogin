@@ -38,6 +38,16 @@ type Config struct {
 	WallW int `json:"wall_w,omitempty"`
 	WallH int `json:"wall_h,omitempty"`
 
+	// 主界面上次的窗口位置尺寸（物理像素，见 win/wingeo.go）。
+	// WinScreenW/H 是记录时的主屏物理分辨率：恢复前先对一对，
+	// 屏幕换过（换显示器/改分辨率）就丢弃记录，按默认算法重新开。
+	WinX       int `json:"win_x,omitempty"`
+	WinY       int `json:"win_y,omitempty"`
+	WinW       int `json:"win_w,omitempty"`
+	WinH       int `json:"win_h,omitempty"`
+	WinScreenW int `json:"win_screen_w,omitempty"`
+	WinScreenH int `json:"win_screen_h,omitempty"`
+
 
 	// 多开默认设置：启动前写进每个客户端的 preferences.sav（internal/prefs）。
 	// 画质用游戏认识的名字（实测见过 LowPower / Presentation），空 = 跟随游戏；
@@ -109,6 +119,15 @@ func saveRailWidth(w int) error {
 func saveWallRect(x, y, w, h int) error {
 	c := loadConfig()
 	c.WallX, c.WallY, c.WallW, c.WallH = x, y, w, h
+	return saveConfig(c)
+}
+
+// saveWinRect 保存主界面的窗口位置尺寸（物理像素 + 当时的主屏分辨率，
+// 由 win 层停稳后/关窗前回传）。
+func saveWinRect(x, y, w, h, screenW, screenH int) error {
+	c := loadConfig()
+	c.WinX, c.WinY, c.WinW, c.WinH = x, y, w, h
+	c.WinScreenW, c.WinScreenH = screenW, screenH
 	return saveConfig(c)
 }
 

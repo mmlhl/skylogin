@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"time"
 
@@ -12,37 +13,76 @@ import (
 
 // OpenWebView 用一个 WebView2 窗口打开本地页面，阻塞直到窗口关闭。
 // dataPath 用于存放 WebView2 的缓存与本地存储（放在我们自己的目录里，避免污染系统）。
-func OpenWebView(url, title, dataPath string, width, height uint) error {
+//
+// width/height 是设计逻辑尺寸（96 DPI 下的像素）。实际开窗大小按主屏 DPI
+// 等比放大并夹进工作区——本线程建出的窗口是 DPI 感知的，坐标就是物理
+// 像素，不放大在高缩放屏上窗口只有应有的一半大。有几何记录（hooks）
+// 且主屏分辨率没变时直接恢复记录，没有才用上面的默认算法。
+func OpenWebView(url, title, dataPath string, width, height uint, hooks WebViewHooks) error {
 	if width == 0 {
 		width = 980
 	}
 	if height == 0 {
 		height = 720
 	}
-	w := webview2.NewWithOptions(webview2.WebViewOptions{
+	// 建窗 + 消息循环钉在同一个 OS 线程上：感知切换只对本线程生效，
+	// goroutine 一迁移线程上下文就留在旧线程上了，窗口的 DPI 行为必须
+	// 从头到尾钉死，不能看调度运气。
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	// 本线程建出的窗口按 PMv2 处理：高分屏不糊，坐标全是物理像素，
+	// 与监控墙线程同一套约定。线程随窗口退出，不用恢复。
+	_, _ = enterPhysicalPixels()
+
+	wa := primaryWorkArea()
+	workW, workH := int(wa.right-wa.left), int(wa.bottom-wa.top)
+	dpi, _, _ := procGetDpiForSystem.Call()
+	if dpi == 0 {
+		dpi = 96
+	}
+	// 默认算法：设计尺寸 × 屏幕缩放，夹进工作区后在工作区居中
+	w, h := fitInWorkArea(int(width)*int(dpi)/96, int(height)*int(dpi)/96, workW, workH)
+	x, y := int(wa.left)+(workW-w)/2, int(wa.top)+(workH-h)/2
+	// 有记录且主屏分辨率没变 → 恢复记录；屏幕换了/没记录 → 用默认算法
+	if hooks.SavedRect != nil {
+		curW, curH := primaryScreenSize()
+		if sx, sy, sw, sh, ssw, ssh, ok := hooks.SavedRect(); ok &&
+			ssw == curW && ssh == curH && saneWinRect(sx, sy, sw, sh) {
+			x, y, w, h = sx, sy, sw, sh
+		}
+	}
+
+	wv := webview2.NewWithOptions(webview2.WebViewOptions{
 		Debug:     false,
 		DataPath:  filepath.Clean(dataPath),
 		AutoFocus: true,
 		WindowOptions: webview2.WindowOptions{
 			Title:  title,
-			Width:  width,
-			Height: height,
-			Center: true,
+			Width:  uint(w),
+			Height: uint(h),
+			Center: false,
 		},
 	})
-	if w == nil {
+	if wv == nil {
 		return errors.New("创建 WebView2 窗口失败（可能没有安装 WebView2 运行时）")
 	}
-	defer w.Destroy()
+	defer wv.Destroy()
 
-	hwnd := uintptr(w.Window())
+	hwnd := uintptr(wv.Window())
 	atomic.StoreUintptr(&mainWindowHwnd, hwnd)
+	// 库只会按整屏居中，任务栏在下面时会压住底边，统一按工作区摆位
+	setWinRect(hwnd, x, y, w, h)
 	applyDarkFrame(hwnd)
 	if exe, err := os.Executable(); err == nil {
 		SetWindowIcon(hwnd, exe)
 	}
 
-	w.Navigate(url)
+	// 几何记忆：每秒采样，停稳落盘；窗口关闭前再补最后一帧
+	tracker := &winGeoTracker{hooks: hooks}
+	stop := make(chan struct{})
+	go tracker.run(hwnd, stop)
+
+	wv.Navigate(url)
 
 	// 窗口真正显示后再设一次深色标题栏（部分系统在建窗时设了不生效）
 	go func() {
@@ -50,7 +90,9 @@ func OpenWebView(url, title, dataPath string, width, height uint) error {
 		applyDarkFrame(hwnd)
 	}()
 
-	w.Run() // 阻塞到窗口关闭
+	wv.Run() // 阻塞到窗口关闭
+	close(stop)
+	tracker.flush() // 关窗前最后一两秒的挪动轮询没来得及落盘，这里补上
 	return nil
 }
 
