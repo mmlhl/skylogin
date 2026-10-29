@@ -55,7 +55,8 @@ watch(
       ? store.accounts.filter((a) => demoUi.multiPreset.includes(a.id)).map((a) => a.id)
       : store.accounts.filter((a) => a.current || (!a.running && a.cred === "ok")).map((a) => a.id);
     layoutKey.value = recommendLayout(Math.max(picked.value.filter((id) => !isRunning(id)).length, 1)).key;
-    display.value = "tile";
+    // 打开时就按待启动数量定默认：>4 平铺放不下（引擎最小 1024×720），直接堆叠
+    display.value = picked.value.filter((id) => !isRunning(id)).length > 4 ? "cascade" : "tile";
     const d = store.multiDefaults();
     qMode.value = d.qualityMode;
     qFps.value = d.fps;
@@ -239,7 +240,7 @@ function confirmRename() {
 
       <p class="mlabel">显示方式<em class="mrec">{{ cascadeOnly ? "超过 4 个不建议平铺，堆叠 / 全屏都可以" : "全屏 = 每个都占整屏，用监控墙切换" }}</em></p>
       <div class="segs">
-        <button :class="{ on: display === 'tile' }" :disabled="cascadeOnly" @click="display = 'tile'">窗口平铺</button>
+        <button :class="{ on: display === 'tile', off: cascadeOnly }" :disabled="cascadeOnly" :title="cascadeOnly ? '超过 4 个窗口放不下平铺' : ''" @click="display = 'tile'">窗口平铺</button>
         <button :class="{ on: display === 'cascade' }" @click="display = 'cascade'">窗口堆叠</button>
         <button :class="{ on: display === 'fullscreen' }" @click="display = 'fullscreen'">全屏</button>
       </div>
@@ -744,6 +745,10 @@ function confirmRename() {
   font-family: inherit;
   font-size: 12px;
   cursor: pointer;
+}
+.segs button.off {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 .segs button.on {
   border-color: rgba(227, 194, 138, 0.55);

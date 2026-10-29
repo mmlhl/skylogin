@@ -45,6 +45,7 @@ var (
 	procDeleteObject  = gdi32.NewProc("DeleteObject")
 	procCreateSolidBr = gdi32.NewProc("CreateSolidBrush")
 	procCreatePen     = gdi32.NewProc("CreatePen")
+	procRoundRect     = gdi32.NewProc("RoundRect")
 	procMoveToEx      = gdi32.NewProc("MoveToEx")
 	procLineTo        = gdi32.NewProc("LineTo")
 
@@ -116,10 +117,17 @@ type WallHooks struct {
 }
 
 // wallMenu 快捷菜单按钮（顶栏，从左到右）。
-var wallMenu = []struct{ id, text string }{
-	{"tile", "平铺"},
-	{"cascade", "堆叠"},
-	{"stopall", "全部停止"},
+// 排列方案与多开弹窗同一套（dual 默认）；danger 类按钮红调示警。
+var wallMenu = []struct {
+	id, text string
+	danger   bool
+}{
+	{"tile", "平铺", false},
+	{"dual", "双摞", false},
+	{"rows", "两行", false},
+	{"cols", "两列", false},
+	{"fan", "满扇", false},
+	{"stopall", "全部停止", true},
 }
 
 // trackMouseEvent 是 TRACKMOUSEEVENT（收 WM_MOUSELEAVE 用）。
@@ -152,12 +160,14 @@ var (
 	wallFont  uintptr
 	wallRatio float64 // 画面宽高比（来自源窗口客户区），默认 64:45
 	// 界面小部件的画笔/画刷（墙线程创建、退出时销毁）
-	wallRedBrush   uintptr // 强停按钮悬停时的深红底
-	wallLightBrush uintptr // 强停按钮平时的浅红底
-	wallWhitePen   uintptr // 悬停时的白色 ×
-	wallRedPen     uintptr // 平时的红 ×
-	wallBtnBrush   uintptr // 菜单按钮底色
-	wallFrameBrush uintptr // 菜单按钮边框
+	wallRedBrush    uintptr // 强停按钮悬停时的深红底
+	wallLightBrush  uintptr // 强停按钮平时的浅红底
+	wallWhitePen    uintptr // 悬停时的白色 ×
+	wallRedPen      uintptr // 平时的红 ×
+	wallBtnBrush    uintptr // 菜单按钮淡金底
+	wallBtnDanger   uintptr // 危险按钮淡红底
+	wallBtnFrame    uintptr // 按钮边框画笔
+	wallBtnFrameHot uintptr // 悬停/强调边框画笔
 	// 墙线程在 wallMu 下维护的格子位置快照，给 WallTileCenter 跨线程读
 	wallRects []windowRect
 )
@@ -280,8 +290,12 @@ func runWall(ready chan<- error) {
 	// 界面小部件：红底白 ×、菜单按钮
 	wallRedBrush, _, _ = procCreateSolidBr.Call(0x003539E5)   // 悬停底色 RGB(229,57,53)，COLORREF 是 BGR
 	wallLightBrush, _, _ = procCreateSolidBr.Call(0x00E5E7FA) // 平时底色 RGB(250,231,229)
-	wallBtnBrush, _, _ = procCreateSolidBr.Call(0x00FFFFFF)
-	wallFrameBrush, _, _ = procCreateSolidBr.Call(0x00909090)
+	// 菜单按钮：与应用主题一致的配色（米白底 + 浅灰边 + 深字，
+	// 排列方案按钮 hover 感的金色点缀、危险按钮红调）
+	wallBtnBrush, _, _ = procCreateSolidBr.Call(0x00F4EFDF)      // 淡金底 RGB(223,239,244)→BGR
+	wallBtnDanger, _, _ = procCreateSolidBr.Call(0x00DDE8FB)     // 淡红底 RGB(251,232,221)
+	wallBtnFrame, _, _ = procCreatePen.Call(0, 1, 0x00B8C6D8)    // 柔和蓝灰边 RGB(216,198,184)
+	wallBtnFrameHot, _, _ = procCreatePen.Call(0, 1, 0x007CA8BC) // 主题金边 RGB(188,168,124)
 	penW := int32(dpi) * 2 / 96
 	if penW < 2 {
 		penW = 2
@@ -304,13 +318,15 @@ func runWall(ready chan<- error) {
 		procDispatchMsg.Call(uintptr(unsafe.Pointer(&msg)))
 	}
 
-	for _, res := range []uintptr{wallFont, wallRedBrush, wallLightBrush, wallWhitePen, wallRedPen, wallBtnBrush, wallFrameBrush} {
+	for _, res := range []uintptr{wallFont, wallRedBrush, wallLightBrush, wallWhitePen, wallRedPen,
+		wallBtnBrush, wallBtnDanger, wallBtnFrame, wallBtnFrameHot} {
 		if res != 0 {
 			procDeleteObject.Call(res)
 		}
 	}
 	wallFont = 0
-	wallRedBrush, wallWhitePen, wallBtnBrush, wallFrameBrush = 0, 0, 0, 0
+	wallRedBrush, wallWhitePen = 0, 0
+	wallBtnBrush, wallBtnDanger, wallBtnFrame, wallBtnFrameHot = 0, 0, 0, 0
 	wallMu.Lock()
 	wallHwnd = 0
 	wallMu.Unlock()
@@ -747,17 +763,28 @@ func paintWall(hwnd uintptr) {
 	paintWallMenu(hdc)
 }
 
-// paintWallMenu 画顶栏快捷菜单按钮。
+// paintWallMenu 画顶栏快捷菜单按钮：圆角胶囊底 + 主题配色，
+// 危险按钮（全部停止）红调与排列按钮区分开。
 func paintWallMenu(hdc uintptr) {
 	for i, b := range wallMenu {
 		if i >= len(wallMenuRects) {
 			break
 		}
 		r := wallMenuRects[i]
-		procFillRect.Call(hdc, uintptr(unsafe.Pointer(&r)), wallBtnBrush)
-		procFrameRect.Call(hdc, uintptr(unsafe.Pointer(&r)), wallFrameBrush)
+		fill, frame := wallBtnBrush, wallBtnFrame
+		textColor := uintptr(0x00443EBE) // 主题金棕 RGB(190,62,68)
+		if b.danger {
+			fill, frame, textColor = wallBtnDanger, wallBtnFrame, uintptr(0x002A50D8) // 红 RGB(216,80,42)
+		}
+		// 圆角胶囊：先底色再描边（RoundRect 用当前画笔画轨、画刷填充）
+		oldBr, _, _ := procSelectObject.Call(hdc, fill)
+		oldPen, _, _ := procSelectObject.Call(hdc, frame)
+		procRoundRect.Call(hdc, uintptr(r.left), uintptr(r.top), uintptr(r.right), uintptr(r.bottom),
+			uintptr(r.bottom-r.top)/2, uintptr(r.bottom-r.top)/2)
+		procSelectObject.Call(hdc, oldPen)
+		procSelectObject.Call(hdc, oldBr)
 		text, _ := syscall.UTF16PtrFromString(b.text)
-		procSetTextColor.Call(hdc, 0x00202020)
+		procSetTextColor.Call(hdc, textColor)
 		procDrawTextW.Call(hdc, uintptr(unsafe.Pointer(text)), ^uintptr(0),
 			uintptr(unsafe.Pointer(&r)), dtCenter|dtVCenter|dtSingleLine)
 		procSetTextColor.Call(hdc, 0x003A3A3A)
