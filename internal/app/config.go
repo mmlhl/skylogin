@@ -135,12 +135,23 @@ func saveWinRect(x, y, w, h, screenW, screenH int) error {
 	return saveConfig(c)
 }
 
-// saveShell 保存界面壳偏好（越界回 0）。
+// saveShell 保存界面壳偏好。存储用 1-based（0..3 → 1..4）：
+// 0 留给"从未设置"，让 LoadShell 能区分"没选过"（回默认壳=控制台）
+// 和"明确选了账号库（索引 0）"。
 func saveShell(shell int) error {
-	if shell < 0 || shell > 9 {
+	if shell < 0 || shell > 3 {
 		shell = 0
 	}
 	c := loadConfig()
-	c.UiShell = shell
+	c.UiShell = shell + 1
 	return saveConfig(c)
+}
+
+// loadShellIndex 读壳偏好；从未设置返回 -1（前端用默认壳=控制台）。
+func loadShellIndex() int {
+	v := loadConfig().UiShell
+	if v <= 0 || v > 4 {
+		return -1
+	}
+	return v - 1
 }
