@@ -12,6 +12,7 @@ import (
 
 	"skylogin/internal/fever"
 	"skylogin/internal/win"
+	"strings"
 )
 
 // runningPids 按启动顺序返回活着的客户端 pid（网格按这个顺序填充）。
@@ -129,20 +130,62 @@ func arrangeWhenReady(cols, rows, w, h int, mode string) {
 			return
 		}
 
-		// 等第一个窗口出来就立刻开排（pid 启动瞬间就有，不能当信号）；
-		// 探测间隔压到 300ms，窗口一创建马上就会被摆进格位
-		deadline := time.Now().Add(3 * time.Minute)
-		for time.Now().Before(deadline) {
-			time.Sleep(300 * time.Millisecond)
-			if len(runningPids()) == 0 {
-				logf("自动排列：客户端都已退出，不排了")
+		// 启动批次快照：这一批 pid 的"发票成功"作为排列的业务信号——
+		// 票据发出且被游戏接受 = 凭证链路已通、客户端已站稳。比纯看窗口
+		// 出现靠谱：窗口出现时引擎还在初始化，也分不清凭证有没有问题。
+		batch := runningPids()
+		crashed := []string{}
+		waitDeadline := time.Now().Add(3 * time.Minute)
+		allSentAt := time.Time{}
+		for time.Now().Before(waitDeadline) {
+			time.Sleep(500 * time.Millisecond)
+			if len(runningPids()) == 0 && len(batch) == 0 {
 				return
 			}
-			if win.CountClientWindows(runningPids()) >= 1 {
-				break
+			st := batchStatus(batch)
+			pending := 0 // 还活着但票还没发出去的
+			for _, c := range st {
+				if c.Alive && !c.TicketSent {
+					pending++
+				}
+				if !c.Alive && !c.TicketSent && c.Name != "" {
+					// 启动等待期进程消失 = 闪退（或被单实例拦截）。
+					// 持续到超时的（凭证一直没通）排列兜底，不算闪退。
+					crashed = append(crashed, c.Name)
+				}
+			}
+			// 闪退的从批次里剔除，别让死 pid 挡住排列
+			if alive := liveBatchPids(st); len(alive) < len(batch) {
+				batch = alive
+			}
+			if pending == 0 {
+				// 存活的都发票了：再给 3 秒宽限（游戏消化票据、
+				// 可能连续要几张票），然后开始排列
+				if allSentAt.IsZero() {
+					allSentAt = time.Now()
+					logf("自动排列：全部客户端凭证链路已通，%d 个待排列（%d 个闪退）", len(batch), len(crashed))
+				}
+				if time.Since(allSentAt) >= 3*time.Second {
+					break
+				}
+			} else {
+				allSentAt = time.Time{}
+			}
+			if len(batch) == 0 {
+				break // 全军覆没
 			}
 		}
+		if len(crashed) > 0 {
+			setLaunchAlert("有客户端闪退",
+				fmt.Sprintf("以下客户端在启动期间退出了：%s。常见原因：游戏单实例拦截、镜像被占用或凭证问题。可稍后单独再启动它们。",
+					strings.Join(dedupeStrings(crashed), "、")))
+		}
+
 		cells := clientCells()
+		if len(cells) == 0 {
+			logf("自动排列：没有存活客户端，跳过")
+			return
+		}
 		moved := win.ProgressiveArrange(cells, mode, cols, rows, w, h)
 		if moved == 0 {
 			logf("自动排列失败: 窗口找到了但移不动（可能权限不够）")
@@ -151,6 +194,30 @@ func arrangeWhenReady(cols, rows, w, h int, mode string) {
 		logf("自动排列: %d/%d 个客户端已就位", moved, len(cells))
 		autoOpenWall()
 	}()
+}
+
+// liveBatchPids 从批次状态里挑出还活着的 pid。
+func liveBatchPids(st []BatchClientStatus) []uint32 {
+	out := make([]uint32, 0, len(st))
+	for _, c := range st {
+		if c.Alive {
+			out = append(out, c.PID)
+		}
+	}
+	return out
+}
+
+// dedupeStrings 保序去重。
+func dedupeStrings(in []string) []string {
+	seen := map[string]bool{}
+	out := in[:0]
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // autoOpenWall 3 个以上客户端时自动打开监控墙：游戏窗口最小 1024×720，

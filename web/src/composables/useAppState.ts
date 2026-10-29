@@ -42,6 +42,7 @@ function emptyState(): AppState {
       protocol: "",
     },
     authHint: {},
+    launchAlert: null,
     version: "",
   };
 }

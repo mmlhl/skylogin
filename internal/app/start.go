@@ -263,6 +263,7 @@ type multiSlot struct {
 	seq        int64 // 启动顺序（窗口排列按这个顺序铺格子）
 	createdAt  time.Time
 	firstReply time.Time // 本轮应答窗口起点（超过 replyWindow 重新计数）
+	ticketSent time.Time // 首张票成功发出的时间（排列时机的业务信号：发票=凭证链路通）
 	lastTicket time.Time
 	ready      chan struct{} // 预签完成（无论成败都会 close；nil 表示没有预签）
 	ticketErr  error         // 预签结果

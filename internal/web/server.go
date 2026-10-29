@@ -66,6 +66,7 @@ type Hooks struct {
 	ChannelLoginStart  func(key, targetUserID string) error
 	ChannelLoginStatus func(key string) map[string]any
 	AuthHint           func() map[string]any
+	LaunchAlert        func() map[string]any
 	Version            func() string
 	Reregister         func(mode string) (string, error)
 	SetDeviceID        func(id string) error
@@ -134,8 +135,9 @@ func (s *Server) Handler() http.Handler {
 			"settings": safeSettings(s.hooks.Settings),
 			"scan":     safeScan(s.hooks.ScanNow),
 
-			"authHint": safeMap(s.hooks.AuthHint),
-			"version":  safeStatus(s.hooks.Version),
+			"authHint":    safeMap(s.hooks.AuthHint),
+			"launchAlert": safeMap(s.hooks.LaunchAlert),
+			"version":     safeStatus(s.hooks.Version),
 		})
 	})
 

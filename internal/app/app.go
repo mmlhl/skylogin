@@ -157,6 +157,7 @@ func RunUI(title string) error {
 		ChannelLoginStart:  StartChannelWebLogin,
 		ChannelLoginStatus: ChannelLoginStatus,
 		AuthHint:           authHintView,
+		LaunchAlert:        launchAlertView,
 		Version:            func() string { return Version },
 		SaveRailWidth:      saveRailWidth,
 		SaveShell:          saveShell,

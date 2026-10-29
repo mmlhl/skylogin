@@ -62,3 +62,31 @@ func authHintView() map[string]any {
 		"accountId": currentHint.AccountID,
 	}
 }
+
+// launchAlert 一次性启动事件弹窗（如客户端闪退）。带递增 id，
+// 前端记住已展示的 id 就不会重复弹；内容只保留最近一条。
+var (
+	launchAlertMu  sync.Mutex
+	launchAlertVal map[string]any
+	launchAlertSeq int64
+)
+
+// setLaunchAlert 推一条启动事件弹窗（覆盖上一条）。
+func setLaunchAlert(title, message string) {
+	launchAlertMu.Lock()
+	defer launchAlertMu.Unlock()
+	launchAlertSeq++
+	launchAlertVal = map[string]any{
+		"id":      launchAlertSeq,
+		"title":   title,
+		"message": message,
+	}
+	logf("启动事件：%s — %s", title, message)
+}
+
+// launchAlertView 给 /api/state 的弹窗字段（nil = 没有新事件）。
+func launchAlertView() map[string]any {
+	launchAlertMu.Lock()
+	defer launchAlertMu.Unlock()
+	return launchAlertVal
+}
