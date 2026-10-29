@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"skylogin/internal/channel"
+	"skylogin/internal/secretfile"
 )
 
 func accountsPath() string { return filepath.Join(dataDir(), "accounts.json") }
@@ -41,13 +42,17 @@ func managedChannel(ch string) bool {
 }
 
 func loadAccounts() ([]Account, error) {
-	b, err := os.ReadFile(accountsPath())
+	b, err := secretfile.ReadFile(accountsPath())
 	if err != nil {
 		return nil, err
 	}
 	var list []Account
 	if err := json.Unmarshal(b, &list); err != nil {
 		return nil, err
+	}
+	// 旧版明文文件：解析成功立即升级成加密存储（自动迁移，无感）
+	if !secretfile.IsEncrypted(accountsPath()) && len(list) > 0 {
+		_ = saveList(list)
 	}
 	// 脏数据修复：改过就回写一次，下次读到的就是干净的
 	fixed := false
@@ -83,7 +88,7 @@ func saveList(list []Account) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(accountsPath(), b, 0o600)
+	return secretfile.WriteFile(accountsPath(), b, 0o600)
 }
 
 func saveAccount(a Account) error {

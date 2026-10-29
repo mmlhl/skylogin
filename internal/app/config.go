@@ -2,8 +2,9 @@ package app
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
+
+	"skylogin/internal/secretfile"
 )
 
 // Config 是用户的本地设置。
@@ -48,7 +49,6 @@ type Config struct {
 	WinScreenW int `json:"win_screen_w,omitempty"`
 	WinScreenH int `json:"win_screen_h,omitempty"`
 
-
 	// 多开默认设置：启动前写进每个客户端的 preferences.sav（internal/prefs）。
 	// 画质用游戏认识的名字（实测见过 LowPower / Presentation），空 = 跟随游戏；
 	// 帧率 0 = 跟随游戏。窗口模式恒为开（排列的前提）。
@@ -80,9 +80,13 @@ func configPath() string { return filepath.Join(dataDir(), "config.json") }
 
 func loadConfig() Config {
 	var c Config
-	b, err := os.ReadFile(configPath())
+	b, err := secretfile.ReadFile(configPath())
 	if err == nil {
 		_ = json.Unmarshal(b, &c)
+		// 旧版明文：解析成功立即升级成加密存储
+		if !secretfile.IsEncrypted(configPath()) {
+			_ = saveConfig(c)
+		}
 	}
 	return c
 }
@@ -92,7 +96,7 @@ func saveConfig(c Config) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(configPath(), b, 0o600)
+	return secretfile.WriteFile(configPath(), b, 0o600)
 }
 
 // 左栏宽度的允许范围与默认值。

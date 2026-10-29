@@ -3,7 +3,6 @@ package app
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -11,6 +10,7 @@ import (
 	"skylogin/internal/huawei"
 	"skylogin/internal/profile"
 	"skylogin/internal/protocol"
+	"skylogin/internal/secretfile"
 )
 
 // performLogin 完成 华为扫码结果 → ST → access_token → gameAuthSign → 保存账号。
@@ -27,7 +27,7 @@ func performLogin(sess *huawei.Client, scan *huawei.ScanReply, log func(string))
 	// 先把扫码结果落盘：换 ST 失败时可以据此排查/重试，不用重新扫
 	record := sess.Snapshot(scan)
 	if rec, err := json.MarshalIndent(record, "", "  "); err == nil {
-		_ = os.WriteFile(filepath.Join(dataDir(), "last_scan.json"), rec, 0o600)
+		_ = secretfile.WriteFile(filepath.Join(dataDir(), "last_scan.json"), rec, 0o600)
 	}
 
 	logf("扫码成功 userID=%s account=%s accountType=%s siteID=%s qrCode=%s", scan.UserID, scan.UserAccount, scan.AccountType, scan.SiteID, record.QrCode)
