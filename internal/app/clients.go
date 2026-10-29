@@ -658,6 +658,9 @@ func recoverRunningClients() {
 		logf("恢复：重建 IPC 宿主失败: %v", err)
 	}
 	hostMu.Unlock()
+	// 上次会话若开着监控墙（3+ 客户端），重启后自动再开——"重启登录器
+	// 一切照旧"，不该让用户手动找开关
+	autoOpenWall()
 	logf("已恢复 %d 个运行中客户端的识别（%d 个未识别）", len(got), len(unknown))
 }
 

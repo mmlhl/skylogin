@@ -71,6 +71,7 @@ const (
 	// 焦点不被打断，仲裁的"谁在前台"判断也不受墙干扰）；切客户端由
 	// wallClick 主动做完整交接
 	wsExNoActivate = 0x08000000
+	wsExAppwindow  = 0x00040000
 	idcArrow       = 32512
 	colorBtnFace   = 15
 
@@ -270,7 +271,9 @@ func runWall(ready chan<- error) {
 	}
 
 	title, _ := syscall.UTF16PtrFromString("光遇登录器 · 监控墙")
-	hwnd, _, _ := procCreateWinEx.Call(wsExNoActivate, uintptr(unsafe.Pointer(clsName)),
+	// APPWINDOW：任务栏 / Alt+Tab 里能看到监控墙（不然窗口被盖住后很难找回）。
+	// NOACTIVATE 保留：点墙仍然不抢游戏前台（多开挂机的核心约束）。
+	hwnd, _, _ := procCreateWinEx.Call(wsExNoActivate|wsExAppwindow, uintptr(unsafe.Pointer(clsName)),
 		uintptr(unsafe.Pointer(title)), wsOverlappedWindow|wsVisible,
 		uintptr(x), uintptr(y), uintptr(w), uintptr(h),
 		0, 0, hInst, 0)
