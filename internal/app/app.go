@@ -178,6 +178,9 @@ func RunUI(title string) error {
 	// 后台修一下历史遗留的"别名是用户 id"的记录（不阻塞界面）
 	go repairBareAccountNames()
 	go cleanupStaleMirrors()
+	// 上次关掉登录器后还在跑的游戏客户端：按窗口标题把路由认回来，
+	// 状态显示 / 监控墙 / 取票应答才能继续工作
+	go recoverRunningClients()
 
 	// 鼠标仲裁：多开时防止后台客户端自认持有鼠标（进大厅后抢焦点、
 	// 持续把光标拉回窗口中心）。客户端 <2 个时空转。

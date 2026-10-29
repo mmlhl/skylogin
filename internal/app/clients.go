@@ -23,6 +23,9 @@ import (
 	"skylogin/internal/device"
 	"skylogin/internal/fever"
 	"skylogin/internal/prefs"
+	"skylogin/internal/win"
+	"sort"
+	"strconv"
 )
 
 const (
@@ -562,4 +565,118 @@ func restoreAllShims(exe, root string) {
 			restoreWebviewShim(dir)
 		}
 	}
+}
+
+// recoverRunningClients 登录器重启后，把"上次启动、还在跑"的游戏客户端
+// 重新认回来：枚举 Sky.exe 主窗口，标题 "N · 账号名" 是当初排列时写的
+// （renameWindow），按名字匹配账号重建 pid → 账号路由。恢复后状态栏、
+// 监控墙、排列、取票应答全部照常工作（票据没了，游戏再要票时现签）。
+//
+// 匹配不上名字的窗口（没排过列、标题还是引擎默认"光·遇"）：
+// 恰好只有一个时归给当前选中账号（单开场景）；多个时放弃识别并记日志，
+// 宁可少认也不乱认（票据发错账号会串号）。
+func recoverRunningClients() {
+	wins := win.EnumerateClientWindows()
+	if len(wins) == 0 {
+		return
+	}
+	list, _ := loadAccounts()
+	dev, derr := device.LoadOrCreateClient(filepath.Join(dataDir(), "sdk_device.json"))
+	if derr != nil {
+		logf("恢复运行状态失败：设备指纹不可用（%v）", derr)
+		return
+	}
+
+	// 名字 → 账号（匹配排列时写的 displayName；别名改过就退到用户名/昵称）
+	byName := map[string]*Account{}
+	for i := range list {
+		a := &list[i]
+		for _, key := range []string{displayName(*a), a.Username, a.NickName} {
+			if key != "" {
+				byName[key] = a
+			}
+		}
+	}
+
+	type recovered struct {
+		pid  uint32
+		slot *multiSlot
+	}
+	var got []recovered
+	var unknown []win.ClientWindow
+	for _, w := range wins {
+		name, seq, ok := parseClientTitle(w.Title)
+		var acc *Account
+		if ok {
+			acc = byName[name]
+		}
+		if acc == nil {
+			unknown = append(unknown, w)
+			continue
+		}
+		slot := &multiSlot{acc: acc, dev: dev, createdAt: time.Now()}
+		if seq > 0 {
+			slot.seq = seq
+		}
+		got = append(got, recovered{pid: w.PID, slot: slot})
+	}
+
+	// 恰好一个未识别 + 当前账号没被占用：单开（没排列过标题），归当前账号
+	if len(unknown) == 1 && len(got) >= 0 {
+		if cur, err := pickAccount(); err == nil {
+			occupied := false
+			for _, r := range got {
+				if r.slot.acc.PlayerID == cur.PlayerID {
+					occupied = true
+					break
+				}
+			}
+			if !occupied {
+				slot := &multiSlot{acc: &cur, dev: dev, createdAt: time.Now()}
+				got = append(got, recovered{pid: unknown[0].PID, slot: slot})
+				logf("恢复：唯一未识别客户端（pid=%d）按当前账号 %s 认领", unknown[0].PID, displayName(cur))
+				unknown = nil
+			}
+		}
+	}
+
+	if len(got) == 0 {
+		if len(unknown) > 0 {
+			logf("发现 %d 个运行中的光遇客户端但识别不出账号（窗口标题未含账号名），未恢复路由", len(unknown))
+		}
+		return
+	}
+
+	// 顺序按标题序号排（重排时格子顺序稳定）
+	sort.Slice(got, func(i, j int) bool { return got[i].slot.seq < got[j].slot.seq })
+	for _, r := range got {
+		registerClient(r.pid, r.slot)
+	}
+	// IPC 宿主窗口要建起来：游戏后续取票（重试/重新登录）靠它找到"平台"
+	hostMu.Lock()
+	if err := ensureHostLocked(); err != nil {
+		logf("恢复：重建 IPC 宿主失败: %v", err)
+	}
+	hostMu.Unlock()
+	logf("已恢复 %d 个运行中客户端的识别（%d 个未识别）", len(got), len(unknown))
+}
+
+// parseClientTitle 解析排列时写的窗口标题 "N · 账号名"。
+// 不是这个形态（引擎默认标题"光·遇"）返回 ok=false。
+func parseClientTitle(title string) (name string, seq int64, ok bool) {
+	i := strings.Index(title, "·")
+	if i <= 0 || i+2 > len(title) {
+		return "", 0, false
+	}
+	numPart := strings.TrimSpace(title[:i])
+	// 序号必须是纯数字："光·遇" 这种引擎默认标题里"·"前不是数字
+	if _, err := strconv.ParseInt(numPart, 10, 64); err != nil {
+		return "", 0, false
+	}
+	name = strings.TrimSpace(title[i+2:])
+	if name == "" {
+		return "", 0, false
+	}
+	seq, _ = strconv.ParseInt(numPart, 10, 64)
+	return name, seq, true
 }

@@ -18,6 +18,7 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"strings"
 )
 
 var (
@@ -1100,3 +1101,57 @@ func ZOrderedWindowsOfPid(pid uint32, minW, minH int32) []uintptr {
 	}
 	return out
 }
+
+// ClientWindow 一个正在运行的游戏客户端主窗口。
+type ClientWindow struct {
+	PID   uint32
+	Title string // 排列后是 "N · 账号名"，没排过是引擎默认标题
+}
+
+// EnumerateClientWindows 枚举所有 Sky.exe 进程的主窗口（pid + 标题）。
+// 登录器重启后靠它把"正在运行的客户端"认回来：标题里的账号名就是
+// 当初排列时写的（renameWindow），按名字就能恢复 pid → 账号路由。
+func EnumerateClientWindows() []ClientWindow {
+	g, _ := enterPhysicalPixels()
+	defer g.restore()
+
+	pids := pidsOfProcess("Sky.exe")
+	out := make([]ClientWindow, 0, len(pids))
+	for _, pid := range pids {
+		h := MainWindowOfPID(pid)
+		if h == 0 {
+			continue
+		}
+		var buf [256]uint16
+		n, _, _ := procGetWindowTextW.Call(h, uintptr(unsafe.Pointer(&buf)), 256)
+		out = append(out, ClientWindow{PID: pid, Title: syscall.UTF16ToString(buf[:n])})
+	}
+	return out
+}
+
+// pidsOfProcess 按进程名（不区分大小写，含 .exe）列 pid。
+func pidsOfProcess(name string) []uint32 {
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return nil
+	}
+	defer windows.CloseHandle(snap)
+	var e windows.ProcessEntry32
+	e.Size = uint32(unsafe.Sizeof(e))
+	want := strings.ToLower(name)
+	var out []uint32
+	if err := windows.Process32First(snap, &e); err != nil {
+		return nil
+	}
+	for {
+		if strings.ToLower(windows.UTF16ToString(e.ExeFile[:])) == want {
+			out = append(out, e.ProcessID)
+		}
+		if err := windows.Process32Next(snap, &e); err != nil {
+			break
+		}
+	}
+	return out
+}
+
+var procGetWindowTextW = user32dll.NewProc("GetWindowTextW")
