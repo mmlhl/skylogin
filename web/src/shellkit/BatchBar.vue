@@ -22,7 +22,7 @@ const count = computed(() => store.selectedIds.length);
       <button class="bq" @click="store.selectAll()">全选</button>
       <button class="bq" @click="store.invertSelect()">反选</button>
       <button class="bq" @click="store.selectRunning()">选中运行中</button>
-      <button class="bq" @click="store.clearSelect()"><X />清除</button>
+      <button class="bq" @click="store.clearSelect()"><X />取消</button>
       <span class="bsep" />
       <!-- 单选 = 直接启动；多选 = 主按钮就是多开（弹面板选显示方式 / 排列 / 画质） -->
       <button v-if="count === 1" class="bact primary" title="启动这个账号" @click="store.bulkLaunch()"><Play />启动</button>
