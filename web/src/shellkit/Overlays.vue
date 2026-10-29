@@ -87,15 +87,19 @@ function togglePick(id: string) {
   if (i >= 0) picked.value.splice(i, 1);
   else picked.value.push(id);
 }
+// 档位名与游戏内一致（2026-10-29 逐档实测）：四档画质 + 30/60/120 帧
 const qualityOpts = [
   { v: "", label: "跟随游戏", tip: "" },
   { v: "LowPower", label: "省电", tip: "游戏内部档位 LowPower" },
-  { v: "Presentation", label: "高画质", tip: "游戏内部档位 Presentation" },
+  { v: "Default", label: "默认", tip: "游戏内部档位 Default" },
+  { v: "HighQuality", label: "高画质", tip: "游戏内部档位 HighQuality" },
+  { v: "Presentation", label: "最高", tip: "游戏内部档位 Presentation" },
 ];
 const fpsOpts = [
   { v: 0, label: "跟随游戏" },
   { v: 30, label: "30" },
   { v: 60, label: "60" },
+  { v: 120, label: "120" },
 ];
 function pickQuality(v: string) {
   qMode.value = v;
