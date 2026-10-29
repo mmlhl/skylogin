@@ -11,14 +11,15 @@
  * 数据：composables/useAppState.ts 每秒从 Go 的 /api/state 拉一次，
  * Go 是唯一真相来源。
  */
-import { onMounted, onUnmounted, ref, watch } from "vue";
-import { NConfigProvider, NMessageProvider, NDialogProvider, darkTheme, zhCN, dateZhCN, useDialog } from "naive-ui";
+import { onMounted, onUnmounted, ref } from "vue";
+import { NConfigProvider, NMessageProvider, NDialogProvider, darkTheme, zhCN, dateZhCN } from "naive-ui";
 import type { GlobalThemeOverrides } from "naive-ui";
 
 import ShellHost from "./shellkit/ShellHost.vue";
 import { createRealStore } from "./realStore";
 import { api } from "./api/client";
-import { startPolling, state } from "./composables/useAppState";
+import { startPolling } from "./composables/useAppState";
+import LaunchAlertDialog from "./components/LaunchAlertDialog.vue";
 import type { Channel } from "./api/types";
 
 import ChannelPicker from "./components/ChannelPicker.vue";
@@ -153,18 +154,6 @@ let stopPolling: (() => void) | undefined;
 onMounted(() => {
   stopPolling = startPolling(1000);
 });
-
-/* ---------------- 启动事件弹窗（客户端闪退等） ---------------- */
-const dialog = useDialog();
-let lastAlertId = 0;
-watch(
-  () => state.launchAlert,
-  (a) => {
-    if (!a || a.id <= lastAlertId) return;
-    lastAlertId = a.id;
-    dialog.warning({ title: a.title, content: a.message, positiveText: "知道了" });
-  }
-);
 onUnmounted(() => {
   stopPolling?.();
 });
@@ -174,6 +163,7 @@ onUnmounted(() => {
   <n-config-provider :theme="darkTheme" :theme-overrides="themeOverrides" :locale="zhCN" :date-locale="dateZhCN">
     <n-message-provider>
       <n-dialog-provider>
+        <LaunchAlertDialog />
         <ShellHost :store="realStore" :default-index="2" :show-switcher="false" :load-pref="loadShellPref" :save-pref="saveShellPref" />
 
         <ChannelPicker v-model:show="showChannelPicker" :mode="pickerMode" @pick="onPick" />
