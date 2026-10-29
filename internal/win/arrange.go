@@ -403,15 +403,20 @@ func ArrangeByGrid(cells []ClientCell, cols, rows, wantW, wantH int) int {
 // 与 ArrangeByGrid 同款的前置处理（全屏切窗口化、最小化还原、改名），
 // 摆完不做二次校准：级联是带步长的错位扇，引擎把窗口撑到最小尺寸
 // 也不会遮住别的标题条。不使用渐进排列——那会带 5 分钟的漂移回夹，
-// 用户手动挪窗口会被弹回来。
+// 用户手动挪窗口会被弹回来。scheme 传空 = 双摞（默认方案）。
 func ArrangeByCascade(cells []ClientCell, wantW, wantH int) int {
+	return ArrangeByScheme(cells, "", wantW, wantH)
+}
+
+// ArrangeByScheme 按指定堆叠方案摆一次（scheme 见 SchemeDual 等常量）。
+func ArrangeByScheme(cells []ClientCell, scheme string, wantW, wantH int) int {
 	if len(cells) == 0 {
 		return 0
 	}
 	g, _ := enterPhysicalPixels()
 	defer g.restore()
 	wa := primaryWorkArea()
-	rects := planCascade(len(cells), wantW, wantH, wa)
+	rects := planStacking(scheme, len(cells), wantW, wantH, wa)
 	moved := 0
 	for i, c := range cells {
 		h := MainWindowOfPID(c.PID)
@@ -741,6 +746,166 @@ func clampWindow(h uintptr, r windowRect, wa windowRect) windowRect {
 	return r
 }
 
+// 级联堆叠方案（多开「窗口堆叠」的排布姿势，用户可选）。
+const (
+	SchemeDual = "dual" // 双摞：左右两组斜向小摞（默认，比一整摞松快）
+	SchemeRows = "rows" // 两行横向：上下两行、行内向右摊开
+	SchemeCols = "cols" // 两列竖向：左右两列、列内向下摊开
+	SchemeFan  = "fan"  // 满扇形：整摞对角摊开（旧的 >4 开默认）
+)
+
+// SplitCascadeMode 分解排列模式："cascade" / "cascade:<scheme>"。
+// ok=false 表示不是级联（走网格平铺）。scheme 空或未知 → 双摞（默认）。
+func SplitCascadeMode(mode string) (ok bool, scheme string) {
+	if mode != "cascade" && len(mode) > 8 && mode[:8] == "cascade:" {
+		return true, mode[8:]
+	}
+	return mode == "cascade", ""
+}
+
+// planStacking 按方案规划级联布局。窗口尺寸 = wantW/H（夹引擎最小值与工作区）。
+// 各方案都保证不出屏、编号小的先摆（通常 z 序在下，标题条朝外露出）。
+func planStacking(scheme string, n, wantW, wantH int, wa windowRect) []windowRect {
+	switch scheme {
+	case SchemeRows:
+		return planTwoRows(n, wantW, wantH, wa)
+	case SchemeCols:
+		return planTwoCols(n, wantW, wantH, wa)
+	case SchemeFan:
+		return planCascade(n, wantW, wantH, wa)
+	default: // "" / dual / 未知
+		return planDualStack(n, wantW, wantH, wa)
+	}
+}
+
+// clampSize 统一的窗口尺寸钳制：引擎最小值 → 工作区上限。
+func clampSize(wantW, wantH int, wa windowRect) (int32, int32) {
+	cw, ch := int32(wantW), int32(wantH)
+	if cw < engineMinW {
+		cw = engineMinW
+	}
+	if ch < engineMinH {
+		ch = engineMinH
+	}
+	if max := wa.right - wa.left; cw > max {
+		cw = max
+	}
+	if max := wa.bottom - wa.top; ch > max {
+		ch = max
+	}
+	return cw, ch
+}
+
+// planDualStack 双摞：窗口分左右两半，各按 44px 斜摞、整组在工作区
+// 上下居中。半区放不下一摞时收缩步长；n≤3 退化为单摞居中。
+func planDualStack(n, wantW, wantH int, wa windowRect) []windowRect {
+	if n <= 3 {
+		return planCascade(n, wantW, wantH, wa)
+	}
+	cw, ch := clampSize(wantW, wantH, wa)
+	waW, waH := wa.right-wa.left, wa.bottom-wa.top
+	left := (n + 1) / 2 // 左摞个数（多的一边）
+	stack := func(count int, xStart, xEnd int32) []windowRect {
+		spanAvail := xEnd - xStart - cw
+		step := int32(44)
+		if count > 1 {
+			if v := spanAvail / int32(count-1); v < step {
+				step = v
+			}
+			if step < 1 {
+				step = 1
+			}
+		}
+		span := step * int32(count-1)
+		x0 := xStart + (xEnd-xStart-cw-span)/2
+		if x0 < xStart {
+			x0 = xStart
+		}
+		y0 := wa.top + (waH-ch-span)/2
+		if y0 < wa.top {
+			y0 = wa.top
+		}
+		out := make([]windowRect, count)
+		for i := 0; i < count; i++ {
+			x, y := x0+int32(i)*step, y0+int32(i)*step
+			out[i] = windowRect{left: x, top: y, right: x + cw, bottom: y + ch}
+		}
+		return out
+	}
+	mid := wa.left + waW/2
+	out := append(stack(left, wa.left, mid), stack(n-left, mid, wa.right)...)
+	// 第二摞排在后面 = cells 序号靠后 = 后启动，z 序大概率在上
+	return out
+}
+
+// planTwoRows 两行横向：上行 ceil(n/2) 个、下行其余；行内向右摊开
+// （步长 = 行内富余均分），行高不够两行时上下贴边（中段互叠，
+// 下行后启动 z 序在上，标题条不受影响）。
+func planTwoRows(n, wantW, wantH int, wa windowRect) []windowRect {
+	if n <= 2 {
+		return planCascade(n, wantW, wantH, wa)
+	}
+	cw, ch := clampSize(wantW, wantH, wa)
+	waW := wa.right - wa.left
+	k1 := (n + 1) / 2
+	row := func(count int, y int32) []windowRect {
+		step := int32(0)
+		if count > 1 {
+			step = (waW - cw) / int32(count-1)
+			if step < 1 {
+				step = 1
+			}
+		}
+		out := make([]windowRect, count)
+		for i := 0; i < count; i++ {
+			x := wa.left + int32(i)*step
+			out[i] = windowRect{left: x, top: y, right: x + cw, bottom: y + ch}
+		}
+		return out
+	}
+	yTop := wa.top
+	yBottom := wa.bottom - ch
+	out := append(row(k1, yTop), row(n-k1, yBottom)...)
+	return out
+}
+
+// planTwoCols 两列竖向：左列 ceil(n/2) 个、右列其余；列内向下摊开
+// （步长 = 纵向富余均分）。两列宽度放得下时左右完全分离；放不下时
+// 右列贴右、与左列部分重叠（右列后启动 z 序在上）。
+func planTwoCols(n, wantW, wantH int, wa windowRect) []windowRect {
+	if n <= 2 {
+		return planCascade(n, wantW, wantH, wa)
+	}
+	cw, ch := clampSize(wantW, wantH, wa)
+	waW, waH := wa.right-wa.left, wa.bottom-wa.top
+	k1 := (n + 1) / 2
+	col := func(count int, x int32) []windowRect {
+		step := int32(0)
+		if count > 1 {
+			step = (waH - ch) / int32(count-1)
+			if step < 1 {
+				step = 1
+			}
+		}
+		out := make([]windowRect, count)
+		for i := 0; i < count; i++ {
+			y := wa.top + int32(i)*step
+			out[i] = windowRect{left: x, top: y, right: x + cw, bottom: y + ch}
+		}
+		return out
+	}
+	var x1, x2 int32
+	if waW >= cw*2+24 {
+		x1 = wa.left + (waW-cw*2-24)/2
+		x2 = x1 + cw + 24
+	} else {
+		x1 = wa.left
+		x2 = wa.right - cw
+	}
+	out := append(col(k1, x1), col(n-k1, x2)...)
+	return out
+}
+
 // placeWindow 把窗口摆进格位；引擎把尺寸撑大/缩小了就按实际尺寸夹回
 // 屏幕内，返回最终落位矩形（给漂移检测当基准）。
 func placeWindow(h uintptr, slot windowRect, wa windowRect) windowRect {
@@ -756,7 +921,8 @@ func placeWindow(h uintptr, slot windowRect, wa windowRect) windowRect {
 //
 // cells 是期望名单（按启动顺序），格位按名单总数预先算好：第 i 个
 // 出现的窗口固定落第 i 格，先出的不挪窝，后出的直接进自己的格子。
-// mode = "cascade" 用级联堆叠（文件窗式），其余为网格平铺。
+// mode = "cascade[:scheme]" 用级联堆叠（scheme 见 SchemeDual 等常量，
+// 空 = 双摞默认），其余为网格平铺。
 // 已摆过的窗口被引擎改了尺寸，下一轮巡检按实际尺寸夹回屏幕内。
 // 全部就位、摆上第一个后 90 秒没有新窗口、或超时（5 分钟）就返回成功摆放的数量。
 func ProgressiveArrange(cells []ClientCell, mode string, cols, rows, wantW, wantH int) int {
@@ -767,8 +933,8 @@ func ProgressiveArrange(cells []ClientCell, mode string, cols, rows, wantW, want
 	defer g.restore()
 	wa := primaryWorkArea()
 	var plan []windowRect
-	if mode == "cascade" {
-		plan = planCascade(len(cells), wantW, wantH, wa)
+	if isCascade, scheme := SplitCascadeMode(mode); isCascade {
+		plan = planStacking(scheme, len(cells), wantW, wantH, wa)
 	} else {
 		plan = planGrid(len(cells), cols, rows, wantW, wantH, wa)
 	}

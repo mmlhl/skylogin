@@ -88,9 +88,38 @@ function togglePick(id: string) {
   else picked.value.push(id);
 }
 // 档位名与游戏内一致（2026-10-29 逐档实测）：四档画质 + 30/60/120 帧
-const qualityOpts = [
-  { v: "", label: "跟随游戏", tip: "" },
-  { v: "LowPower", label: "省电", tip: "游戏内部档位 LowPower" },
+// 堆叠方案（display=cascade 时可选）：icon 是 20×14 的小示意图（几块小矩形）
+const cascadeScheme = ref<"dual" | "rows" | "cols" | "fan">("dual");
+const cascadeSchemes = [
+  {
+    v: "dual" as const,
+    label: "双摞",
+    tip: "左右两组斜摞，默认",
+    icon: '<rect x="1" y="4" width="7" height="6" rx="1"/><rect x="2.5" y="2.5" width="7" height="6" rx="1"/><rect x="12" y="4" width="7" height="6" rx="1"/><rect x="13.5" y="2.5" width="7" height="6" rx="1"/>',
+  },
+  {
+    v: "rows" as const,
+    label: "两行横向",
+    tip: "上下两行，行内摊开",
+    icon: '<rect x="1" y="1.5" width="8" height="4.5" rx="1"/><rect x="11" y="1.5" width="8" height="4.5" rx="1"/><rect x="3.5" y="8" width="8" height="4.5" rx="1"/><rect x="13.5" y="8" width="8" height="4.5" rx="1"/>',
+  },
+  {
+    v: "cols" as const,
+    label: "两列竖向",
+    tip: "左右两列，列内摊开",
+    icon: '<rect x="1.5" y="1" width="7" height="5.5" rx="1"/><rect x="1.5" y="7.5" width="7" height="5.5" rx="1"/><rect x="11.5" y="1" width="7" height="5.5" rx="1"/><rect x="11.5" y="7.5" width="7" height="5.5" rx="1"/>',
+  },
+  {
+    v: "fan" as const,
+    label: "满扇形",
+    tip: "整摞对角摊开",
+    icon: '<rect x="1" y="8" width="8" height="5" rx="1"/><rect x="4" y="5" width="8" height="5" rx="1"/><rect x="7" y="2" width="8" height="5" rx="1"/>',
+  },
+];
+function pickScheme(v: "dual" | "rows" | "cols" | "fan") {
+  cascadeScheme.value = v;
+}
+const qualityOpts = [  { v: "", label: "跟随游戏", tip: "" },  { v: "LowPower", label: "省电", tip: "游戏内部档位 LowPower" },
   { v: "Default", label: "默认", tip: "游戏内部档位 Default" },
   { v: "HighQuality", label: "高画质", tip: "游戏内部档位 HighQuality" },
   { v: "Presentation", label: "最高", tip: "游戏内部档位 Presentation" },
@@ -122,7 +151,7 @@ function confirmMulti() {
   if (display.value === "fullscreen") {
     store.multiLaunch(picked.value, undefined, undefined, "fullscreen");
   } else if (display.value === "cascade") {
-    store.multiLaunch(picked.value, undefined, customSize.value, "cascade");
+    store.multiLaunch(picked.value, undefined, customSize.value, `cascade:${cascadeScheme.value}` as const);
   } else {
     store.multiLaunch(picked.value, curLayout.value, customSize.value);
   }
@@ -235,7 +264,20 @@ function confirmRename() {
           </button>
         </div>
       </template>
-      <p v-else-if="display === 'cascade'" class="mhint">窗口堆叠：全部窗口像文件一样从左上角错开叠放，每个都露出标题条，点标题切换；也可用监控墙。</p>
+      <p v-else-if="display === 'cascade'" class="mhint">窗口堆叠：每个都露出标题条可点选；也可用监控墙。</p>
+      <div v-if="display === 'cascade'" class="schemes">
+        <button
+          v-for="s in cascadeSchemes"
+          :key="s.v"
+          class="scheme"
+          :class="{ on: cascadeScheme === s.v }"
+          :title="s.tip"
+          @click="pickScheme(s.v)"
+        >
+          <svg viewBox="0 0 22 14" width="22" height="14" aria-hidden="true" v-html="s.icon" />
+          <span>{{ s.label }}</span>
+        </button>
+      </div>
       <p v-else class="mhint">全屏：每个客户端都占满整屏叠在一起，只露最上面那个；点监控墙的小窗切换到对应的号。</p>
 
       <!-- 自定义窗口大小：暂隐藏（用户要求）。逻辑保留：v-if 换成 true 即可恢复 -->
@@ -748,5 +790,39 @@ function confirmRename() {
   color: #f3f1ea;
   font-size: 13px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+}
+.schemes {
+  display: flex;
+  gap: 6px;
+  margin: 2px 0 6px;
+}
+.scheme {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.scheme svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.2;
+  opacity: 0.85;
+}
+.scheme svg rect {
+  fill: currentColor;
+  fill-opacity: 0.18;
+}
+.scheme.on {
+  border-color: currentColor;
+  opacity: 1;
+}
+.scheme:not(.on) {
+  opacity: 0.55;
 }
 </style>

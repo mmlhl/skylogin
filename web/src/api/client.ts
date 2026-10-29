@@ -53,7 +53,7 @@ export const api = {
 		ids: string[],
 		layout?: { cols: number; rows: number },
 		size?: { w: number; h: number },
-		display?: "tile" | "cascade" | "fullscreen"
+		display?: "tile" | "cascade" | `cascade:${string}` | "fullscreen"
 	) =>
 		request("/api/launch-multi", {
 			method: "POST",
