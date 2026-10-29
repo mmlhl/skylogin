@@ -639,9 +639,15 @@ func planGrid(n, cols, rows, wantW, wantH int, wa windowRect) []windowRect {
 	return rects
 }
 
-// planCascade 级联堆叠（文件窗式）：全部窗口同一尺寸，从工作区左上角
-// 开始逐个向右下错开，步长保证每个标题条都露出来可点。
-// 后摆的窗口 z 序在上，所以最后一个完整可见，第一个露出左上角。
+// planCascade 级联堆叠（文件窗式）：全部窗口同一尺寸，整摞在工作区居中，
+// 逐个向右下错开。后摆的窗口 z 序在上，最后一个完整可见，第一个露出左上角。
+//
+// 步长按数量自适应（2026-10-29 对 8 开实测后的调整）：
+//   - ≤4 开：44px 小步，紧凑一摞，只露标题条，省地方
+//   - >4 开：满扇形——步长拉开到屏幕富余均分，窗口像扇面摊开。
+//     实测 8 开在 2K 屏上 44px 步长平均每窗只见 21%（挤成一坨），
+//     满扇后 47%，而且 >4 开时网格平铺本来也放不下（引擎最小 1024×720，
+//     2K 屏最多 2×2），屏幕空着不如摊开看得见
 func planCascade(n, wantW, wantH int, wa windowRect) []windowRect {
 	if n <= 0 {
 		return nil
@@ -659,24 +665,34 @@ func planCascade(n, wantW, wantH int, wa windowRect) []windowRect {
 	if max := wa.bottom - wa.top; ch > max {
 		ch = max
 	}
-	// 步长固定小错开（刚够露出完整标题条），像一摞文件窗；
-	// 屏幕富余不够这个步长时再按富余收缩
-	const wantStep = 44
-	var step int32 = wantStep
-	if n > 1 {
-		spanX := (wa.right - wa.left) - cw
-		spanY := (wa.bottom - wa.top) - ch
-		if spanX < 0 {
-			spanX = 0
-		}
-		if spanY < 0 {
-			spanY = 0
-		}
+	spanX := (wa.right - wa.left) - cw
+	spanY := (wa.bottom - wa.top) - ch
+	if spanX < 0 {
+		spanX = 0
+	}
+	if spanY < 0 {
+		spanY = 0
+	}
+	// 紧凑步长（刚够露出完整标题条）；>4 开换满扇步长（富余均分，
+	// 取横竖里较小者保证不出屏）。两者都再按屏幕富余收缩兜底。
+	var step int32
+	if n <= 1 {
+		step = 0
+	} else if n <= 4 {
+		step = 44
+	} else {
 		avail := spanX
 		if spanY < avail {
 			avail = spanY
 		}
-		if v := avail / int32(n-1); v < step {
+		step = avail / int32(n-1)
+	}
+	// 屏幕富余不够时收缩步长（小屏兜底，保住"不出屏"优先于"露得多"）
+	if n > 1 {
+		if v := spanX / int32(n-1); v < step {
+			step = v
+		}
+		if v := spanY / int32(n-1); v < step {
 			step = v
 		}
 		if step < 1 {
