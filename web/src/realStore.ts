@@ -210,16 +210,17 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
       const ready = ids.filter((id) => !find(id)?.running);
       if (!ready.length) return toast("所选账号都在运行中");
       if (ready.length === 1) return store.launch(ready[0]);
-      // 全屏不带排列方案；LAYOUT_NONE（cols=0）让后面的拼接逻辑统一走"无排列"分支
+      // display 可以带方案后缀（"cascade:dual"），判断用前缀；全屏不带排列方案
       const fullscreen = display === "fullscreen";
+      const cascade = typeof display === "string" && display.startsWith("cascade");
       const lay = fullscreen ? LAYOUT_NONE : (layout ?? recommendLayout(ready.length));
       void (async () => {
         const r = await api.launchMulti(ready, lay.cols > 0 ? lay : undefined, size, display);
         if (r.ok === false) return toast(r.message || "多开失败");
         const modeText =
-          display === "fullscreen"
+          fullscreen
             ? "，全屏（用监控墙或 Alt+Tab 切换）"
-            : display === "cascade"
+            : cascade
               ? "，窗口堆叠（每个都露出标题条）"
               : lay.cols > 0
                 ? `，将按${lay.label}平铺`

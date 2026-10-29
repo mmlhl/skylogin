@@ -107,7 +107,8 @@ func clientLabels() map[uint32]string {
 // 全部就位后，3 个以上会自动打开监控墙（多开的主要查看方式，
 // 全屏模式下切换客户端全靠它）。
 func arrangeWhenReady(cols, rows, w, h int, mode string) {
-	if mode != "cascade" && mode != "fullscreen" && (cols < 1 || rows < 1) {
+	isCascade, _ := win.SplitCascadeMode(mode)
+	if !isCascade && mode != "fullscreen" && (cols < 1 || rows < 1) {
 		return
 	}
 	go func() {

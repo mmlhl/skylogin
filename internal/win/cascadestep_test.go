@@ -61,3 +61,67 @@ func TestPlanCascadeSteps(t *testing.T) {
 		}
 	})
 }
+
+// 四种堆叠方案的结构特征 + 不出屏（基准屏 2560×1388 = 用户实测工作区）。
+func TestStackSchemes(t *testing.T) {
+	wa := windowRect{left: 0, top: 0, right: 2560, bottom: 1388}
+	n := 8
+	for _, tc := range []struct {
+		scheme, name string
+		check        func(t *testing.T, rs []windowRect)
+	}{
+		{SchemeDual, "双摞", func(t *testing.T, rs []windowRect) {
+			// 左摞 4 个全在左半区、右摞 4 个全在右半区
+			for i, r := range rs {
+				mid := int32(1280)
+				side := r.right <= mid+44
+				if i < 4 && !side {
+					t.Fatalf("窗 %d 应在左半区: %+v", i+1, r)
+				}
+				if i >= 4 && r.left < mid-44 {
+					t.Fatalf("窗 %d 应在右半区: %+v", i+1, r)
+				}
+			}
+		}},
+		{SchemeRows, "两行横向", func(t *testing.T, rs []windowRect) {
+			// 只有两个 y 值：上行 4 个贴顶、下行 4 个贴底
+			ys := map[int32]int{}
+			for _, r := range rs {
+				ys[r.top]++
+			}
+			if len(ys) != 2 {
+				t.Fatalf("应有且仅有两行，实际 y 值: %v", ys)
+			}
+		}},
+		{SchemeCols, "两列竖向", func(t *testing.T, rs []windowRect) {
+			// 只有两个 x 值，且两列不重叠（右列左 ≥ 左列右）
+			if rs[4].left < rs[0].right {
+				t.Fatalf("两列重叠: 左列右=%d 右列左=%d", rs[0].right, rs[4].left)
+			}
+		}},
+		{SchemeFan, "满扇形", func(t *testing.T, rs []windowRect) {
+			step := rs[1].left - rs[0].left
+			if step <= 44 {
+				t.Fatalf("满扇步长应 > 44，实际 %d", step)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rs := planStacking(tc.scheme, n, 0, 0, wa)
+			if len(rs) != n {
+				t.Fatalf("窗口数 %d != %d", len(rs), n)
+			}
+			for i, r := range rs {
+				if r.left < wa.left || r.top < wa.top || r.right > wa.right || r.bottom > wa.bottom {
+					t.Fatalf("窗 %d 出屏: %+v", i+1, r)
+				}
+				if r.right-r.left != 1024 || r.bottom-r.top != 720 {
+					t.Fatalf("窗 %d 尺寸不对: %dx%d", i+1, r.right-r.left, r.bottom-r.top)
+				}
+			}
+			if tc.check != nil {
+				tc.check(t, rs)
+			}
+		})
+	}
+}

@@ -119,7 +119,7 @@ export interface LauncherStore {
    * layout 为排列方案（缺省自动推荐）；size 为自定义窗口尺寸（缺省铺满格子）；
    * display："tile" 窗口平铺（默认）/ "cascade" 窗口堆叠 / "fullscreen" 全屏。
    */
-  multiLaunch(ids: string[], layout?: GridLayout, size?: { w: number; h: number }, display?: "tile" | "cascade" | "fullscreen"): void;
+  multiLaunch(ids: string[], layout?: GridLayout, size?: { w: number; h: number }, display?: "tile" | "cascade" | `cascade:${string}` | "fullscreen"): void;
 
   /** 多开默认（画质 / 帧率 / 鼠标仲裁）：多开弹窗和设置面板读写的是同一份 */
   multiDefaults(): { qualityMode: string; fps: number; arbiter: boolean; arbiterMin: number };
