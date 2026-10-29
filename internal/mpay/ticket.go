@@ -219,10 +219,12 @@ func (c *Client) SendSMS(mobile, deviceID string) (map[string]any, error) {
 
 // VerifySMS 校验验证码，成功时返回一张 16 位票据（AAAA…）。
 //
-// 这张票可以直接换 token（LoginTicket），也能直接交给游戏。
+// 这张票可以换登录态（FinishSMS / LoginTicket），也能直接交给游戏。
+// login_for=1 与发烧平台一致（2026-10-29 抓包）。
 func (c *Client) VerifySMS(mobile, code, deviceID string) (string, map[string]any, error) {
 	form := baseForm(deviceID, profile.HostedGameID, profile.ShortGameID, "a50_sdk_cn", "c4.20.0", "0.0.0.0")
 	form.Set("mobile", mobile)
+	form.Set("login_for", "1")
 	form.Set("smscode", code)
 	out, err := c.postForm("/mpay/api/users/login/mobile/verify_sms", nil, form)
 	if err != nil {
@@ -233,4 +235,31 @@ func (c *Client) VerifySMS(mobile, code, deviceID string) (string, map[string]an
 		return "", out, fmt.Errorf("验证码校验没有返回票据: %s", truncate(fmt.Sprint(out), 200))
 	}
 	return t, out, nil
+}
+
+// FinishSMS 用 verify_sms 返回的一次性票据换**账号级**登录态。
+//
+// 为什么必须有这个口（2026-10-29 对发烧平台的抓包结论）：
+// 同一张票据拿去 login/ticket，换出的是 MPay **会话**（token 里带 lt 登录
+// 时间 / od 绑定设备，放一阵就失效）；拿去 mobile/finish，换出的是
+// **账号级**凭证（token 里 s=yd_…，无 lt/od）——发烧平台自己存的就是
+// 后者，所以平台的登录长期有效而我们的容易过期。
+// opt_fields 照抄平台。票据一次性：失败别拿同一张票盲目重试。
+// longGameID/shortGameID/appChannel/cv 由调用方给：平台抓包参数与我们的
+// SMS 上下文各试一路，哪个通记哪个。
+func (c *Client) FinishSMS(ticket, deviceID, longGameID, shortGameID, appChannel, cv string) (map[string]any, error) {
+	form := baseForm(deviceID, longGameID, shortGameID, appChannel, cv, "0.0.0.0")
+	form.Set("login_for", "1")
+	form.Set("opt_fields", "nickname,avatar,realname_status,mobile_bind_status,mask_related_mobile,related_login_status")
+	form.Set("ticket", ticket)
+	form.Set("transid", newTransID())
+	form.Set("uni_transaction_id", newTransID())
+	out, err := c.postForm("/mpay/api/users/login/mobile/finish", nil, form)
+	if err != nil {
+		return out, err
+	}
+	if _, ok := out["user"]; !ok {
+		return out, fmt.Errorf("finish 没有返回 user: %s", truncate(fmt.Sprint(out), 200))
+	}
+	return out, nil
 }

@@ -8,9 +8,12 @@ package app
 //
 //     get_sms(mobile)          → 网易发短信
 //     verify_sms(mobile, code) → 返回 16 位票据（AAAA…）
-//     login/ticket(票据)       → 返回 user.token（1-eyJ…）和 user id
+//     mobile/finish(票据)      → 返回 user.token（1-eyJ…）和 user id
 //
-//   拿到的 token 和扫码登录同源，存下来就能长期免登录。
+//   票据换登录态走 finish 而不是 login/ticket（2026-10-29 抓包结论）：
+//   finish 换出的是账号级 token（s=yd_…，无 lt/od），发烧平台存的就是
+//   这种，长期有效；login/ticket 换出的是 MPay 会话（带 lt/od），会过期。
+//   finish 失败时退回 login/ticket 老路，保证登录永远可用。
 //
 // 反过来说，网页登录那条路（fever.163.com + H5 SDK）只有在需要账号密码时才用得上。
 
@@ -20,6 +23,7 @@ import (
 	"time"
 
 	"skylogin/internal/mpay"
+	"skylogin/internal/profile"
 )
 
 // SendSMS 发验证码。
@@ -57,16 +61,39 @@ func CompleteSMSLogin(mobile, code, targetUserID string) error {
 	}
 	logf("验证码校验通过，拿到票据（%s）", maskTicket(ticket))
 	c := mpay.New()
-	// a50（发烧平台）上下文兑换：和验证码 / 建码保持同一上下文，
-	// 换出来的 token 是 a50 原生的，签票、设备绑定都与密码登录一致。
-	out, err := loginTicketAuto(c, ticket, dev)
-	if err != nil {
-		return fmt.Errorf("用票据换登录态失败: %w", err)
+	// 票据换登录态：优先 mobile/finish（账号级 token，长期有效）。
+	// 两路上下文各试一次——先跟我们 verify_sms 同款（票就是这个上下文发的），
+	// 再用平台抓包的原始参数；都失败退回 login/ticket（会话级，老行为兜底）。
+	var out map[string]any
+	var finishErrs []string
+	for _, v := range []struct{ name, long, short, ch, cv string }{
+		{"我们的 SMS 上下文", profile.HostedGameID, profile.ShortGameID, "a50_sdk_cn", "c4.20.0"},
+		{"平台原始参数", profile.HostedGameID, "a50", "netease.allysdk3rd", "c4.21.0"},
+	} {
+		o, ferr := c.FinishSMS(ticket, dev, v.long, v.short, v.ch, v.cv)
+		if ferr == nil {
+			out = o
+			logf("mobile/finish（%s）通过，拿到账号级凭证", v.name)
+			break
+		}
+		finishErrs = append(finishErrs, fmt.Sprintf("%s: %v", v.name, ferr))
+	}
+	if out == nil {
+		logf("mobile/finish 都失败（%s），退回 login/ticket", strings.Join(finishErrs, "；"))
+		var err error
+		out, err = loginTicketAuto(c, ticket, dev)
+		if err != nil {
+			return fmt.Errorf("用票据换登录态失败: %w", err)
+		}
 	}
 	user, _ := out["user"].(map[string]any)
 	token, _ := user["token"].(string)
 	userID, _ := user["id"].(string)
-	display, _ := user["display_username"].(string)
+	// 展示名优先用脱敏的 client_username（finish 的 display_username 是完整手机号）
+	display, _ := user["client_username"].(string)
+	if display == "" {
+		display, _ = user["display_username"].(string)
+	}
 	if token == "" || userID == "" {
 		return fmt.Errorf("登录成功但没拿到凭证，请重试")
 	}
