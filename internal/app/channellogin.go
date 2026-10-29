@@ -23,6 +23,7 @@ import (
 	"skylogin/internal/device"
 	"skylogin/internal/netsec"
 	"skylogin/internal/profile"
+	"skylogin/internal/secretfile"
 )
 
 // channelSpec 一个渠道网页登录在主进程侧的全部差异点。
@@ -58,7 +59,7 @@ func m4399DevicePath() string { return filepath.Join(dataDir(), "s4399_device.js
 
 // loadM4399Device 读 4399 设备身份，没有就生成一份并落盘。
 func loadM4399Device() channel.M4399Device {
-	if b, err := os.ReadFile(m4399DevicePath()); err == nil {
+	if b, err := secretfile.ReadFile(m4399DevicePath()); err == nil {
 		var d channel.M4399Device
 		if json.Unmarshal(b, &d) == nil && d.Udid != "" && d.DeviceIdentifier != "" {
 			return d
@@ -66,7 +67,7 @@ func loadM4399Device() channel.M4399Device {
 	}
 	d := channel.NewM4399Device()
 	b, _ := json.Marshal(d)
-	_ = os.WriteFile(m4399DevicePath(), b, 0o600)
+	_ = secretfile.WriteFile(m4399DevicePath(), b, 0o600)
 	return d
 }
 

@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"skylogin/internal/secretfile"
 )
 
 // ClientProfile 是 SAUTH 里 udid / sdklog 用到的那组参数。
@@ -48,9 +50,12 @@ func (p *AndroidProfile) Udid16() string {
 
 // LoadOrCreateClient 读取已有指纹；没有或损坏就生成一份并存盘。
 func LoadOrCreateClient(path string) (*ClientProfile, error) {
-	if raw, err := os.ReadFile(path); err == nil {
+	if raw, err := secretfile.ReadFile(path); err == nil {
 		var p ClientProfile
 		if json.Unmarshal(raw, &p) == nil && p.Udid != "" {
+			if !secretfile.IsEncrypted(path) {
+				_ = writeJSON(path, &p) // 旧明文：顺手升级加密
+			}
 			return &p, nil
 		}
 	}
@@ -73,9 +78,12 @@ func LoadOrCreateClient(path string) (*ClientProfile, error) {
 
 // LoadOrCreateAndroid 同上，给华为渠道用。
 func LoadOrCreateAndroid(path string) (*AndroidProfile, error) {
-	if raw, err := os.ReadFile(path); err == nil {
+	if raw, err := secretfile.ReadFile(path); err == nil {
 		var p AndroidProfile
 		if json.Unmarshal(raw, &p) == nil && p.DeviceUUID != "" {
+			if !secretfile.IsEncrypted(path) {
+				_ = writeJSON(path, &p)
+			}
 			return &p, nil
 		}
 	}
@@ -105,5 +113,5 @@ func writeJSON(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, raw, 0o644)
+	return secretfile.WriteFile(path, raw, 0o644)
 }
