@@ -238,7 +238,8 @@ function confirmRename() {
       <p v-else-if="display === 'cascade'" class="mhint">窗口堆叠：全部窗口像文件一样从左上角错开叠放，每个都露出标题条，点标题切换；也可用监控墙。</p>
       <p v-else class="mhint">全屏：每个客户端都占满整屏叠在一起，只露最上面那个；点监控墙的小窗切换到对应的号。</p>
 
-      <template v-if="display !== 'fullscreen'">
+      <!-- 自定义窗口大小：暂隐藏（用户要求）。逻辑保留：v-if 换成 true 即可恢复 -->
+      <template v-if="false && display !== 'fullscreen'">
         <p class="mlabel">窗口大小<em class="mrec">留空 = {{ display === 'cascade' ? '引擎最小尺寸（1024×720）' : '铺满格子' }}</em></p>
         <div class="sizerow">
           <input v-model="customW" class="minput size" type="number" min="100" placeholder="宽" />
