@@ -279,10 +279,12 @@ func watchMpayLogin(cmd *exec.Cmd, outPath, targetUserID string) {
 
 // resolveMPayCredentials 把子进程的结果变成 (token, userId, 账号名)。
 //
-// 首选：用 DLL 给的票走 login/ticket 换 token（和手机号登录同一条链路）；
-// 兜底：直接从回调里取 token（个别版本的 DLL 不出票，但回调里带 user_token）。
-// 账号名单独再查一次用户资料——a50 上下文的 login/ticket 经常不带
-// display_username，不查就只能拿 id 当别名。
+// 优先用**回调里带的 user_token**（2026-10-29 抓包结论：DLL 窗口里登录
+// ——包括窗口内选手机号验证码——内部走的就是 mobile/finish，回调上来的
+// token 是账号级凭证，无 lt/od，长期有效）；DLL 不给 token 时才退回
+// 「GetUserTicket 的票 → login/ticket」，那条路换出的是会话级 token
+// （带 lt/od，会过期）。账号名单独再查一次用户资料——a50 上下文经常
+// 不带 display_username，不查就只能拿 id 当别名。
 func resolveMPayCredentials(res mpayhost.Result) (token, userID, account string, err error) {
 	account = res.Account
 	dev := res.DeviceID
@@ -290,30 +292,27 @@ func resolveMPayCredentials(res mpayhost.Result) (token, userID, account string,
 		dev, _ = ensureDeviceID()
 	}
 
-	if t := slotToken(res.Slots); t != "" {
-		token = t
-		userID = slotUserID(res.Slots)
+	token = slotToken(res.Slots)
+	userID = slotUserID(res.Slots)
+	if token != "" {
+		logf("使用登录回调里的 token（账号级凭证，%d 字符）", len(token))
 	}
 
-	if res.Ticket != "" {
-		c := mpay.New()
-		out, e := loginTicketAuto(c, res.Ticket, dev)
+	// 回调没给 token：用 DLL 出的票换（会话级，兜底）
+	if token == "" && res.Ticket != "" {
+		out, e := loginTicketAuto(mpay.New(), res.Ticket, dev)
 		if e != nil {
-			if token == "" || userID == "" {
-				return "", "", account, fmt.Errorf("用官方登录窗的票据换 token 失败: %w", e)
-			}
-			logf("用票据换 token 失败（改用回调里的 token）: %v", e)
-		} else {
-			user, _ := out["user"].(map[string]any)
-			if v, _ := user["token"].(string); v != "" {
-				token = v
-			}
-			if v, _ := user["id"].(string); v != "" {
-				userID = v
-			}
-			if account == "" {
-				account = mpay.DisplayNameOf(user)
-			}
+			return "", "", account, fmt.Errorf("用官方登录窗的票据换 token 失败: %w", e)
+		}
+		user, _ := out["user"].(map[string]any)
+		if v, _ := user["token"].(string); v != "" {
+			token = v
+		}
+		if v, _ := user["id"].(string); v != "" {
+			userID = v
+		}
+		if account == "" {
+			account = mpay.DisplayNameOf(user)
 		}
 	}
 
