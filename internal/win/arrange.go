@@ -908,14 +908,93 @@ func planTwoCols(n, wantW, wantH int, wa windowRect) []windowRect {
 
 // placeWindow 把窗口摆进格位；引擎把尺寸撑大/缩小了就按实际尺寸夹回
 // 屏幕内，返回最终落位矩形（给漂移检测当基准）。
+// 同进程的登录/选渠道弹窗（MPAY 系列）跟着主窗一起平移，保持相对
+// 位置——按 pid 归属，不会把别家的弹窗拖走。
 func placeWindow(h uintptr, slot windowRect, wa windowRect) windowRect {
+	var old windowRect
+	hadOld := false
+	if r, ok := getWindowRect(h); ok {
+		old, hadOld = r, true
+	}
+	pid := pidOfWindow(h)
 	procMoveWindow.Call(h, uintptr(slot.left), uintptr(slot.top), uintptr(slot.right-slot.left), uintptr(slot.bottom-slot.top), 1)
 	r, ok := getWindowRect(h)
 	if !ok {
 		return slot
 	}
-	return clampWindow(h, r, wa)
+	final := clampWindow(h, r, wa)
+	if hadOld && pid != 0 {
+		moveOwnedPopups(pid, h, old, final)
+	}
+	return final
 }
+
+// pidOfWindow 取窗口所属进程 id。
+func pidOfWindow(h uintptr) uint32 {
+	var pid uint32
+	_, _, _ = procGetWindowThreadProcessID.Call(h, uintptr(unsafe.Pointer(&pid)))
+	return pid
+}
+
+// 跟随主窗移动的弹窗类名（游戏内 mpay 的登录 / 选渠道 / 年龄提示 /
+// DUI 投影窗）。都是"主窗的附属窗口"，不该留在原地变孤儿。
+var ownedPopupClasses = map[string]bool{
+	"MPAY_LOGIN":    true,
+	"MPAY_AGE_TIPS": true,
+	"DuiShadowWnd":  true,
+}
+
+// moveOwnedPopups 把 pid 名下、除主窗 h 以外的附属弹窗按主窗位移
+// (old→now) 平移。窗口归 pid 所有，天然分得清是谁的弹窗。
+func moveOwnedPopups(pid uint32, main uintptr, old, now windowRect) {
+	dx, dy := now.left-old.left, now.top-old.top
+	if dx == 0 && dy == 0 {
+		return
+	}
+	// 枚举状态（EnumWindows 回调不能用闭包，走包级变量 + 锁）
+	popupMu.Lock()
+	popupPid, popupMain, popupDx, popupDy, popupFound = pid, main, dx, dy, popupFound[:0]
+	popupMu.Unlock()
+	_, _, _ = procEnumWindows.Call(enumPopupsProc, 0)
+	popupMu.Lock()
+	moved := popupFound
+	popupMu.Unlock()
+	for _, h := range moved {
+		var r windowRect
+		if ret, _, _ := procGetWindowRect.Call(h, uintptr(unsafe.Pointer(&r))); ret != 0 && r.right > r.left {
+			procMoveWindow.Call(h, uintptr(r.left+popupDx), uintptr(r.top+popupDy),
+				uintptr(r.right-r.left), uintptr(r.bottom-r.top), 1)
+		}
+	}
+}
+
+var (
+	popupMu        sync.Mutex
+	enumPopupsProc = syscall.NewCallback(func(h, _ uintptr) uintptr {
+		var pid uint32
+		_, _, _ = procGetWindowThreadProcessID.Call(h, uintptr(unsafe.Pointer(&pid)))
+		if pid != popupPid {
+			return 1
+		}
+		if h == popupMain {
+			return 1
+		}
+		var cls [32]uint16
+		n, _, _ := procGetClassNameW.Call(h, uintptr(unsafe.Pointer(&cls)), 32)
+		if ownedPopupClasses[syscall.UTF16ToString(cls[:n])] {
+			if v, _, _ := procIsWindowVisible.Call(h); v != 0 {
+				popupFound = append(popupFound, h)
+			}
+		}
+		return 1
+	})
+	// 仅供 enumPopupsProc 使用（popupMu 保护）
+	popupPid   uint32
+	popupMain  uintptr
+	popupDx    int32
+	popupDy    int32
+	popupFound []uintptr
+)
 
 // ProgressiveArrange 渐进式排列：客户端窗口出一个摆一个，不等全部出完。
 //
@@ -942,7 +1021,14 @@ func ProgressiveArrange(cells []ClientCell, mode string, cols, rows, wantW, want
 	type slot struct {
 		done bool
 		r    windowRect
+		// 首摆前的稳定观测：窗口刚出现时引擎还在初始化（建交换链、
+		// 默认尺寸切换），这时 MoveWindow 可能撞上引擎的自检导致闪退。
+		// 记录上一拍的矩形，连续 stableAfter 不变才第一次摆。
+		lastObs windowRect
+		stable  time.Time
 	}
+	// 稳定窗口期：矩形（含位置与尺寸）连续这么久没变才算"稳定"。
+	const stableAfter = 2500 * time.Millisecond
 	st := make([]slot, len(cells))
 	deadline := time.Now().Add(5 * time.Minute)
 	lastNew := time.Now()
@@ -958,6 +1044,17 @@ func ProgressiveArrange(cells []ClientCell, mode string, cols, rows, wantW, want
 				abs32(r.right-st[i].r.right) > 2 || abs32(r.bottom-st[i].r.bottom) > 2)
 			if st[i].done && !drift {
 				continue
+			}
+			if !st[i].done {
+				// 首摆前等稳定：矩形在变（引擎初始化中）就重置计时
+				if ok && (abs32(r.left-st[i].lastObs.left) > 2 || abs32(r.top-st[i].lastObs.top) > 2 ||
+					abs32(r.right-st[i].lastObs.right) > 2 || abs32(r.bottom-st[i].lastObs.bottom) > 2) {
+					st[i].lastObs = r
+					st[i].stable = time.Now()
+				}
+				if time.Since(st[i].stable) < stableAfter {
+					continue
+				}
 			}
 			st[i].r = placeWindow(h, plan[i], wa)
 			if !st[i].done {

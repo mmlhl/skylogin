@@ -37,7 +37,10 @@ func ensureWallHooks() {
 			RectSink: func(x, y, w, h int) { _ = saveWallRect(x, y, w, h) },
 			Actions: map[string]func(){
 				"tile":    func() { _ = wallArrange("tile") },
-				"cascade": func() { _ = wallArrange("cascade") },
+				"dual":    func() { _ = wallArrange("cascade:" + win.SchemeDual) },
+				"rows":    func() { _ = wallArrange("cascade:" + win.SchemeRows) },
+				"cols":    func() { _ = wallArrange("cascade:" + win.SchemeCols) },
+				"fan":     func() { _ = wallArrange("cascade:" + win.SchemeFan) },
 				"stopall": wallStopAll,
 			},
 			StopClient: wallStopClient,
@@ -46,7 +49,7 @@ func ensureWallHooks() {
 }
 
 // wallArrange 监控墙快捷菜单：立即重排当前客户端窗口。
-// tile = 自适应正方形网格（16:9 不变形），cascade = 级联堆叠。
+// tile = 自适应正方形网格（16:9 不变形）；cascade[:scheme] = 堆叠方案。
 // 一次性摆放，不带渐进排列的漂移回夹——用户手动挪窗口不该被弹回来。
 func wallArrange(mode string) error {
 	cells := clientCells()
@@ -54,8 +57,8 @@ func wallArrange(mode string) error {
 		return fmt.Errorf("没有正在运行的客户端")
 	}
 	var moved int
-	if mode == "cascade" {
-		moved = win.ArrangeByCascade(cells, 0, 0)
+	if isCascade, scheme := win.SplitCascadeMode(mode); isCascade {
+		moved = win.ArrangeByScheme(cells, scheme, 0, 0)
 	} else {
 		n := len(cells)
 		cols := int(math.Ceil(math.Sqrt(float64(n))))
