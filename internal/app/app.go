@@ -161,7 +161,7 @@ func RunUI(title string) error {
 		Version:            func() string { return Version },
 		SaveRailWidth:      saveRailWidth,
 		SaveShell:          saveShell,
-		LoadShell:          func() int { return loadConfig().UiShell },
+		LoadShell:          loadShellIndex,
 		PickPath: func() (string, error) {
 			return win.PickExeFile("选择光遇主程序 sky.exe")
 		},
