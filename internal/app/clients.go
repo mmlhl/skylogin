@@ -175,6 +175,9 @@ func handleTicket(h *fever.Host, req fever.TicketRequest) bool {
 		}
 		clientsMu.Lock()
 		slot.lastTicket = time.Now()
+		if slot.ticketSent.IsZero() {
+			slot.ticketSent = slot.lastTicket
+		}
 		clientsMu.Unlock()
 		logf("票据已发送（%s），等待游戏进入", displayName(*slot.acc))
 	}()
@@ -281,6 +284,46 @@ func liveClients() int {
 }
 
 // startClient 启动一个客户端并登记路由（单开用）。
+// BatchClientStatus 一个客户端在启动等待期的状态快照。
+type BatchClientStatus struct {
+	PID        uint32
+	Name       string
+	Alive      bool // 进程还在
+	EverAlive  bool // 见过它活着（启动失败的从没活过，不算闪退）
+	TicketSent bool // 至少一张票已成功发出（凭证链路已通）
+}
+
+// batchStatus 查询一批 pid 的启动状态。路由被回收（进程退出）的 pid
+// 返回 Alive=false、EverAlive=true（能查到路由说明登记过=活过）。
+func batchStatus(pids []uint32) []BatchClientStatus {
+	clientsMu.Lock()
+	type snap struct {
+		name       string
+		ticketSent bool
+	}
+	snaps := make(map[uint32]snap, len(pids))
+	for _, pid := range pids {
+		if slot := clients[pid]; slot != nil {
+			snaps[pid] = snap{name: displayName(*slot.acc), ticketSent: !slot.ticketSent.IsZero()}
+		}
+	}
+	clientsMu.Unlock()
+
+	out := make([]BatchClientStatus, 0, len(pids))
+	for _, pid := range pids {
+		st := BatchClientStatus{PID: pid, EverAlive: true, Alive: fever.ProcessAlive(pid)}
+		if sn, ok := snaps[pid]; ok {
+			st.Name = sn.name
+			st.TicketSent = sn.ticketSent
+		} else {
+			// 路由已回收：看门狗/退出清理删掉了，视为已退出
+			st.Alive = false
+		}
+		out = append(out, st)
+	}
+	return out
+}
+
 func startClient(acc Account, dev *device.ClientProfile, ticket, channel string) (string, error) {
 	exe := resolveSkyPath()
 	if exe == "" {

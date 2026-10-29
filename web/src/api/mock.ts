@@ -65,13 +65,14 @@ function fakeState(): AppState {
       mirrorSameVolume: true,
       mirrorSizeText: "5.06 GB",
       dataDir: "C:\\Users\\you\\AppData\\Roaming\\SkyLogin",
-      version: "1.0.0",
+    version: "1.0.0",
       buildTime: "01-02 15:04",
       repo: "https://github.com/mmlhl/skylogin",
       goVersion: "go1.27.1",
       protocol: "内置默认",
     },
     authHint: {},
+    launchAlert: null,
     version: "1.0.0",
   };
 }

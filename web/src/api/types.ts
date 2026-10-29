@@ -123,6 +123,8 @@ export interface AppState {
   scan: ScanState;
   settings: Settings;
   authHint: AuthHint;
+  /** 启动事件弹窗（如客户端闪退）；id 递增，前端按 id 去重展示 */
+  launchAlert: { id: number; title: string; message: string } | null;
   version: string;
 }
 /** 接口统一的返回包装 */
