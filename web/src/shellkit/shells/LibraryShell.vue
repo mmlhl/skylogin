@@ -4,7 +4,7 @@
  * 卡片即账号，启动 / 停止 / 刷新都在卡上，多账号时最直观。
  */
 import { ref } from "vue";
-import { Flame, Minus, Square, X, Layers, Plus, Eye, EyeOff, Settings, MoreHorizontal, Play, RefreshCw, LayoutDashboard } from "lucide-vue-next";
+import { Flame, Minus, Square, X, Layers, Plus, Eye, EyeOff, Settings, MoreHorizontal, Play, RefreshCw, LayoutDashboard, SlidersHorizontal } from "lucide-vue-next";
 import type { LauncherStore } from "../contract";
 
 const props = defineProps<{ store: LauncherStore }>();
@@ -69,6 +69,7 @@ function cardAction(a: Account) {
             <div class="menubg" @click.stop="menuFor = ''" />
             <div class="menu" @click.stop>
               <button @click="store.refreshCred(a.id); menuFor = ''">刷新凭证</button>
+              <button @click="demoUi.openQuality(a.id); menuFor = ''">游戏设置</button>
               <button @click="demoUi.openRename(a.id); menuFor = ''">修改别名</button>
               <button class="del" @click="store.remove(a.id); menuFor = ''">删除账号</button>
             </div>

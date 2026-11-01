@@ -184,6 +184,23 @@ function confirmDup() {
   demoUi.dupId = "";
 }
 
+/* ---- 游戏设置（账号级画质/帧率，四种壳共用这一个弹窗） ---- */
+const qAccount = computed(() => store.accounts.find((a) => a.id === demoUi.qualityId));
+const qModeRow = ref("");
+const qFpsRow = ref(0);
+watch(
+  () => demoUi.qualityId,
+  () => {
+    qModeRow.value = qAccount.value?.qualityMode || "";
+    qFpsRow.value = qAccount.value?.qualityFps || 0;
+  },
+);
+function confirmQuality() {
+  if (!demoUi.qualityId) return;
+  store.setAccountQuality(demoUi.qualityId, qModeRow.value, qFpsRow.value);
+  demoUi.qualityId = "";
+}
+
 /* ---- 改名 ---- */
 const renameText = ref("");
 watch(
@@ -382,6 +399,40 @@ function confirmRename() {
       <div class="mfoot">
         <button class="btn" @click="demoUi.dupId = ''">取消</button>
         <button class="btn primary" @click="confirmDup">{{ dupExisting.length ? "继续创建" : "创建" }}</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 游戏设置：账号级画质/帧率 -->
+  <div v-if="demoUi.qualityId" class="mask" @click.self="demoUi.qualityId = ''">
+    <div class="modal slim">
+      <div class="mhead">
+        <b>游戏设置</b>
+        <button class="mclose" @click="demoUi.qualityId = ''"><X /></button>
+      </div>
+      <p class="qwho">
+        <span class="qava">{{ (qAccount?.name || "?").slice(0, 1) }}</span>
+        {{ qAccount?.name }}
+      </p>
+
+      <div class="qsec">
+        <div class="qlabel2">画质</div>
+        <div class="qpills">
+          <button v-for="o in qualityOpts" :key="'qq' + o.v" :class="{ on: qModeRow === o.v }" :title="o.tip"
+            @click="qModeRow = o.v">{{ o.label }}</button>
+        </div>
+      </div>
+      <div class="qsec">
+        <div class="qlabel2">帧率</div>
+        <div class="qpills">
+          <button v-for="o in fpsOpts" :key="'qf' + o.v" :class="{ on: qFpsRow === o.v }"
+            @click="qFpsRow = o.v">{{ o.label }}</button>
+        </div>
+      </div>
+
+      <p class="qnote">启动（单开 / 多开）前写入这台客户端；多开弹窗选「账号配置」时也按这里的设置。</p>
+      <div class="mfoot">
+        <button class="btn primary" @click="confirmQuality">保存</button>
       </div>
     </div>
   </div>
@@ -844,6 +895,60 @@ function confirmRename() {
   display: flex;
   gap: 6px;
   margin: 2px 0 6px;
+}
+.qwho {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 12px;
+  font-weight: 500;
+}
+.qava {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: var(--s2, rgba(255, 255, 255, 0.08));
+  font-size: 12px;
+}
+.qsec {
+  margin-bottom: 12px;
+}
+.qlabel2 {
+  font-size: 12px;
+  color: var(--muted-foreground, #98a2ae);
+  margin-bottom: 6px;
+}
+.qpills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.qpills button {
+  padding: 5px 14px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted-foreground, #98a2ae);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.qpills button:hover {
+  color: var(--foreground, #eef1f4);
+  border-color: var(--muted-foreground, #98a2ae);
+}
+.qpills button.on {
+  background: var(--primary, #d8b47c);
+  border-color: var(--primary, #d8b47c);
+  color: var(--primary-foreground, #161619);
+  font-weight: 500;
+}
+.qnote {
+  margin: 2px 0 10px;
+  font-size: 11px;
+  color: var(--muted-foreground, #98a2ae);
 }
 .dupwarn {
   margin: 4px 0 10px;

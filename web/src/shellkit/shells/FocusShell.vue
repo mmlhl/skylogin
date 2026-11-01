@@ -4,7 +4,7 @@
  * 一屏只有一个动作，账号切换收进底部 chips。
  */
 import { computed } from "vue";
-import { Flame, Minus, Square, X, Layers, Eye, EyeOff, Settings, Pencil, Play, Plus, RefreshCw, LayoutDashboard } from "lucide-vue-next";
+import { Flame, Minus, Square, X, Layers, Eye, EyeOff, Settings, Pencil, Play, Plus, RefreshCw, LayoutDashboard, SlidersHorizontal } from "lucide-vue-next";
 import type { LauncherStore } from "../contract";
 
 const props = defineProps<{ store: LauncherStore }>();
@@ -40,6 +40,7 @@ const expired = computed(() => cur.value?.cred === "expired");
         </p>
         <div class="ftitle">
           <h1>{{ store.maskAll ? cur.maskedName : cur.name }}</h1>
+          <button class="ico" title="游戏设置（画质 / 帧率）" @click="demoUi.openQuality(cur.id)"><SlidersHorizontal /></button>
           <button class="ico" title="修改别名" @click="demoUi.openRename(cur.id)"><Pencil /></button>
         </div>
         <p class="fmeta mono">{{ store.maskAll ? cur.maskedId : cur.fullId }}<template v-if="cur.level"> · 等级 {{ cur.level }}</template></p>

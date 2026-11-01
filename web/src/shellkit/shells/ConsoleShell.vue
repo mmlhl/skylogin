@@ -4,7 +4,7 @@
  * 信息密度最高，运行中的客户端在详情页统一管理。
  */
 import { computed, ref } from "vue";
-import { Flame, LayoutGrid, LayoutDashboard, Monitor, Settings, Eye, EyeOff, Plus, Pencil, Play, Square, Layers, RefreshCw, CopyPlus, Gauge } from "lucide-vue-next";
+import { Flame, LayoutGrid, LayoutDashboard, Monitor, Settings, Eye, EyeOff, Plus, Pencil, Play, Square, Layers, RefreshCw, CopyPlus, SlidersHorizontal } from "lucide-vue-next";
 import type { LauncherStore } from "../contract";
 
 const props = defineProps<{ store: LauncherStore }>();
@@ -36,21 +36,6 @@ function onDividerDown(e: MouseEvent) {
 }
 const expired = computed(() => cur.value?.cred === "expired");
 const runningSelf = computed(() => !!cur.value?.running);
-
-// 游戏画质/帧率档位（与多开弹窗同一套，档位名 = 游戏内部名）
-const qualityOpts = [
-  { v: "", label: "跟随游戏", tip: "启动前不预写画质" },
-  { v: "LowPower", label: "省电", tip: "游戏内部档位 LowPower" },
-  { v: "Default", label: "默认", tip: "游戏内部档位 Default" },
-  { v: "HighQuality", label: "高画质", tip: "游戏内部档位 HighQuality" },
-  { v: "Presentation", label: "最高", tip: "游戏内部档位 Presentation" },
-];
-const fpsOpts = [
-  { v: 0, label: "跟随游戏" },
-  { v: 30, label: "30" },
-  { v: 60, label: "60" },
-  { v: 120, label: "120" },
-];
 
 </script>
 
@@ -110,6 +95,7 @@ const fpsOpts = [
           <p class="deyebrow">{{ channelLabel(cur.channel) }}</p>
           <div class="dtitle">
             <h3>{{ store.maskAll ? cur.maskedName : cur.name }}</h3>
+            <button class="ico" title="游戏设置（画质 / 帧率）" @click="demoUi.openQuality(cur.id)"><SlidersHorizontal /></button>
             <button class="ico" title="修改别名" @click="demoUi.openRename(cur.id)"><Pencil /></button>
             <span v-if="runningSelf" class="pill live"><em class="dot ok live" />运行中</span>
             <span v-else-if="expired" class="pill exp"><em class="dot bad" />凭证过期</span>
@@ -129,29 +115,6 @@ const fpsOpts = [
           </b>
         </div>
         <div><span>状态</span><b>{{ runningSelf ? "已运行 " + fmtRun(cur.runSeconds) : "空闲" }}</b></div>
-      </div>
-
-      <!-- 这个账号自己的游戏画质/帧率：单开和多开（账号配置档）都优先用它 -->
-      <div class="qcard">
-        <div class="qhead">
-          <Gauge class="qicon" />
-          <b>游戏画质</b>
-          <span class="qhint">只对「{{ store.maskAll ? cur.maskedName : cur.name }}」生效，启动前写入</span>
-        </div>
-        <div class="qrow">
-          <span class="qlabel">画质</span>
-          <div class="qpills">
-            <button v-for="o in qualityOpts" :key="'q' + o.v" :class="{ on: (cur.qualityMode || '') === o.v }"
-              :title="o.tip" @click="store.setAccountQuality(cur.id, o.v, cur.qualityFps || 0)">{{ o.label }}</button>
-          </div>
-        </div>
-        <div class="qrow">
-          <span class="qlabel">帧率</span>
-          <div class="qpills">
-            <button v-for="o in fpsOpts" :key="'f' + o.v" :class="{ on: (cur.qualityFps || 0) === o.v }"
-              @click="store.setAccountQuality(cur.id, cur.qualityMode || '', o.v)">{{ o.label }}</button>
-          </div>
-        </div>
       </div>
 
       <div class="dacts">
@@ -475,42 +438,6 @@ const fpsOpts = [
 }
 </style>
 <style scoped>
-.qcard {
-  padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--s1);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.qhead {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-}
-.qicon {
-  width: 15px;
-  height: 15px;
-  color: var(--acc);
-}
-.qhint {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--faint);
-}
-.qrow {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.qlabel {
-  flex: none;
-  width: 30px;
-  font-size: 12px;
-  color: var(--dim);
-}
 .qpills {
   display: flex;
   flex-wrap: wrap;
@@ -535,22 +462,6 @@ const fpsOpts = [
   border-color: var(--acc);
   color: var(--on);
   font-weight: 500;
-}
-.qrow {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.qlabel {
-  flex: none;
-  width: 30px;
-  font-size: 12px;
-  color: var(--dim);
-}
-.qsegs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
 }
 .qsegs button {
   padding: 3px 10px;
