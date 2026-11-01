@@ -47,6 +47,7 @@ func settingsView() map[string]any {
 		"deviceInfo":       deviceInfoForUI(),
 		"closeLauncher":    c.CloseLauncherEnabled(),
 		"railWidth":        c.RailWidth,
+		"maskTitles":       maskEnabled(),
 		"mirrorDir":        fever.MirrorRoot(exe, c.MirrorDir),
 		"mirrorDefault":    fever.DefaultMirrorRoot(exe),
 		"mirrorSameVolume": fever.SameVolume(fever.MirrorRoot(exe, c.MirrorDir), filepath.Dir(exe)),

@@ -60,6 +60,7 @@ function fakeState(): AppState {
   mouseArbiter: true,
   mouseArbiterMin: 3,
       railWidth: 0,
+      maskTitles: true,
       mirrorDir: "D:\\SkyLoginMirror",
       mirrorDefault: "D:\\SkyLoginMirror",
       mirrorSameVolume: true,

@@ -12,7 +12,7 @@ import (
 )
 
 var (
-	crypt32               = syscall.NewLazyDLL("crypt32.dll")
+	crypt32                = syscall.NewLazyDLL("crypt32.dll")
 	procCryptProtectData   = crypt32.NewProc("CryptProtectData")
 	procCryptUnprotectData = crypt32.NewProc("CryptUnprotectData")
 	kernel32Local          = syscall.NewLazyDLL("kernel32.dll")

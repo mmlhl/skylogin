@@ -41,6 +41,7 @@ func ensureWallHooks() {
 				"rows":    func() { _ = wallArrange("cascade:" + win.SchemeRows) },
 				"cols":    func() { _ = wallArrange("cascade:" + win.SchemeCols) },
 				"fan":     func() { _ = wallArrange("cascade:" + win.SchemeFan) },
+				"mask":    func() { setMaskTitlesOn(!maskEnabled()) },
 				"stopall": wallStopAll,
 			},
 			StopClient: wallStopClient,

@@ -50,6 +50,8 @@ type Config struct {
 	WinScreenH int `json:"win_screen_h,omitempty"`
 	// WinMax = 1 表示关窗时是最大化；恢复时先摆 WinX/Y/W/H（还原矩形）再最大化
 	WinMax int `json:"win_max,omitempty"`
+	// MaskTitles = false 表示游戏窗口标题 / 监控墙标签不打码；缺省 = 打码（true）
+	MaskTitles *bool `json:"mask_titles,omitempty"`
 
 	// 多开默认设置：启动前写进每个客户端的 preferences.sav（internal/prefs）。
 	// 画质用游戏认识的名字（实测见过 LowPower / Presentation），空 = 跟随游戏；
@@ -68,6 +70,14 @@ type Config struct {
 	// 用同一个 unique_id 在 a50 再登记一遍即可长期复用。
 	A50DeviceID  string `json:"a50_device_id,omitempty"`
 	A50DeviceKey string `json:"a50_device_key,omitempty"`
+}
+
+// MaskTitlesEnabled 返回打码开关，未设置时默认开启。
+func (c Config) MaskTitlesEnabled() bool {
+	if c.MaskTitles == nil {
+		return true
+	}
+	return *c.MaskTitles
 }
 
 // CloseLauncherEnabled 返回设置值，未设置时默认开启。

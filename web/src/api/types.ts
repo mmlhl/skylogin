@@ -102,6 +102,8 @@ export interface Settings {
   mouseArbiterMin: number;
   /** 左栏宽度（像素，0 表示用默认值） */
   railWidth: number;
+  /** 窗口标题 / 监控墙标签 / 列表的隐私打码开关（同一状态） */
+  maskTitles: boolean;
   /** 多开镜像目录（第 2 个客户端从这里启动） */
   mirrorDir: string;
   /** 默认镜像目录（游戏所在盘） */

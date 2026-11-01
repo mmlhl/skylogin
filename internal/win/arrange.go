@@ -325,6 +325,11 @@ func getWindowRect(h uintptr) (windowRect, bool) {
 	return r, true
 }
 
+// RenameClientWindow 把客户端主窗标题改成「槽位 · 标签」（打码切换时重写用）。
+func RenameClientWindow(h uintptr, label string, slot int) {
+	renameWindow(h, label, slot)
+}
+
 // renameWindow 把窗口标题改成「序号 · 账号名」，不然一排窗口全叫"光遇"没法分。
 func renameWindow(h uintptr, label string, slot int) {
 	title := fmt.Sprintf("%d · 光遇", slot)

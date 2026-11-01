@@ -93,7 +93,7 @@ func clientLabels() map[uint32]string {
 		clientsMu.Lock()
 		for _, a := range accs {
 			if pid, ok := runningByAccount[accountKey(a)]; ok && fever.ProcessAlive(pid) {
-				labels[pid] = displayName(a)
+				labels[pid] = displayLabelOf(a)
 			}
 		}
 		clientsMu.Unlock()
@@ -186,6 +186,7 @@ func arrangeWhenReady(cols, rows, w, h int, mode string) {
 			logf("自动排列：没有存活客户端，跳过")
 			return
 		}
+		recordWindowSlots(cells)
 		moved := win.ProgressiveArrange(cells, mode, cols, rows, w, h)
 		if moved == 0 {
 			logf("自动排列失败: 窗口找到了但移不动（可能权限不够）")

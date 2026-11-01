@@ -128,7 +128,31 @@ var wallMenu = []struct {
 	{"rows", "两行", false},
 	{"cols", "两列", false},
 	{"fan", "满扇", false},
+	{"mask", "打码", false},
 	{"stopall", "全部停止", true},
+}
+
+// SetWallMenuItem 改某个菜单按钮的文字（打码切换用）并重绘顶栏。
+func SetWallMenuItem(id, text string) {
+	wallMu.Lock()
+	defer wallMu.Unlock()
+	h := wallHwnd
+	if h == 0 {
+		// 墙没开：只更新文字，下次开墙就是新文案
+		for i := range wallMenu {
+			if wallMenu[i].id == id {
+				wallMenu[i].text = text
+			}
+		}
+		return
+	}
+	for i := range wallMenu {
+		if wallMenu[i].id == id {
+			wallMenu[i].text = text
+			break
+		}
+	}
+	procInvalidate.Call(h, 0, 1)
 }
 
 // trackMouseEvent 是 TRACKMOUSEEVENT（收 WM_MOUSELEAVE 用）。

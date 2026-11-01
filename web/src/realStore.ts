@@ -73,6 +73,8 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
         qualityFps: a.qualityFps,
       };
     });
+    // 墙按钮 / API 改了打码状态时，列表跟随（每秒轮询对齐一次）
+    st.maskAll = state.settings.maskTitles;
     for (const k of [...startedAt.keys()]) {
       if (!list.some((a) => a.id === k)) startedAt.delete(k);
     }
@@ -175,7 +177,9 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
     },
 
     toggleMask() {
-      st.maskAll = !st.maskAll;
+      const next = !st.maskAll;
+      st.maskAll = next;
+      void api.setMaskTitles(next);
     },
 
     addAccount() {

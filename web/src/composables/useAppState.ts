@@ -30,6 +30,7 @@ function emptyState(): AppState {
   mouseArbiter: false,
   mouseArbiterMin: 0,
       railWidth: 0,
+      maskTitles: true,
       mirrorDir: "",
       mirrorDefault: "",
       mirrorSameVolume: true,

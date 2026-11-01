@@ -55,6 +55,7 @@ type Hooks struct {
 	Delete          func(string) error
 	// AccountQuality 保存某行账号的游戏画质/帧率偏好。
 	AccountQuality func(id, mode string, fps int) error
+	SetMaskTitles  func(on bool) bool
 	// Duplicate 创建一条账号的副本（同 PlayerID 的第二条本地记录，键 xxx-2）。
 	Duplicate    func(id, region string) (string, error)
 	Settings     func() map[string]any
@@ -432,6 +433,19 @@ func (s *Server) Handler() http.Handler {
 
 	// 左栏宽度：用户拖完存到本地配置（WebView2 每次端口都是随机的，
 	// localStorage 按端口隔离，靠它记不住）
+	mux.HandleFunc("/api/ui/mask", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			On *bool `json:"on"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<10)).Decode(&body)
+		if body.On == nil {
+			writeJSON(w, map[string]any{"ok": false, "message": "缺少 on"})
+			return
+		}
+		final := s.hooks.SetMaskTitles(*body.On)
+		writeJSON(w, map[string]any{"ok": true, "on": final})
+	})
+
 	mux.HandleFunc("/api/ui/rail-width", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeJSON(w, map[string]any{"ok": false, "message": "只支持 POST"})

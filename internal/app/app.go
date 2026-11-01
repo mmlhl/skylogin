@@ -143,6 +143,7 @@ func RunUI(title string) error {
 		Delete:         deleteAccount,
 		Duplicate:      duplicateAccount,
 		AccountQuality: setAccountQuality,
+		SetMaskTitles:  setMaskTitlesOn,
 		Settings:       settingsView,
 		SaveSettings: func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int) error {
 			return applySettings(skyExe, deviceID, mirrorDir, closeLauncher, multiQuality, multiFps, mouseArbiter, arbiterMin)

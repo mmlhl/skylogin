@@ -71,6 +71,14 @@ export const api = {
 			}),
 		}),
 
+	/** 切换隐私打码（窗口标题 / 监控墙标签 / 列表显示同一开关） */
+	setMaskTitles: (on: boolean) =>
+		request("/api/ui/mask", { method: "POST", body: JSON.stringify({ on }) }),
+
+	/** 切换隐私打码（窗口标题 / 监控墙标签 / 列表显示同一开关） */
+	setMaskTitles: (on: boolean) =>
+		request("/api/ui/mask", { method: "POST", body: JSON.stringify({ on }) }),
+
 	/** 保存某行账号自己的画质/帧率（mode 空 / fps 0 = 跟随游戏） */
 	setAccountQuality: (id: string, mode: string, fps: number) =>
 		request("/api/accounts/quality", { method: "POST", body: JSON.stringify({ id, mode, fps }) }),
