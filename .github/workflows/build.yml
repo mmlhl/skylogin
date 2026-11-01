@@ -91,7 +91,8 @@ jobs:
           CGO_ENABLED: '0'
         run: |
           $bt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mmZ")
-          $prev = git describe --tags --abbrev=0 "${{ github.ref_name }}"^ 2>$null
+          # 上一个 tag：按创建时间排序取第二个（第一个是本次的 tag）
+          $prev = (git tag --sort=-creatordate)[1]
           $notes = if ($prev) { (git log --oneline "$prev..HEAD" | ForEach-Object { $_ -replace '^[0-9a-f]{7} ', '- ' }) -join "`n" } else { "" }
           "notes<<NOTE" >> $env:GITHUB_OUTPUT
           $notes >> $env:GITHUB_OUTPUT
