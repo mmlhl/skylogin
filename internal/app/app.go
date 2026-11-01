@@ -31,6 +31,11 @@ type Account struct {
 	OpenID       string `json:"open_id"`
 	UpdatedAt    int64  `json:"updated_at"`
 
+	// 游戏画质偏好（这一行账号专属）：QualityMode 空 = 跟随游戏/多开默认；
+	// QualityFps 0 = 同上。多开预写镜像设置时优先用它，其次才是全局默认。
+	QualityMode string `json:"quality_mode,omitempty"`
+	QualityFps  int    `json:"quality_fps,omitempty"`
+
 	// CopyKey 是副本的本机键（"PlayerID-2" 这样的后缀），允许同一个
 	// PlayerID 存多条记录（典型：同一网易账号再建一个副本在另一个区玩）。
 	// 空 = 原始行，键就是 PlayerID；老数据没有这个字段，无需迁移。
@@ -124,20 +129,21 @@ func RunUI(title string) error {
 		},
 		Accounts:        accountsView,
 		Start:           launchGame,
-		StartMany:       launchMany,
+		StartMany:       func(ids []string) (string, error) { return launchMany(ids, "", 0) },
 		StartManyLayout: launchManyLayout,
 		Arrange: func(cols, rows, w, h int) error {
 			_, err := arrangeClients(cols, rows, w, h)
 			return err
 		},
-		WallToggle:  ToggleWall,
-		StopAccount: stopAccount,
-		Status:      gameStatus,
-		Select:      setCurrent,
-		Rename:      renameAccount,
-		Delete:      deleteAccount,
-		Duplicate:   duplicateAccount,
-		Settings:    settingsView,
+		WallToggle:     ToggleWall,
+		StopAccount:    stopAccount,
+		Status:         gameStatus,
+		Select:         setCurrent,
+		Rename:         renameAccount,
+		Delete:         deleteAccount,
+		Duplicate:      duplicateAccount,
+		AccountQuality: setAccountQuality,
+		Settings:       settingsView,
 		SaveSettings: func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int) error {
 			return applySettings(skyExe, deviceID, mirrorDir, closeLauncher, multiQuality, multiFps, mouseArbiter, arbiterMin)
 		},
@@ -213,15 +219,15 @@ func RunUI(title string) error {
 	// 主窗口几何记忆：记录在 config 里（物理像素），屏幕换过就不恢复、
 	// 按默认算法重新开，判断在 win 层做（它才知道当前主屏多大）
 	if err := win.OpenWebView(url, title, filepath.Join(dataDir(), "webview"), 1400, 900, win.WebViewHooks{
-		SavedRect: func() (int, int, int, int, int, int, bool) {
+		SavedRect: func() (int, int, int, int, int, int, bool, bool) {
 			c := loadConfig()
 			if c.WinW <= 0 || c.WinH <= 0 || c.WinScreenW <= 0 || c.WinScreenH <= 0 {
-				return 0, 0, 0, 0, 0, 0, false
+				return 0, 0, 0, 0, 0, 0, false, false
 			}
-			return c.WinX, c.WinY, c.WinW, c.WinH, c.WinScreenW, c.WinScreenH, true
+			return c.WinX, c.WinY, c.WinW, c.WinH, c.WinScreenW, c.WinScreenH, c.WinMax == 1, true
 		},
-		SaveRect: func(x, y, w, h, screenW, screenH int) {
-			_ = saveWinRect(x, y, w, h, screenW, screenH)
+		SaveRect: func(x, y, w, h, screenW, screenH int, zoomed bool) {
+			_ = saveWinRect(x, y, w, h, screenW, screenH, zoomed)
 		},
 	}); err != nil {
 		logf("WebView2 窗口启动失败（%v），改用系统浏览器", err)

@@ -335,15 +335,15 @@ func startClient(acc Account, dev *device.ClientProfile, ticket, channel string)
 	if accountRunning(accountKey(acc)) {
 		return "", fmt.Errorf("这个账号已经在运行了，不能重复启动")
 	}
-	launchExe, err := chooseInstall(exe, acc)
+	launchExe, err := chooseInstall(exe, acc, "", 0)
 	if err != nil {
 		return "", err
 	}
-	return launchAt(acc, dev, ticket, channel, launchExe)
+	return launchAt(acc, dev, ticket, channel, launchExe, "", 0)
 }
 
 // launchAt 用指定目录启动并登记（多开时目录已提前建好，这里只管拉进程）。
-func launchAt(acc Account, dev *device.ClientProfile, ticket, channel, launchExe string) (string, error) {
+func launchAt(acc Account, dev *device.ClientProfile, ticket, channel, launchExe string, ovMode string, ovFps int) (string, error) {
 	p, err := startSkyPidFn(launchExe)
 	if err != nil {
 		// 直接启动失败（通常是权限），退回提权启动；这种方式拿不到 pid
@@ -401,11 +401,11 @@ func launchAt(acc Account, dev *device.ClientProfile, ticket, channel, launchExe
 // 例外：副本（CopyKey 非空）永远走镜像 ——
 // 镜像里装了浏览器壳，壳会把 CEF channel 改成这条记录专属的名字，
 // 于是它在游戏里选的安卓区/iOS 区会被一直记住。
-func chooseInstall(exe string, acc Account) (string, error) {
+func chooseInstall(exe string, acc Account, ovMode string, ovFps int) (string, error) {
 	if acc.CopyKey == "" && liveClients() == 0 {
 		return exe, nil
 	}
-	return prepareMirror(exe, accountKey(acc))
+	return prepareMirror(exe, acc, ovMode, ovFps)
 }
 
 // prepareMirror 新建一套镜像目录，返回里面 sky.exe 的路径。
@@ -416,7 +416,8 @@ func chooseInstall(exe string, acc Account) (string, error) {
 //
 // channelKey 非空时，把这条记录专属的 CEF channel 写进镜像，
 // 浏览器壳按它改 profile 名（同一行账号 → 同一个 profile → 记住选区）。
-func prepareMirror(exe, channelKey string) (string, error) {
+func prepareMirror(exe string, acc Account, ovMode string, ovFps int) (string, error) {
+	channelKey := accountKey(acc)
 	root := fever.MirrorRoot(exe, loadConfig().MirrorDir)
 	clientsMu.Lock()
 	mirrorSeq++
@@ -432,7 +433,7 @@ func prepareMirror(exe, channelKey string) (string, error) {
 	if err != nil {
 		logf("镜像目录已建但有告警（%v）", err)
 	}
-	makeIndependentPrefs(exe, m)
+	makeIndependentPrefs(exe, m, acc, ovMode, ovFps)
 	if err := installWebviewShim(m); err != nil {
 		logf("浏览器壳安装失败: %v", err)
 	}
@@ -452,7 +453,7 @@ var nextFullscreen atomic.Bool
 // 这份文件存着全屏/画质/帧率等本地设置（TGC 的 PREF 格式，见 internal/prefs）。
 // 整目录硬链接的镜像里它和本体是同一份内容，所有客户端读写互相覆盖，
 // 游戏启动时还都按上一次的状态恢复窗口（全屏多开就是这么把排列毁掉的）。
-func makeIndependentPrefs(srcExe, mirrorRoot string) {
+func makeIndependentPrefs(srcExe, mirrorRoot string, acc Account, ovMode string, ovFps int) {
 	rel := filepath.Join("data", "ThatGameCompany", "com.netease.sky", "preferences.sav")
 	p := filepath.Join(mirrorRoot, rel)
 	b, err := os.ReadFile(p)
@@ -468,9 +469,10 @@ func makeIndependentPrefs(srcExe, mirrorRoot string) {
 		return
 	}
 
-	// 预写默认值：显示模式（平铺 / 堆叠 = 窗口，全屏 = 全屏）+ 画质 / 帧率
-	cfg := loadConfig()
-	out, err := prefs.ApplyMultiDefaults(b, nextFullscreen.Load(), cfg.MultiQualityMode, cfg.MultiQualityFps)
+	// 预写默认值：显示模式（平铺 / 堆叠 = 窗口，全屏 = 全屏）+ 画质 / 帧率。
+	// 取值优先级：多开弹窗的本次覆盖 > 账号自己的配置 > 跟随游戏（不写）。
+	mode, fps := effectiveQuality(acc, ovMode, ovFps)
+	out, err := prefs.ApplyMultiDefaults(b, nextFullscreen.Load(), mode, fps)
 	if err != nil {
 		logf("镜像设置预写失败: %v", err)
 		return
@@ -483,13 +485,23 @@ func makeIndependentPrefs(srcExe, mirrorRoot string) {
 	if nextFullscreen.Load() {
 		extra = "全屏"
 	}
-	if cfg.MultiQualityMode != "" {
-		extra += "，画质 " + cfg.MultiQualityMode
+	if mode != "" {
+		extra += "，画质 " + mode
 	}
-	if cfg.MultiQualityFps > 0 {
-		extra += fmt.Sprintf("，帧率 %d", cfg.MultiQualityFps)
+	if fps > 0 {
+		extra += fmt.Sprintf("，帧率 %d", fps)
 	}
 	logf("镜像设置已独立并预写（%s）: %s", extra, rel)
+}
+
+// effectiveQuality 计算某行账号本次启动实际预写的画质/帧率：
+// 多开弹窗的本次覆盖 > 账号自己的配置 > 跟随游戏（返回空/0，什么都不写）。
+func effectiveQuality(acc Account, ovMode string, ovFps int) (string, int) {
+	mode, fps := acc.QualityMode, acc.QualityFps
+	if ovMode != "" || ovFps > 0 {
+		mode, fps = ovMode, ovFps
+	}
+	return mode, fps
 }
 
 // stopAccount 结束某个账号正在运行的游戏（连同它的子进程）。

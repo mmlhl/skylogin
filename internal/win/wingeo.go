@@ -16,10 +16,11 @@ import (
 // WebViewHooks 主窗口几何记忆的 app 层回调（与 WallHooks 同思路）。
 type WebViewHooks struct {
 	// SavedRect 返回上次记住的位置尺寸（物理像素）。screenW/screenH 是
-	// 记录时的主屏物理分辨率；ok=false 表示还没有记录。
-	SavedRect func() (x, y, w, h, screenW, screenH int, ok bool)
-	// SaveRect 在几何停稳变化后、以及窗口关闭前回调（物理像素 + 当时主屏）。
-	SaveRect func(x, y, w, h, screenW, screenH int)
+	// 记录时的主屏物理分辨率；zoomed = 记录时窗口最大化；ok=false 表示没有记录。
+	SavedRect func() (x, y, w, h, screenW, screenH int, zoomed bool, ok bool)
+	// SaveRect 在几何停稳变化后、以及窗口关闭前回调（物理像素 + 当时主屏；
+	// zoomed = 快照时窗口最大化，x/y/w/h 是还原矩形）。
+	SaveRect func(x, y, w, h, screenW, screenH int, zoomed bool)
 }
 
 var procGetDpiForSystem = user32dll.NewProc("GetDpiForSystem")
@@ -30,7 +31,9 @@ var procGetDpiForSystem = user32dll.NewProc("GetDpiForSystem")
 // 上下文；感知切换只对本线程生效，不锁线程的话 goroutine 一迁移，
 // enter 和 GetWindowRect 会落在两个线程上，量出来的就是虚拟坐标。
 // 最小化时 Windows 会把窗口挪到 -32000，这种矩形不能存，返回 ok=false。
-func winGeoSnapshot(hwnd uintptr) (r windowRect, screenW, screenH int, ok bool) {
+// 最大化时取"还原矩形"（用户最大化前的位置尺寸）并带 zoomed 标记——
+// 否则关窗存下的是铺满屏幕的最大化尺寸，下次恢复就成了一个巨窗。
+func winGeoSnapshot(hwnd uintptr) (r windowRect, screenW, screenH int, zoomed bool, ok bool) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	pp, switched := enterPhysicalPixels()
@@ -38,14 +41,34 @@ func winGeoSnapshot(hwnd uintptr) (r windowRect, screenW, screenH int, ok bool) 
 		defer pp.restore()
 	}
 	if iconic, _, _ := procIsIconic.Call(hwnd); iconic != 0 {
-		return r, 0, 0, false
+		return r, 0, 0, false, false
 	}
-	if ret, _, _ := procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r))); ret == 0 ||
-		r.right <= r.left || r.bottom <= r.top {
-		return r, 0, 0, false
+	z1, _, _ := procIsZoomed.Call(hwnd)
+	zoomed = z1 != 0
+	if zoomed {
+		if nr, has := normalPlacementRect(hwnd); has {
+			r = nr
+		}
+	}
+	if r.right <= r.left || r.bottom <= r.top {
+		if ret, _, _ := procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r))); ret == 0 ||
+			r.right <= r.left || r.bottom <= r.top {
+			return r, 0, 0, zoomed, false
+		}
 	}
 	screenW, screenH = primaryScreenSize()
-	return r, screenW, screenH, true
+	return r, screenW, screenH, zoomed, true
+}
+
+// normalPlacementRect 取最大化窗口记住的"还原矩形"（GetWindowPlacement）。
+func normalPlacementRect(hwnd uintptr) (windowRect, bool) {
+	var wp windowPlacement
+	wp.length = uint32(unsafe.Sizeof(wp))
+	if ret, _, _ := procGetWindowPlacement.Call(hwnd, uintptr(unsafe.Pointer(&wp))); ret != 0 &&
+		wp.rcNormal.right > wp.rcNormal.left && wp.rcNormal.bottom > wp.rcNormal.top {
+		return wp.rcNormal, true
+	}
+	return windowRect{}, false
 }
 
 // primaryScreenSize 返回主屏的物理分辨率（须在物理像素上下文里调用）。
@@ -105,11 +128,12 @@ func setWinRect(hwnd uintptr, x, y, w, h int) {
 		swpNoZOrder|swpNoActivate)
 }
 
-// winGeoState 一次快照：窗口矩形 + 当时的主屏分辨率。
+// winGeoState 一次快照：窗口矩形 + 当时的主屏分辨率 + 最大化标记。
 type winGeoState struct {
 	r       windowRect
 	screenW int
 	screenH int
+	zoomed  bool
 	valid   bool
 }
 
@@ -131,12 +155,12 @@ func (t *winGeoTracker) run(hwnd uintptr, stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-tick.C:
-			r, sw, sh, ok := winGeoSnapshot(hwnd)
+			r, sw, sh, zoomed, ok := winGeoSnapshot(hwnd)
 			if !ok {
 				prevOK = false
 				continue
 			}
-			cur := winGeoState{r: r, screenW: sw, screenH: sh, valid: true}
+			cur := winGeoState{r: r, screenW: sw, screenH: sh, zoomed: zoomed, valid: true}
 			t.mu.Lock()
 			t.last = cur
 			// 连续两拍一致才算停稳：拖拽/缩放过程中不写 config
@@ -154,7 +178,7 @@ func (t *winGeoTracker) save(g winGeoState) {
 	if t.hooks.SaveRect == nil {
 		return
 	}
-	t.hooks.SaveRect(int(g.r.left), int(g.r.top), int(g.r.right-g.r.left), int(g.r.bottom-g.r.top), g.screenW, g.screenH)
+	t.hooks.SaveRect(int(g.r.left), int(g.r.top), int(g.r.right-g.r.left), int(g.r.bottom-g.r.top), g.screenW, g.screenH, g.zoomed)
 	t.mu.Lock()
 	t.saved = g
 	t.mu.Unlock()
@@ -169,4 +193,18 @@ func (t *winGeoTracker) flush() {
 	if last.valid && (!saved.valid || last.r != saved.r) {
 		t.save(last)
 	}
+}
+
+var (
+	procIsZoomed           = user32dll.NewProc("IsZoomed")
+	procGetWindowPlacement = user32dll.NewProc("GetWindowPlacement")
+)
+
+// windowPlacement 是 WINDOWPLACEMENT 的最小映射（只关心还原矩形）。
+type windowPlacement struct {
+	length       uint32
+	flags        uint32
+	showCmd      uint32
+	ptMin, ptMax point
+	rcNormal     windowRect
 }

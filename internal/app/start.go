@@ -272,7 +272,7 @@ type multiSlot struct {
 // launchMany 同时启动多个客户端，每个账号一个。
 //
 // ids 为空时默认取前两个可用账号。返回给界面的文案说明实际起了几个。
-func launchMany(ids []string) (string, error) {
+func launchMany(ids []string, ovMode string, ovFps int) (string, error) {
 	hostMu.Lock()
 	defer hostMu.Unlock()
 
@@ -373,7 +373,7 @@ func launchMany(ids []string) (string, error) {
 	// 第一个客户端的窗口先弹出来，后面的就被单实例检测拦下。
 	installs := make([]string, len(picked))
 	for i := range picked {
-		m, err := prepareMirror(exe, channelKeyForAccount(picked[i]))
+		m, err := prepareMirror(exe, picked[i], ovMode, ovFps)
 		if err != nil {
 			logf("多开：准备镜像失败: %v", err)
 			return "", fmt.Errorf("准备镜像目录失败: %w", err)
@@ -391,7 +391,7 @@ func launchMany(ids []string) (string, error) {
 		wg.Add(1)
 		go func(acc Account, path string) {
 			defer wg.Done()
-			_, err := launchAt(acc, dev, "", "", path)
+			_, err := launchAt(acc, dev, "", "", path, ovMode, ovFps)
 			out <- launchResult{name: displayName(acc), err: err}
 		}(acc, installs[i])
 	}
@@ -417,11 +417,11 @@ func launchMany(ids []string) (string, error) {
 // 窗口出来后自动开监控墙；"cascade" 窗口级联堆叠（文件窗式错开）；
 // 其余（"tile"/空）窗口模式 + 渐进式网格平铺，cols/rows 生效；
 // w/h > 0 为自定义窗口尺寸（0 = 铺满格子 / 引擎最小尺寸）。
-func launchManyLayout(ids []string, cols, rows, w, h int, display string) (string, error) {
+func launchManyLayout(ids []string, cols, rows, w, h int, display string, ovMode string, ovFps int) (string, error) {
 	fullscreen := display == "fullscreen"
 	nextFullscreen.Store(fullscreen)
 	defer nextFullscreen.Store(false)
-	msg, err := launchMany(ids)
+	msg, err := launchMany(ids, ovMode, ovFps)
 	if err != nil {
 		return msg, err
 	}

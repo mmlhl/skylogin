@@ -44,7 +44,7 @@ type Hooks struct {
 	Accounts        func() []map[string]any
 	Start           func() (string, error)
 	StartMany       func(ids []string) (string, error)
-	StartManyLayout func(ids []string, cols, rows, w, h int, display string) (string, error)
+	StartManyLayout func(ids []string, cols, rows, w, h int, display string, ovMode string, ovFps int) (string, error)
 	Arrange         func(cols, rows, w, h int) error
 	WallToggle      func() (string, error)
 	StopAccount     func(id string) error
@@ -53,6 +53,8 @@ type Hooks struct {
 	Rename          func(string, string) error
 	SetGameID       func(string, string) error
 	Delete          func(string) error
+	// AccountQuality 保存某行账号的游戏画质/帧率偏好。
+	AccountQuality func(id, mode string, fps int) error
 	// Duplicate 创建一条账号的副本（同 PlayerID 的第二条本地记录，键 xxx-2）。
 	Duplicate    func(id, region string) (string, error)
 	Settings     func() map[string]any
@@ -188,14 +190,17 @@ func (s *Server) Handler() http.Handler {
 			Rows    int      `json:"rows"`
 			W       int      `json:"w"`
 			H       int      `json:"h"`
-			Display string   `json:"display"` // 空 / "tile" = 窗口平铺；"cascade" = 窗口堆叠；"fullscreen" = 全屏
+			Display string   `json:"display"` // 空 / "tile" = 窗口平铺；"cascade[:方案]" = 堆叠；"fullscreen" = 全屏
+			// QualityMode/QualityFps 是多开弹窗里选的"本次覆盖"；空/0 = 按各账号自己的配置
+			QualityMode string `json:"qualityMode"`
+			QualityFps  int    `json:"qualityFps"`
 		}
 		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&body)
 		var msg string
 		var err error
 		if body.Display != "" || (body.Cols >= 1 && body.Rows >= 1) {
 			if s.hooks.StartManyLayout != nil {
-				msg, err = s.hooks.StartManyLayout(body.IDs, body.Cols, body.Rows, body.W, body.H, body.Display)
+				msg, err = s.hooks.StartManyLayout(body.IDs, body.Cols, body.Rows, body.W, body.H, body.Display, body.QualityMode, body.QualityFps)
 			} else {
 				msg, err = s.hooks.StartMany(body.IDs)
 			}
@@ -365,6 +370,20 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("/api/accounts/delete", func(w http.ResponseWriter, r *http.Request) {
 		if err := s.hooks.Delete(r.URL.Query().Get("id")); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
+	})
+
+	mux.HandleFunc("/api/accounts/quality", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			ID   string `json:"id"`
+			Mode string `json:"mode"`
+			Fps  int    `json:"fps"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&body)
+		if err := s.hooks.AccountQuality(body.ID, body.Mode, body.Fps); err != nil {
 			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
 			return
 		}

@@ -44,11 +44,13 @@ func OpenWebView(url, title, dataPath string, width, height uint, hooks WebViewH
 	w, h := fitInWorkArea(int(width)*int(dpi)/96, int(height)*int(dpi)/96, workW, workH)
 	x, y := int(wa.left)+(workW-w)/2, int(wa.top)+(workH-h)/2
 	// 有记录且主屏分辨率没变 → 恢复记录；屏幕换了/没记录 → 用默认算法
+	restoreZoomed := false
 	if hooks.SavedRect != nil {
 		curW, curH := primaryScreenSize()
-		if sx, sy, sw, sh, ssw, ssh, ok := hooks.SavedRect(); ok &&
+		if sx, sy, sw, sh, ssw, ssh, zoomed, ok := hooks.SavedRect(); ok &&
 			ssw == curW && ssh == curH && saneWinRect(sx, sy, sw, sh) {
 			x, y, w, h = sx, sy, sw, sh
+			restoreZoomed = zoomed
 		}
 	}
 
@@ -72,6 +74,10 @@ func OpenWebView(url, title, dataPath string, width, height uint, hooks WebViewH
 	atomic.StoreUintptr(&mainWindowHwnd, hwnd)
 	// 库只会按整屏居中，任务栏在下面时会压住底边，统一按工作区摆位
 	setWinRect(hwnd, x, y, w, h)
+	if restoreZoomed {
+		// 上次关窗时是最大化：先摆回还原矩形（取消最大化时有正确落点），再最大化
+		procShowWindow.Call(hwnd, swMaximize)
+	}
 	applyDarkFrame(hwnd)
 	if exe, err := os.Executable(); err == nil {
 		SetWindowIcon(hwnd, exe)

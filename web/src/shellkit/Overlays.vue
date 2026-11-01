@@ -120,7 +120,12 @@ const cascadeSchemes = [
 function pickScheme(v: "dual" | "rows" | "cols" | "fan") {
   cascadeScheme.value = v;
 }
-const qualityOpts = [  { v: "", label: "跟随游戏", tip: "" },  { v: "LowPower", label: "省电", tip: "游戏内部档位 LowPower" },
+// 档位名与游戏内一致（2026-10-29 逐档实测）：四档画质 + 30/60/120 帧。
+// 第一项是"账号配置"：用每个账号自己的画质/帧率（账号详情里设置），
+// 没配过的账号跟随游戏；其余档位是本次多开对所有客户端的硬覆盖。
+const qualityOpts = [
+  { v: "", label: "账号配置", tip: "用每个账号自己的画质/帧率设置" },
+  { v: "LowPower", label: "省电", tip: "游戏内部档位 LowPower" },
   { v: "Default", label: "默认", tip: "游戏内部档位 Default" },
   { v: "HighQuality", label: "高画质", tip: "游戏内部档位 HighQuality" },
   { v: "Presentation", label: "最高", tip: "游戏内部档位 Presentation" },
@@ -132,29 +137,28 @@ const fpsOpts = [
   { v: 120, label: "120" },
 ];
 function pickQuality(v: string) {
+  // 画质/帧率是"本次多开的覆盖"，不写全局配置：账号各自的有专门入口
   qMode.value = v;
-  store.saveMultiDefaults(v, qFps.value, arbiterEnabled.value, arbiterMin.value);
 }
 function pickFps(v: number) {
   qFps.value = v;
-  store.saveMultiDefaults(qMode.value, v, arbiterEnabled.value, arbiterMin.value);
 }
 function pickArbiter(v: boolean) {
   arbiterEnabled.value = v;
-  store.saveMultiDefaults(qMode.value, qFps.value, v, arbiterMin.value);
+  store.saveMultiDefaults("", 0, v, arbiterMin.value);
 }
 function pickArbiterMin() {
   arbiterMinText.value = String(arbiterMin.value);
-  store.saveMultiDefaults(qMode.value, qFps.value, arbiterEnabled.value, arbiterMin.value);
+  store.saveMultiDefaults("", 0, arbiterEnabled.value, arbiterMin.value);
 }
 
 function confirmMulti() {
   if (display.value === "fullscreen") {
-    store.multiLaunch(picked.value, undefined, undefined, "fullscreen");
+    store.multiLaunch(picked.value, undefined, undefined, "fullscreen", qMode.value, qFps.value);
   } else if (display.value === "cascade") {
-    store.multiLaunch(picked.value, undefined, customSize.value, `cascade:${cascadeScheme.value}` as const);
+    store.multiLaunch(picked.value, undefined, customSize.value, `cascade:${cascadeScheme.value}` as const, qMode.value, qFps.value);
   } else {
-    store.multiLaunch(picked.value, curLayout.value, customSize.value);
+    store.multiLaunch(picked.value, curLayout.value, customSize.value, "tile", qMode.value, qFps.value);
   }
   demoUi.multiOpen = false;
 }

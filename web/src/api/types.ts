@@ -24,6 +24,10 @@ export interface AccountView {
   /** 账号 ID 原文（前端负责打码） */
   accountId: string;
   playerId: string;
+  /** 这行账号自己的画质档位（空 = 跟随游戏） */
+  qualityMode?: string;
+  /** 这行账号自己的帧率（0 = 跟随游戏） */
+  qualityFps?: number;
   masked: string;
   level: string;
   updated: string;

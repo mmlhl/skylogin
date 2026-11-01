@@ -16,6 +16,7 @@ var (
 const (
 	errorAlreadyExists = 183
 	swRestore          = 9
+	swMaximize         = 3
 )
 
 var mutexHandle uintptr

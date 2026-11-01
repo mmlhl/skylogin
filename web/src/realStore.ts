@@ -69,6 +69,8 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
         region: a.region,
         playerId: a.playerId,
         copyKey: a.copyKey,
+        qualityMode: a.qualityMode,
+        qualityFps: a.qualityFps,
       };
     });
     for (const k of [...startedAt.keys()]) {
@@ -152,6 +154,16 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
       });
     },
 
+    setAccountQuality(id, mode, fps) {
+      void api.setAccountQuality(id, mode, fps).then((r) => {
+        if (r.ok === false) toast(r.message || "保存失败");
+      });
+    },
+
+    setRailWidth(width: number) {
+      void api.setRailWidth(width);
+    },
+
     duplicate(id, name) {
       void api.duplicateAccount(id, name).then((r) => {
         if (r.ok === false) {
@@ -219,7 +231,7 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
       });
     },
 
-    multiLaunch(ids, layout, size, display) {
+    multiLaunch(ids, layout, size, display, ovMode, ovFps) {
       const ready = ids.filter((id) => !find(id)?.running);
       if (!ready.length) return toast("所选账号都在运行中");
       if (ready.length === 1) return store.launch(ready[0]);
@@ -228,7 +240,7 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
       const cascade = typeof display === "string" && display.startsWith("cascade");
       const lay = fullscreen ? LAYOUT_NONE : (layout ?? recommendLayout(ready.length));
       void (async () => {
-        const r = await api.launchMulti(ready, lay.cols > 0 ? lay : undefined, size, display);
+        const r = await api.launchMulti(ready, lay.cols > 0 ? lay : undefined, size, display, ovMode, ovFps);
         if (r.ok === false) return toast(r.message || "多开失败");
         const modeText =
           fullscreen

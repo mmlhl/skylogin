@@ -69,16 +69,6 @@ async function pickMirrorDir() {
   else message.success("已更新多开目录");
 }
 
-async function saveQuality(v: string) {
-  const r = await api.saveSettings({ multiQualityMode: v });
-  if (r.ok === false) message.error(r.message || "保存失败");
-}
-
-async function saveFps(v: number) {
-  const r = await api.saveSettings({ multiQualityFps: v });
-  if (r.ok === false) message.error(r.message || "保存失败");
-}
-
 async function toggleLauncher(v: boolean) {
   const r = await api.saveSettings({ closeLauncher: v });
   if (r.ok === false) message.error(r.message || "保存失败");
@@ -195,31 +185,7 @@ async function openLogs() {
           <span class="val mono ellipsis" :title="s.mirrorDir">{{ s.mirrorDir || s.mirrorDefault }}</span>
           <button class="act" @click="pickMirrorDir">修改</button>
         </div>
-        <div class="row">
-          <span class="key">画质</span>
-          <span class="val segs">
-            <button :class="{ on: s.multiQualityMode === '' }" @click="saveQuality('')">跟随游戏</button>
-            <button :class="{ on: s.multiQualityMode === 'LowPower' }" title="游戏内部档位 LowPower" @click="saveQuality('LowPower')">省电</button>
-            <button :class="{ on: s.multiQualityMode === 'Default' }" title="游戏内部档位 Default" @click="saveQuality('Default')">默认</button>
-            <button :class="{ on: s.multiQualityMode === 'HighQuality' }" title="游戏内部档位 HighQuality" @click="saveQuality('HighQuality')">高画质</button>
-            <button :class="{ on: s.multiQualityMode === 'Presentation' }" title="游戏内部档位 Presentation" @click="saveQuality('Presentation')">最高</button>
-          </span>
-        </div>
-        <div class="row">
-          <span class="key">帧率</span>
-          <span class="val segs">
-            <button :class="{ on: s.multiQualityFps === 0 }" @click="saveFps(0)">跟随游戏</button>
-            <button :class="{ on: s.multiQualityFps === 30 }" @click="saveFps(30)">30</button>
-            <button :class="{ on: s.multiQualityFps === 60 }" @click="saveFps(60)">60</button>
-            <button :class="{ on: s.multiQualityFps === 120 }" @click="saveFps(120)">120</button>
-          </span>
-        </div>
-        <p class="note">窗口模式会强制开启（这是网格排列的前提）；画质 / 帧率在启动前写进每个客户端的设置文件，写不进的以游戏为准。</p>
-        <p class="note">
-          多开启动前会把这些默认值写进每个客户端的设置文件：窗口模式强制开（排列的前提）。
-          档位按钮只是显示名，实际写入的是游戏内部档位
-          （LowPower / Default / HighQuality / Presentation，帧率 30/60/120，2026-10-29 游戏内逐档实测）；跟随游戏 = 不动它。
-        </p>
+        <p class="note">窗口模式会强制开启（这是网格排列的前提）；画质 / 帧率现在在账号详情里按账号设置（多开弹窗里也可以临时覆盖）。</p>
         <p class="note">
           第 2 个客户端从这里启动，退出后自动删除。
           <b>必须和游戏在同一个磁盘</b>（硬链接，不额外占空间），且只能选空文件夹。

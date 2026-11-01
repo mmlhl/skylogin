@@ -53,7 +53,9 @@ export const api = {
 		ids: string[],
 		layout?: { cols: number; rows: number },
 		size?: { w: number; h: number },
-		display?: "tile" | "cascade" | `cascade:${string}` | "fullscreen"
+		display?: "tile" | "cascade" | `cascade:${string}` | "fullscreen",
+		qualityMode?: string,
+		qualityFps?: number
 	) =>
 		request("/api/launch-multi", {
 			method: "POST",
@@ -64,8 +66,14 @@ export const api = {
 				w: size?.w,
 				h: size?.h,
 				display: display && display !== "tile" ? display : undefined,
+				qualityMode,
+				qualityFps,
 			}),
 		}),
+
+	/** 保存某行账号自己的画质/帧率（mode 空 / fps 0 = 跟随游戏） */
+	setAccountQuality: (id: string, mode: string, fps: number) =>
+		request("/api/accounts/quality", { method: "POST", body: JSON.stringify({ id, mode, fps }) }),
 
 	/** 把正在运行的客户端窗口按 cols×rows 网格铺到主屏；w/h 自定义窗口尺寸 */
 	arrange: (cols: number, rows: number, size?: { w: number; h: number }) =>

@@ -3,17 +3,54 @@
  * 壳 03 · 控制台：图标栏 + 账号列表 + 详情面板，类 Linear。
  * 信息密度最高，运行中的客户端在详情页统一管理。
  */
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { Flame, LayoutGrid, LayoutDashboard, Monitor, Settings, Eye, EyeOff, Plus, Pencil, Play, Square, Layers, RefreshCw, CopyPlus } from "lucide-vue-next";
 import type { LauncherStore } from "../contract";
 
 const props = defineProps<{ store: LauncherStore }>();
 const store = props.store;import { demoUi } from "../ui";
+import { state as appState } from "../../composables/useAppState";
 import { channelLabel, fmtRun } from "../contract";
 
 const cur = computed(() => store.current);
+
+// 账号列表宽度：可拖拽调节，存后端（设置里的 railWidth）
+const railWidth = ref(appState.settings.railWidth >= 220 ? appState.settings.railWidth : 264);
+const dragging = ref(false);
+function onDividerDown(e: MouseEvent) {
+  e.preventDefault();
+  dragging.value = true;
+  const startX = e.clientX;
+  const startW = railWidth.value;
+  const move = (ev: MouseEvent) => {
+    railWidth.value = Math.min(520, Math.max(220, startW + (ev.clientX - startX)));
+  };
+  const up = () => {
+    dragging.value = false;
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+    store.setRailWidth(railWidth.value);
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
+}
 const expired = computed(() => cur.value?.cred === "expired");
 const runningSelf = computed(() => !!cur.value?.running);
+
+// 游戏画质/帧率档位（与多开弹窗同一套，档位名 = 游戏内部名）
+const qualityOpts = [
+  { v: "", label: "跟随游戏", tip: "启动前不预写画质" },
+  { v: "LowPower", label: "省电", tip: "游戏内部档位 LowPower" },
+  { v: "Default", label: "默认", tip: "游戏内部档位 Default" },
+  { v: "HighQuality", label: "高画质", tip: "游戏内部档位 HighQuality" },
+  { v: "Presentation", label: "最高", tip: "游戏内部档位 Presentation" },
+];
+const fpsOpts = [
+  { v: 0, label: "跟随游戏" },
+  { v: 30, label: "30" },
+  { v: 60, label: "60" },
+  { v: 120, label: "120" },
+];
 
 </script>
 
@@ -27,7 +64,7 @@ const runningSelf = computed(() => !!cur.value?.running);
       <button class="rico bottom" title="设置" @click="store.openSettings()"><Settings /></button>
     </div>
 
-    <div class="list">
+    <div class="list" :style="{ width: railWidth + 'px' }">
       <div class="lhead">
         <span>账号</span>
         <button class="ico sm" :title="store.maskAll ? '显示完整信息' : '打码'" @click="store.toggleMask()">
@@ -64,6 +101,9 @@ const runningSelf = computed(() => !!cur.value?.running);
       <button class="ladd" @click="store.addAccount()"><Plus />添加账号</button>
     </div>
 
+    <!-- 拖动调节账号列表宽度 -->
+    <div class="splitter" :class="{ dragging }" @mousedown="onDividerDown"></div>
+
     <div v-if="cur" class="det">
       <div class="dhead">
         <div>
@@ -91,6 +131,24 @@ const runningSelf = computed(() => !!cur.value?.running);
         <div><span>状态</span><b>{{ runningSelf ? "已运行 " + fmtRun(cur.runSeconds) : "空闲" }}</b></div>
       </div>
 
+      <!-- 这个账号自己的游戏画质/帧率：单开和多开（账号配置档）都优先用它 -->
+      <div class="qset">
+        <div class="qrow">
+          <span class="qlabel">画质</span>
+          <div class="qsegs">
+            <button v-for="o in qualityOpts" :key="'q' + o.v" :class="{ on: (cur.qualityMode || '') === o.v }"
+              :title="o.tip" @click="store.setAccountQuality(cur.id, o.v, cur.qualityFps || 0)">{{ o.label }}</button>
+          </div>
+        </div>
+        <div class="qrow">
+          <span class="qlabel">帧率</span>
+          <div class="qsegs">
+            <button v-for="o in fpsOpts" :key="'f' + o.v" :class="{ on: (cur.qualityFps || 0) === o.v }"
+              @click="store.setAccountQuality(cur.id, cur.qualityMode || '', o.v)">{{ o.label }}</button>
+          </div>
+        </div>
+      </div>
+
       <div class="dacts">
         <button v-if="runningSelf" class="btn" @click="store.stop(cur.id)"><Square />停止运行</button>
         <button v-else class="btn primary" @click="store.launch(cur.id)"><Play />启动光遇</button>
@@ -114,6 +172,18 @@ const runningSelf = computed(() => !!cur.value?.running);
 </template>
 
 <style scoped>
+.splitter {
+  flex: none;
+  width: 5px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s;
+}
+.splitter:hover,
+.splitter.dragging {
+  background: var(--acc);
+  opacity: 0.5;
+}
 .win {
   --bg: #0e1013;
   --s1: #15181d;
@@ -397,5 +467,46 @@ const runningSelf = computed(() => !!cur.value?.running);
 }
 .drun .btn {
   margin-left: auto;
+}
+</style>
+<style scoped>
+.qset {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--s1);
+}
+.qrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.qlabel {
+  flex: none;
+  width: 30px;
+  font-size: 12px;
+  color: var(--dim);
+}
+.qsegs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.qsegs button {
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+.qsegs button.on {
+  border-color: var(--acc);
+  color: var(--tx);
+  background: var(--on);
 }
 </style>

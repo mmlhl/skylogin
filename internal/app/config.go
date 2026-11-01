@@ -48,6 +48,8 @@ type Config struct {
 	WinH       int `json:"win_h,omitempty"`
 	WinScreenW int `json:"win_screen_w,omitempty"`
 	WinScreenH int `json:"win_screen_h,omitempty"`
+	// WinMax = 1 表示关窗时是最大化；恢复时先摆 WinX/Y/W/H（还原矩形）再最大化
+	WinMax int `json:"win_max,omitempty"`
 
 	// 多开默认设置：启动前写进每个客户端的 preferences.sav（internal/prefs）。
 	// 画质用游戏认识的名字（实测见过 LowPower / Presentation），空 = 跟随游戏；
@@ -128,10 +130,15 @@ func saveWallRect(x, y, w, h int) error {
 
 // saveWinRect 保存主界面的窗口位置尺寸（物理像素 + 当时的主屏分辨率，
 // 由 win 层停稳后/关窗前回传）。
-func saveWinRect(x, y, w, h, screenW, screenH int) error {
+func saveWinRect(x, y, w, h, screenW, screenH int, zoomed bool) error {
 	c := loadConfig()
 	c.WinX, c.WinY, c.WinW, c.WinH = x, y, w, h
 	c.WinScreenW, c.WinScreenH = screenW, screenH
+	if zoomed {
+		c.WinMax = 1
+	} else {
+		c.WinMax = 0
+	}
 	return saveConfig(c)
 }
 

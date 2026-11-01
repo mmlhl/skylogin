@@ -31,6 +31,10 @@ export interface Account {
   region?: string;
   /** 远程身份 id（同一账号的原始行与副本相同） */
   playerId: string;
+  /** 这行账号自己的游戏画质档位（空 = 跟随游戏） */
+  qualityMode?: string;
+  /** 这行账号自己的帧率（0 = 跟随游戏） */
+  qualityFps?: number;
   /** 副本键（"PlayerID-2" 样式）；空 = 原始行 */
   copyKey?: string;
 }
@@ -125,9 +129,21 @@ export interface LauncherStore {
   /**
    * 多开：绕过单实例限制，一次启动多个。
    * layout 为排列方案（缺省自动推荐）；size 为自定义窗口尺寸（缺省铺满格子）；
-   * display："tile" 窗口平铺（默认）/ "cascade" 窗口堆叠 / "fullscreen" 全屏。
+   * display："tile" 窗口平铺（默认）/ "cascade[:方案]" 堆叠 / "fullscreen" 全屏；
+   * ovMode/ovFps 为本次多开的画质/帧率覆盖（空/0 = 按各账号自己的配置）。
    */
-  multiLaunch(ids: string[], layout?: GridLayout, size?: { w: number; h: number }, display?: "tile" | "cascade" | `cascade:${string}` | "fullscreen"): void;
+  multiLaunch(
+    ids: string[],
+    layout?: GridLayout,
+    size?: { w: number; h: number },
+    display?: "tile" | "cascade" | `cascade:${string}` | "fullscreen",
+    ovMode?: string,
+    ovFps?: number,
+  ): void;
+  /** 保存某行账号自己的画质/帧率偏好（mode 空 / fps 0 = 跟随游戏）。 */
+  setAccountQuality(id: string, mode: string, fps: number): void;
+  /** 保存账号列表宽度（分界线拖拽结束）。 */
+  setRailWidth(width: number): void;
 
   /** 多开默认（画质 / 帧率 / 鼠标仲裁）：多开弹窗和设置面板读写的是同一份 */
   multiDefaults(): { qualityMode: string; fps: number; arbiter: boolean; arbiterMin: number };
