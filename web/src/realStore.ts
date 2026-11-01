@@ -66,6 +66,9 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
         running: !!a.running,
         runSeconds: a.running && begin ? Math.floor((now - begin) / 1000) : 0,
         current: a.current,
+        region: a.region,
+        playerId: a.playerId,
+        copyKey: a.copyKey,
       };
     });
     for (const k of [...startedAt.keys()]) {
@@ -146,6 +149,16 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
     remove(id) {
       void api.deleteAccount(id).then((r) => {
         if (r.ok === false) toast(r.message || "删除失败");
+      });
+    },
+
+    duplicate(id, name) {
+      void api.duplicateAccount(id, name).then((r) => {
+        if (r.ok === false) {
+          toast(r.message || "创建副本失败");
+          return;
+        }
+        toast("已创建副本");
       });
     },
 

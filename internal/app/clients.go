@@ -195,7 +195,7 @@ func registerClient(pid uint32, slot *multiSlot) {
 	launchSeq++
 	slot.createdAt = time.Now()
 	clients[pid] = slot
-	runningByAccount[slot.acc.PlayerID] = pid
+	runningByAccount[accountKey(*slot.acc)] = pid
 	if len(clients) == 1 {
 		fellback = slot // 单实例时兜底（有些启动方式拿不到 pid）
 	}
@@ -332,10 +332,10 @@ func startClient(acc Account, dev *device.ClientProfile, ticket, channel string)
 	if exe == "" {
 		return "", fmt.Errorf("没有找到光遇主程序，请在设置里手动选择 sky.exe")
 	}
-	if accountRunning(acc.PlayerID) {
+	if accountRunning(accountKey(acc)) {
 		return "", fmt.Errorf("这个账号已经在运行了，不能重复启动")
 	}
-	launchExe, err := chooseInstall(exe)
+	launchExe, err := chooseInstall(exe, acc)
 	if err != nil {
 		return "", err
 	}
@@ -389,7 +389,7 @@ func launchAt(acc Account, dev *device.ClientProfile, ticket, channel, launchExe
 			}
 			clientsMu.Unlock()
 		}
-	}(uint32(p.Pid), acc.PlayerID, displayName(acc))
+	}(uint32(p.Pid), accountKey(acc), displayName(acc))
 	return fmt.Sprintf("已启动光遇\n游戏路径: %s", launchExe), nil
 }
 
@@ -397,11 +397,15 @@ func launchAt(acc Account, dev *device.ClientProfile, ticket, channel, launchExe
 //
 // 第一个客户端用原目录；之后每个客户端都**新建**一套镜像目录，
 // 全部退出后统一删除（见 watchMirrors），下次多开再重新建。
-func chooseInstall(exe string) (string, error) {
-	if liveClients() == 0 {
+//
+// 例外：副本（CopyKey 非空）永远走镜像 ——
+// 镜像里装了浏览器壳，壳会把 CEF channel 改成这条记录专属的名字，
+// 于是它在游戏里选的安卓区/iOS 区会被一直记住。
+func chooseInstall(exe string, acc Account) (string, error) {
+	if acc.CopyKey == "" && liveClients() == 0 {
 		return exe, nil
 	}
-	return prepareMirror(exe)
+	return prepareMirror(exe, accountKey(acc))
 }
 
 // prepareMirror 新建一套镜像目录，返回里面 sky.exe 的路径。
@@ -409,7 +413,10 @@ func chooseInstall(exe string) (string, error) {
 // 多开时所有镜像要在拉起游戏之前就建好：建目录要几十毫秒，
 // 如果一边建一边启动，第一个客户端已经把窗口弹出来了，
 // 后面的就会被"已有实例"检测拦住。
-func prepareMirror(exe string) (string, error) {
+//
+// channelKey 非空时，把这条记录专属的 CEF channel 写进镜像，
+// 浏览器壳按它改 profile 名（同一行账号 → 同一个 profile → 记住选区）。
+func prepareMirror(exe, channelKey string) (string, error) {
 	root := fever.MirrorRoot(exe, loadConfig().MirrorDir)
 	clientsMu.Lock()
 	mirrorSeq++
@@ -429,6 +436,7 @@ func prepareMirror(exe string) (string, error) {
 	if err := installWebviewShim(m); err != nil {
 		logf("浏览器壳安装失败: %v", err)
 	}
+	writeShimChannelHint(m, channelKey)
 	logf("第 %d 套镜像已就绪: %s", seq+1, m)
 	return filepath.Join(m, filepath.Base(exe)), nil
 }
@@ -626,7 +634,7 @@ func recoverRunningClients() {
 		if cur, err := pickAccount(); err == nil {
 			occupied := false
 			for _, r := range got {
-				if r.slot.acc.PlayerID == cur.PlayerID {
+				if accountKey(*r.slot.acc) == accountKey(cur) {
 					occupied = true
 					break
 				}

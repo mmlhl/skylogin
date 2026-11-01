@@ -31,6 +31,13 @@ type Account struct {
 	OpenID       string `json:"open_id"`
 	UpdatedAt    int64  `json:"updated_at"`
 
+	// CopyKey 是副本的本机键（"PlayerID-2" 这样的后缀），允许同一个
+	// PlayerID 存多条记录（典型：同一网易账号再建一个副本在另一个区玩）。
+	// 空 = 原始行，键就是 PlayerID；老数据没有这个字段，无需迁移。
+	CopyKey string `json:"copy_key,omitempty"`
+	// Region 是副本的可选标注：android / ios / 空。
+	Region string `json:"region,omitempty"`
+
 	// 以下字段只对网易账号有意义，华为账号留空。
 	//
 	// 网易账号靠 MPay token 持久化：token → create_ticket → 票。
@@ -129,6 +136,7 @@ func RunUI(title string) error {
 		Select:      setCurrent,
 		Rename:      renameAccount,
 		Delete:      deleteAccount,
+		Duplicate:   duplicateAccount,
 		Settings:    settingsView,
 		SaveSettings: func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int) error {
 			return applySettings(skyExe, deviceID, mirrorDir, closeLauncher, multiQuality, multiFps, mouseArbiter, arbiterMin)

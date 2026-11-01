@@ -36,6 +36,14 @@ export interface AccountView {
   /** 登录来源：scan / sms / mpaydll / channel */
   source?: string;
 
+  /** 本机行标识：只有「同账号的第二个区」这类副本才有，主记录为空 */
+  /** 副本键（"PlayerID-2" 样式）；空 = 原始行 */
+  copyKey?: string;
+  /** 这一行走的区：android / ios / 空 = 还没标注 */
+  region?: string;
+  /** 区的中文名，直接显示（安卓区 / iOS 区 / 空） */
+  regionLabel?: string;
+
   /** 是否是当前选中的账号 */
   current: boolean;
 }

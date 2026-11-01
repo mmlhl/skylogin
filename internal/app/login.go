@@ -91,7 +91,9 @@ func accountsView() []map[string]any {
 	out := make([]map[string]any, 0, len(list))
 	for _, a := range list {
 		v := accountView(a)
-		v["current"] = a.PlayerID == cur
+		// 按行键比较：同一 PlayerID 的副本要靠 CopyKey 区分，
+		// 否则两条记录会一起亮成"当前"。
+		v["current"] = accountKey(a) == cur
 		out = append(out, v)
 	}
 	return out

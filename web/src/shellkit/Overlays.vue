@@ -159,6 +159,27 @@ function confirmMulti() {
   demoUi.multiOpen = false;
 }
 
+/* ---- 创建副本 ---- */
+const dupName = ref("");
+const dupAccount = computed(() => store.accounts.find((a) => a.id === demoUi.dupId));
+// 已有副本：同 PlayerID 且带副本键的记录（创建第 2 条起在弹窗里提醒）
+const dupExisting = computed(() =>
+  dupAccount.value ? store.accounts.filter((a) => a.playerId === dupAccount.value!.playerId && a.copyKey) : [],
+);
+const dupDefaultName = computed(() => `${dupAccount.value?.name ?? ""}-副本${dupExisting.value.length + 1}`);
+watch(
+  () => demoUi.dupId,
+  () => {
+    if (demoUi.dupId) dupName.value = dupDefaultName.value;
+  },
+);
+function confirmDup() {
+  const name = dupName.value.trim();
+  if (!demoUi.dupId) return;
+  store.duplicate(demoUi.dupId, name);
+  demoUi.dupId = "";
+}
+
 /* ---- 改名 ---- */
 const renameText = ref("");
 watch(
@@ -338,6 +359,25 @@ function confirmRename() {
       <input v-model="renameText" class="minput" maxlength="24" placeholder="最多 24 个字" @keyup.enter="confirmRename" />
       <div class="mfoot">
         <button class="btn primary" @click="confirmRename">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 创建副本：默认名可改；已有副本时先提醒 -->
+  <div v-if="demoUi.dupId" class="mask" @click.self="demoUi.dupId = ''">
+    <div class="modal slim">
+      <div class="mhead">
+        <b>创建副本</b>
+        <button class="mclose" @click="demoUi.dupId = ''"><X /></button>
+      </div>
+      <p class="mhint">为「{{ dupAccount?.name }}」创建一条副本记录；副本与原记录共用凭证，游戏内互相独立。</p>
+      <input v-model="dupName" class="minput" maxlength="24" placeholder="副本名称" @keyup.enter="confirmDup" />
+      <p v-if="dupExisting.length" class="dupwarn">
+        该账号已创建过 {{ dupExisting.length }} 条副本（{{ dupExisting.map((a) => a.name).join("、") }}）。可以继续创建多条，确认继续吗？
+      </p>
+      <div class="mfoot">
+        <button class="btn" @click="demoUi.dupId = ''">取消</button>
+        <button class="btn primary" @click="confirmDup">{{ dupExisting.length ? "继续创建" : "创建" }}</button>
       </div>
     </div>
   </div>
@@ -800,6 +840,15 @@ function confirmRename() {
   display: flex;
   gap: 6px;
   margin: 2px 0 6px;
+}
+.dupwarn {
+  margin: 4px 0 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(227, 194, 138, 0.08);
+  border: 1px solid rgba(227, 194, 138, 0.3);
+  font-size: 12px;
+  color: #d8b47c;
 }
 .scheme {
   display: inline-flex;

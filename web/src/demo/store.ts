@@ -14,6 +14,7 @@ const nextId = () => `demo${(seq++).toString().padStart(8, "0")}`;
 function account(p: Partial<Account> & { name: string; channel: Account["channel"]; fullId: string }): Account {
   return {
     id: nextId(),
+    playerId: p.playerId || p.fullId,
     maskedId: p.fullId.slice(0, 4) + "********" + p.fullId.slice(-4),
     maskedName: p.name.length > 1 ? p.name.slice(0, 1) + "***" : p.name,
     level: "",
@@ -118,6 +119,21 @@ export const store: LauncherStore = {
       acc.name = name.trim();
       toast("别名已修改");
     }
+  },
+
+  duplicate(id, name) {
+    const acc = state.accounts.find((a) => a.id === id);
+    if (!acc) return;
+    const n = state.accounts.filter((a) => a.playerId === acc.playerId && a.copyKey).length + 1;
+    const copy: Account = {
+      ...acc,
+      id: acc.playerId + "-" + (n + 1),
+      copyKey: acc.playerId + "-" + (n + 1),
+      name: name || acc.name + " · 副本" + n,
+      current: false,
+    };
+    state.accounts.push(copy);
+    toast("已创建副本");
   },
 
   remove(id) {

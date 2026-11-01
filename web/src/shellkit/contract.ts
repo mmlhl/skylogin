@@ -27,6 +27,12 @@ export interface Account {
   /** 本次运行秒数（demo 用计时器驱动；正式版由 store 适配层推算） */
   runSeconds: number;
   current: boolean;
+  /** 副本标注的区（android / ios）；主记录为空 */
+  region?: string;
+  /** 远程身份 id（同一账号的原始行与副本相同） */
+  playerId: string;
+  /** 副本键（"PlayerID-2" 样式）；空 = 原始行 */
+  copyKey?: string;
 }
 
 /** 后端推给界面的「需要用户处理」提示（目前是网易凭证过期） */
@@ -94,6 +100,8 @@ export interface LauncherStore {
   refreshCred(id: string): void;
   rename(id: string, name: string): void;
   remove(id: string): void;
+  /** 创建一条账号的副本（name 为空时后端自动起名）。 */
+  duplicate(id: string, name: string): void;
   toggleMask(): void;
   /**
    * 添加账号。不带参数 = 打开添加入口（demo 弹「模拟扫码」，正式版弹真实登录流程）；

@@ -97,6 +97,10 @@ export const api = {
   /** 删除账号 */
   deleteAccount: (id: string) => request(`/api/accounts/delete${qs({ id })}`, { method: "POST" }),
 
+  /** 创建一条账号的副本（name 为空时后端自动起名） */
+  duplicateAccount: (id: string, name: string) =>
+    request("/api/accounts/duplicate", { method: "POST", body: JSON.stringify({ id, name }) }),
+
   /** 华为扫码：开始（Go 去华为申请二维码） */
   startHuaweiLogin: () => request("/api/login", { method: "POST" }),
 

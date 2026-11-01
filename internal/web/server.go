@@ -53,15 +53,17 @@ type Hooks struct {
 	Rename          func(string, string) error
 	SetGameID       func(string, string) error
 	Delete          func(string) error
-	Settings        func() map[string]any
-	SaveSettings    func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int) error
-	Cleanup         func(accounts, cache, logs bool) ([]string, error)
-	OpenLogs        func() error
-	PickPath        func() (string, error)
-	PickFolder      func() (string, error)
-	ScanStart       func() (map[string]any, error)
-	ScanStop        func()
-	ScanNow         func() map[string]any
+	// Duplicate 创建一条账号的副本（同 PlayerID 的第二条本地记录，键 xxx-2）。
+	Duplicate    func(id, region string) (string, error)
+	Settings     func() map[string]any
+	SaveSettings func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int) error
+	Cleanup      func(accounts, cache, logs bool) ([]string, error)
+	OpenLogs     func() error
+	PickPath     func() (string, error)
+	PickFolder   func() (string, error)
+	ScanStart    func() (map[string]any, error)
+	ScanStop     func()
+	ScanNow      func() map[string]any
 	// 渠道网页登录（B站 / 4399 / vivo 共用一套，key 区分）
 	ChannelLoginStart  func(key, targetUserID string) error
 	ChannelLoginStatus func(key string) map[string]any
@@ -367,6 +369,20 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		writeJSON(w, map[string]any{"ok": true})
+	})
+
+	mux.HandleFunc("/api/accounts/duplicate", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		id, err := s.hooks.Duplicate(body.ID, body.Name)
+		if err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "id": id})
 	})
 
 	mux.HandleFunc("/api/settings", func(w http.ResponseWriter, r *http.Request) {
