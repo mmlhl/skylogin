@@ -38,7 +38,9 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
+          # 不开 cache：Actions 存储免费额度只有 0.5GB，Go+npm 缓存
+          # 按 ref 隔离双份存储，几次 tag 构建就爆；慢一分钟换零占用
+          cache: false
 
       - name: 计算版本号
         id: ver
@@ -65,8 +67,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache: false
 
       - name: 构建前端
         working-directory: web
@@ -86,13 +87,6 @@ jobs:
           go build -trimpath -ldflags $ldflags -o skylogin.exe ./cmd/skylogin
           $size = [math]::Round((Get-Item skylogin.exe).Length / 1MB, 1)
           Write-Host "构建完成: skylogin.exe ($size MB)"
-
-      - name: 上传产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: skylogin-${{ steps.ver.outputs.version }}
-          path: skylogin.exe
-          if-no-files-found: error
 
       - name: 创建 Release
         if: steps.ver.outputs.release == 'true'
