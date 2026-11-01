@@ -70,7 +70,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: false
 
       - name: 构建前端
         working-directory: web
