@@ -249,7 +249,7 @@ async function openLogs() {
           <span class="val mono ellipsis" :title="s.deviceId">{{ s.deviceId }}</span>
         </div>
         <div class="row">
-          <span class="key">来源</span>
+          <span class="key">来源 <span class="iinfo" title="按本机：申请一次后一直复用，重启也不变。填入已有：只能用服务器发过的设备号（比如从备份或旧机器复制），随手编的会被服务器拒绝。重新申请：向服务器要一个新号，等于换一台设备登录。">i</span></span>
           <span class="val segs">
             <button :class="{ on: mode === 'fingerprint' }" :disabled="working" @click="changeMode('fingerprint')">按本机</button>
             <button :class="{ on: mode === 'custom' }" :disabled="working" @click="changeMode('custom')">填入已有</button>
@@ -261,8 +261,7 @@ async function openLogs() {
         <p class="sect">网盘与关于</p>
         <div class="row">
           <span class="key">当前版本</span>
-          <span class="val mono">v{{ state.version }}<template v-if="state.settings.appBuild !== '0'"> · 构建 {{ state.settings.appBuild }}</template>
-            <template v-if="state.settings.appBuildTime"> · {{ state.settings.appBuildTime }}</template></span>
+          <span class="val mono">v{{ state.version }}<template v-if="state.settings.appBuild !== '0'"> · 构建 {{ state.settings.appBuild }}</template><template v-if="state.settings.appBuildTime"> · {{ state.settings.appBuildTime }}</template> · {{ s.goVersion }}</span>
         </div>
         <div class="row">
           <span class="key">检查更新</span>
@@ -291,13 +290,12 @@ async function openLogs() {
           <button class="act" @click="openLogs">打开日志</button>
         </div>
         <div class="row">
-          <span class="key">版本</span>
-          <span class="val dim">v{{ s.version }}{{ s.buildTime ? " · 构建 " + s.buildTime : "" }} · {{ s.goVersion }}</span>
-          <button class="act" @click="confirmCleanup">清理数据</button>
+          <span class="key">清理数据</span>
+          <span class="val dim">删除账号、设备标识与设置，无法撤销</span>
+          <button class="act" @click="confirmCleanup">清理</button>
         </div>
       </div>
 
-      <p class="hint">按本机：申请一次后一直复用，重启也不变；填入已有：只能用服务器发过的设备号（比如从备份或旧机器复制），随手编的会被服务器拒绝；重新申请：向服务器要一个新号。</p>
 
       <PromptDialog ref="promptRef" />
     </div>

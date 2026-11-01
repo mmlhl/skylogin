@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,7 +22,9 @@ import (
 //
 //	go build -ldflags "-X skylogin/internal/app.Version=1.2.0 ..."
 //
-// 不注入时用下面这个默认值（本地开发用）。
+// 不注入时（本地开发构建）用 debug.ReadBuildInfo 动态取：
+// 版本 = 基础版本号 + "-<git短哈希>"，构建时间 = 提交时间——规范且能对上是哪份代码。
+// 发布构建由 CI 通过链接参数注入，两者互不干扰。
 var Version = "1.0.0"
 
 // Build 是 CI 注入的构建号（run_number），本地构建为 0；BuildTime 同理。
@@ -30,6 +33,28 @@ var (
 	Build     = "0"
 	BuildTime = ""
 )
+
+func init() {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return
+	}
+	if Version == "1.0.0" && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		Version = info.Main.Version
+	}
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			if len(s.Value) >= 7 {
+				Version += "-" + s.Value[:7]
+			}
+		case "vcs.time":
+			if BuildTime == "" && s.Value != "" {
+				BuildTime = s.Value
+			}
+		}
+	}
+}
 
 // buildNumber 把注入的构建号转成整数（本地未注入时 0 = 开发版，不做自动检查）。
 func buildNumber() int {
