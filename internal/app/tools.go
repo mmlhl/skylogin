@@ -46,7 +46,8 @@ func init() {
 		switch s.Key {
 		case "vcs.revision":
 			if len(s.Value) >= 7 {
-				Version += "-" + s.Value[:7]
+				// 短哈希放进构建号位展示，版本号保持简短
+				Build = "dev-" + s.Value[:7]
 			}
 		case "vcs.time":
 			if BuildTime == "" && s.Value != "" {
