@@ -131,7 +131,7 @@ const qualityOpts = [
   { v: "Presentation", label: "最高", tip: "游戏内部档位 Presentation" },
 ];
 const fpsOpts = [
-  { v: 0, label: "跟随游戏" },
+  { v: 0, label: "账号配置", tip: "用每个账号自己的帧率设置" },
   { v: 30, label: "30" },
   { v: 60, label: "60" },
   { v: 120, label: "120" },

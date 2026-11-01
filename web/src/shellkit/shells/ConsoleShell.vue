@@ -4,7 +4,7 @@
  * 信息密度最高，运行中的客户端在详情页统一管理。
  */
 import { computed, ref } from "vue";
-import { Flame, LayoutGrid, LayoutDashboard, Monitor, Settings, Eye, EyeOff, Plus, Pencil, Play, Square, Layers, RefreshCw, CopyPlus } from "lucide-vue-next";
+import { Flame, LayoutGrid, LayoutDashboard, Monitor, Settings, Eye, EyeOff, Plus, Pencil, Play, Square, Layers, RefreshCw, CopyPlus, Gauge } from "lucide-vue-next";
 import type { LauncherStore } from "../contract";
 
 const props = defineProps<{ store: LauncherStore }>();
@@ -132,17 +132,22 @@ const fpsOpts = [
       </div>
 
       <!-- 这个账号自己的游戏画质/帧率：单开和多开（账号配置档）都优先用它 -->
-      <div class="qset">
+      <div class="qcard">
+        <div class="qhead">
+          <Gauge class="qicon" />
+          <b>游戏画质</b>
+          <span class="qhint">只对「{{ store.maskAll ? cur.maskedName : cur.name }}」生效，启动前写入</span>
+        </div>
         <div class="qrow">
           <span class="qlabel">画质</span>
-          <div class="qsegs">
+          <div class="qpills">
             <button v-for="o in qualityOpts" :key="'q' + o.v" :class="{ on: (cur.qualityMode || '') === o.v }"
               :title="o.tip" @click="store.setAccountQuality(cur.id, o.v, cur.qualityFps || 0)">{{ o.label }}</button>
           </div>
         </div>
         <div class="qrow">
           <span class="qlabel">帧率</span>
-          <div class="qsegs">
+          <div class="qpills">
             <button v-for="o in fpsOpts" :key="'f' + o.v" :class="{ on: (cur.qualityFps || 0) === o.v }"
               @click="store.setAccountQuality(cur.id, cur.qualityMode || '', o.v)">{{ o.label }}</button>
           </div>
@@ -470,14 +475,66 @@ const fpsOpts = [
 }
 </style>
 <style scoped>
-.qset {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px;
+.qcard {
+  padding: 12px 14px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--s1);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.qhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.qicon {
+  width: 15px;
+  height: 15px;
+  color: var(--acc);
+}
+.qhint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--faint);
+}
+.qrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.qlabel {
+  flex: none;
+  width: 30px;
+  font-size: 12px;
+  color: var(--dim);
+}
+.qpills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.qpills button {
+  padding: 4px 12px;
+  border: 1px solid var(--line2);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dim);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.qpills button:hover {
+  color: var(--tx);
+  border-color: var(--faint);
+}
+.qpills button.on {
+  background: var(--acc);
+  border-color: var(--acc);
+  color: var(--on);
+  font-weight: 500;
 }
 .qrow {
   display: flex;
