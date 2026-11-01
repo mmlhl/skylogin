@@ -36,8 +36,10 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: 检出代码
+      - name: 检出代码（含完整历史，生成更新说明用）
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: 安装 Go
         uses: actions/setup-go@v5
@@ -88,6 +90,10 @@ jobs:
           CGO_ENABLED: '0'
         run: |
           $bt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mmZ")
+          $prev = git describe --tags --abbrev=0 "${
+            { github.ref_name }}"^ 2>$null
+          $notes = if ($prev) { (git log --oneline "$prev..HEAD" | ForEach-Object { $_ -replace '^[0-9a-f]{7} ', '- ' }) -join "`n" } else { "" }
+          "notes=$notes" >> $env:GITHUB_OUTPUT
           $ldflags = "-s -w -H=windowsgui -X skylogin/internal/app.Version=${{ steps.ver.outputs.version }} -X skylogin/internal/app.Build=${{ github.run_number }} -X skylogin/internal/app.BuildTime=$bt"
           go build -trimpath -ldflags $ldflags -o skylogin.exe ./cmd/skylogin
           $size = [math]::Round((Get-Item skylogin.exe).Length / 1MB, 1)
@@ -103,7 +109,7 @@ jobs:
             version = "${{ steps.ver.outputs.version }}"
             build = ${{ github.run_number }}
             download_url = "https://github.com/mmlhl/skylogin/releases/latest"
-            changelog = "构建 ${{ github.run_number }}"
+            changelog = "${{ steps.ver.outputs.notes }}"
             force = $false
           } | ConvertTo-Json -Compress
           try {
@@ -124,13 +130,15 @@ jobs:
           body: |
             ## 光遇账号登录器 ${{ steps.ver.outputs.version }}
 
-            - 支持：华为渠道 / 网易官方 / B站 / 4399 / vivo（扫码、验证码、密码）
+            - 支持：华为渠道 / 网易官方 / B站 / 4399 / vivo
             - 多开：数量不限，窗口自动排列 + 监控墙
             - 单文件 exe，免安装，不注入游戏进程
 
+            ### 本次更新
+            ${{ steps.ver.outputs.notes }}
+
             ### 文件
             - `skylogin.exe` —— 主程序
-            - 更新日志见「设置 → 检查更新」与软件内公告
 
             ### 支持的账号
             - ✅ **华为渠道**账号（扫码添加）
