@@ -59,7 +59,7 @@ type Hooks struct {
 	// GetBuild 返回 CI 注入的构建号（本地构建为 0）。
 	GetBuild func() int
 	// SetReleaseState 记录公告已读序号与被忽略的更新构建号。
-	SetReleaseState func(annSeen, dismissedBuild int) error
+	SetReleaseState func(annSeen, dismissedBuild, pendingBuild int) error
 	// OpenURL 用系统浏览器打开下载渠道链接（白名单在 release 包里）。
 	OpenURL func(url string) error
 	// Duplicate 创建一条账号的副本（同 PlayerID 的第二条本地记录，键 xxx-2）。
@@ -474,10 +474,11 @@ func (s *Server) Handler() http.Handler {
 		var body struct {
 			AnnSeen        int `json:"annSeen"`
 			DismissedBuild int `json:"dismissedBuild"`
+			PendingBuild   int `json:"pendingBuild"`
 		}
 		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<10)).Decode(&body)
 		if s.hooks.SetReleaseState != nil {
-			if err := s.hooks.SetReleaseState(body.AnnSeen, body.DismissedBuild); err != nil {
+			if err := s.hooks.SetReleaseState(body.AnnSeen, body.DismissedBuild, body.PendingBuild); err != nil {
 				writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
 				return
 			}

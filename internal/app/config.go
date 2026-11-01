@@ -56,6 +56,9 @@ type Config struct {
 	// 所以存这里（与界面壳偏好同因同解）
 	ReleaseAnnSeen       int `json:"release_ann_seen,omitempty"`
 	UpdateDismissedBuild int `json:"update_dismissed_build,omitempty"`
+	// UpdatePendingBuild = 云端提示过、等用户更新的构建号；用户更新到位后
+	// 弹一次「已更新到 vX」然后清零——实现"更新后弹一次，之后不再弹"
+	UpdatePendingBuild int `json:"update_pending_build,omitempty"`
 
 	// 多开默认设置：启动前写进每个客户端的 preferences.sav（internal/prefs）。
 	// 画质用游戏认识的名字（实测见过 LowPower / Presentation），空 = 跟随游戏；

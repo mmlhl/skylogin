@@ -112,6 +112,7 @@ export interface Settings {
   /** 公告已读序号 / 被忽略的更新构建号（存后端，localStorage 端口随机记不住） */
   releaseAnnSeen: number;
   updateDismissed: number;
+  updatePending: number;
   /** 多开镜像目录（第 2 个客户端从这里启动） */
   mirrorDir: string;
   /** 默认镜像目录（游戏所在盘） */

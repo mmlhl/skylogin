@@ -36,6 +36,7 @@ function emptyState(): AppState {
       release: { github: "", pan: "" },
       releaseAnnSeen: 0,
       updateDismissed: 0,
+      updatePending: 0,
       mirrorDir: "",
       mirrorDefault: "",
       mirrorSameVolume: true,

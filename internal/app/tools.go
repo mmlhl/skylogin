@@ -57,11 +57,12 @@ func init() {
 	}
 }
 
-// setReleaseState 记录公告已读序号 / 被忽略的更新构建号。
-func setReleaseState(annSeen, dismissedBuild int) error {
+// setReleaseState 记录公告已读序号 / 被忽略的更新构建号 / 待更新的构建号。
+func setReleaseState(annSeen, dismissedBuild, pendingBuild int) error {
 	c := loadConfig()
 	c.ReleaseAnnSeen = annSeen
 	c.UpdateDismissedBuild = dismissedBuild
+	c.UpdatePendingBuild = pendingBuild
 	return saveConfig(c)
 }
 
@@ -105,6 +106,7 @@ func settingsView() map[string]any {
 		"maskTitles":       maskEnabled(),
 		"releaseAnnSeen":   c.ReleaseAnnSeen,
 		"updateDismissed":  c.UpdateDismissedBuild,
+		"updatePending":    c.UpdatePendingBuild,
 		"mirrorDir":        fever.MirrorRoot(exe, c.MirrorDir),
 		"mirrorDefault":    fever.DefaultMirrorRoot(exe),
 		"mirrorSameVolume": fever.SameVolume(fever.MirrorRoot(exe, c.MirrorDir), filepath.Dir(exe)),
