@@ -27,6 +27,8 @@ permissions:
 
 env:
   UPDATE_API: https://api-skylogin.mmlhl.party
+  # secrets 只能在这里（workflow 级 env）映射进 env 上下文，步骤的 if 才能读到
+  APP_KEY: ${{ secrets.APP_KEY }}
 
 jobs:
   build:
