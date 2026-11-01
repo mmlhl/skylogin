@@ -156,6 +156,12 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
       });
     },
 
+    setAccountQuality(id, mode, fps) {
+      void api.setAccountQuality(id, mode, fps).then((r) => {
+        if (r.ok === false) toast(r.message || "保存失败");
+      });
+    },
+
     setRailWidth(width: number) {
       void api.setRailWidth(width);
     },

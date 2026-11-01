@@ -105,6 +105,10 @@ export const api = {
   /** 删除账号 */
   deleteAccount: (id: string) => request(`/api/accounts/delete${qs({ id })}`, { method: "POST" }),
 
+  /** 保存某行账号的画质/帧率（账号级 = 具体档位） */
+  setAccountQuality: (id: string, mode: string, fps: number) =>
+    request("/api/accounts/quality", { method: "POST", body: JSON.stringify({ id, mode, fps }) }),
+
   /** 创建一条账号的副本（name 为空时后端自动起名） */
   duplicateAccount: (id: string, name: string) =>
     request("/api/accounts/duplicate", { method: "POST", body: JSON.stringify({ id, name }) }),

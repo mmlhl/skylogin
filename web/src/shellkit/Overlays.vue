@@ -124,7 +124,7 @@ function pickScheme(v: "dual" | "rows" | "cols" | "fan") {
 // 第一项是"账号配置"：用每个账号自己的画质/帧率（账号详情里设置），
 // 没配过的账号跟随游戏；其余档位是本次多开对所有客户端的硬覆盖。
 const qualityOpts = [
-  { v: "", label: "账号配置", tip: "用每个账号自己的画质/帧率设置" },
+  { v: "", label: "跟随游戏", tip: "按账号在「游戏设置」里的配置，没设则以游戏内为准" },
   { v: "LowPower", label: "省电", tip: "游戏内部档位 LowPower" },
   { v: "Default", label: "默认", tip: "游戏内部档位 Default" },
   { v: "HighQuality", label: "高画质", tip: "游戏内部档位 HighQuality" },
@@ -182,6 +182,26 @@ function confirmDup() {
   if (!demoUi.dupId) return;
   store.duplicate(demoUi.dupId, name);
   demoUi.dupId = "";
+}
+
+/* ---- 游戏设置（账号级画质/帧率，四种壳共用这一个弹窗） ---- */
+const qAccount = computed(() => store.accounts.find((a) => a.id === demoUi.qualityId));
+const qModeRow = ref("");
+const qFpsRow = ref(0);
+// 账号级就是具体配置，没有"跟随"项；未设置过的默认落到 默认/60
+const accountQualityOpts = qualityOpts.filter((o) => o.v !== "");
+const accountFpsOpts = fpsOpts.filter((o) => o.v !== 0);
+watch(
+  () => demoUi.qualityId,
+  () => {
+    qModeRow.value = qAccount.value?.qualityMode || "Default";
+    qFpsRow.value = qAccount.value?.qualityFps || 60;
+  },
+);
+function confirmQuality() {
+  if (!demoUi.qualityId) return;
+  store.setAccountQuality(demoUi.qualityId, qModeRow.value, qFpsRow.value);
+  demoUi.qualityId = "";
 }
 
 /* ---- 改名 ---- */
@@ -382,6 +402,40 @@ function confirmRename() {
       <div class="mfoot">
         <button class="btn" @click="demoUi.dupId = ''">取消</button>
         <button class="btn primary" @click="confirmDup">{{ dupExisting.length ? "继续创建" : "创建" }}</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 游戏设置：账号级画质/帧率 -->
+  <div v-if="demoUi.qualityId" class="mask" @click.self="demoUi.qualityId = ''">
+    <div class="modal slim">
+      <div class="mhead">
+        <b>游戏设置</b>
+        <button class="mclose" @click="demoUi.qualityId = ''"><X /></button>
+      </div>
+      <p class="qwho">
+        <span class="qava">{{ (qAccount?.name || "?").slice(0, 1) }}</span>
+        {{ qAccount?.name }}
+      </p>
+
+      <div class="qsec">
+        <div class="qlabel2">画质</div>
+        <div class="qpills">
+          <button v-for="o in accountQualityOpts" :key="'qq' + o.v" :class="{ on: qModeRow === o.v }" :title="o.tip"
+            @click="qModeRow = o.v">{{ o.label }}</button>
+        </div>
+      </div>
+      <div class="qsec">
+        <div class="qlabel2">帧率</div>
+        <div class="qpills">
+          <button v-for="o in accountFpsOpts" :key="'qf' + o.v" :class="{ on: qFpsRow === o.v }"
+            @click="qFpsRow = o.v">{{ o.label }}</button>
+        </div>
+      </div>
+
+      <p class="qnote">启动（单开 / 多开）前写入这台客户端；多开弹窗选「跟随游戏」时也按这里的设置。</p>
+      <div class="mfoot">
+        <button class="btn primary" @click="confirmQuality">保存</button>
       </div>
     </div>
   </div>

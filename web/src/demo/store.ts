@@ -121,6 +121,12 @@ export const store: LauncherStore = {
     }
   },
 
+    setAccountQuality(id, mode, fps) {
+      const acc = state.accounts.find((a) => a.id === id);
+      if (acc) acc.qualityMode = mode;
+      if (acc) acc.qualityFps = fps;
+    },
+
     setRailWidth() {},
 
   duplicate(id, name) {
