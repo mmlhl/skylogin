@@ -90,8 +90,7 @@ jobs:
           CGO_ENABLED: '0'
         run: |
           $bt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mmZ")
-          $prev = git describe --tags --abbrev=0 "${
-            { github.ref_name }}"^ 2>$null
+          $prev = git describe --tags --abbrev=0 "${{ github.ref_name }}"^ 2>$null
           $notes = if ($prev) { (git log --oneline "$prev..HEAD" | ForEach-Object { $_ -replace '^[0-9a-f]{7} ', '- ' }) -join "`n" } else { "" }
           "notes=$notes" >> $env:GITHUB_OUTPUT
           $ldflags = "-s -w -H=windowsgui -X skylogin/internal/app.Version=${{ steps.ver.outputs.version }} -X skylogin/internal/app.Build=${{ github.run_number }} -X skylogin/internal/app.BuildTime=$bt"
