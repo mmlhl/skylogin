@@ -25,8 +25,11 @@ const expired = computed(() => cur.value?.cred === "expired");
     </div>
 
     <div class="stage">
-      <button class="ico c2" title="监控墙（实时小窗）" @click="store.toggleWall()"><LayoutDashboard /></button>
-      <button class="ico c2" title="设置" @click="store.openSettings()"><Settings /></button>
+      <!-- 监控墙 / 设置并排：之前两个都是绝对定位同一坐标，互相盖住 -->
+      <div class="c2row">
+        <button class="ico c2" title="监控墙（实时小窗）" @click="store.toggleWall()"><LayoutDashboard /></button>
+        <button class="ico c2" title="设置" @click="store.openSettings()"><Settings /></button>
+      </div>
       <button class="ico corner" :title="store.maskAll ? '显示完整信息' : '打码'" @click="store.toggleMask()">
         <EyeOff v-if="store.maskAll" /><Eye v-else />
       </button>
@@ -117,10 +120,15 @@ const expired = computed(() => cur.value?.cred === "expired");
   top: 12px;
   right: 14px;
 }
-.c2 {
+.c2row {
   position: absolute;
   top: 12px;
-  right: 50px;
+  right: 52px;
+  display: flex;
+  gap: 8px;
+}
+.c2 {
+  position: static;
 }
 .focus {
   max-width: 560px;
