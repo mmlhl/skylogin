@@ -10,7 +10,6 @@ export const demoUi = reactive({
   multiOpen: false,
   renameId: "",
   dupId: "",
-  qualityId: "",
   /** 多开弹层要预选的账号；空数组 = 用默认预选逻辑 */
   multiPreset: [] as string[],
   openAdd() {
@@ -28,14 +27,10 @@ export const demoUi = reactive({
   openDuplicate(id: string) {
     this.dupId = id;
   },
-  openQuality(id: string) {
-    this.qualityId = id;
-  },
   closeAll() {
     this.addOpen = false;
     this.multiOpen = false;
     this.renameId = "";
     this.dupId = "";
-    this.qualityId = "";
   },
 });

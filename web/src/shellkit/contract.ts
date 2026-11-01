@@ -140,8 +140,6 @@ export interface LauncherStore {
     ovMode?: string,
     ovFps?: number,
   ): void;
-  /** 保存某行账号自己的画质/帧率偏好（mode 空 / fps 0 = 跟随游戏）。 */
-  setAccountQuality(id: string, mode: string, fps: number): void;
   /** 保存账号列表宽度（分界线拖拽结束）。 */
   setRailWidth(width: number): void;
 

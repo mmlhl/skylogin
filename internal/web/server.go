@@ -54,8 +54,7 @@ type Hooks struct {
 	SetGameID       func(string, string) error
 	Delete          func(string) error
 	// AccountQuality 保存某行账号的游戏画质/帧率偏好。
-	AccountQuality func(id, mode string, fps int) error
-	SetMaskTitles  func(on bool) bool
+	SetMaskTitles func(on bool) bool
 	// Duplicate 创建一条账号的副本（同 PlayerID 的第二条本地记录，键 xxx-2）。
 	Duplicate    func(id, region string) (string, error)
 	Settings     func() map[string]any
@@ -371,20 +370,6 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("/api/accounts/delete", func(w http.ResponseWriter, r *http.Request) {
 		if err := s.hooks.Delete(r.URL.Query().Get("id")); err != nil {
-			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
-			return
-		}
-		writeJSON(w, map[string]any{"ok": true})
-	})
-
-	mux.HandleFunc("/api/accounts/quality", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			ID   string `json:"id"`
-			Mode string `json:"mode"`
-			Fps  int    `json:"fps"`
-		}
-		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&body)
-		if err := s.hooks.AccountQuality(body.ID, body.Mode, body.Fps); err != nil {
 			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
 			return
 		}

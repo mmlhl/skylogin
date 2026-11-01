@@ -135,16 +135,15 @@ func RunUI(title string) error {
 			_, err := arrangeClients(cols, rows, w, h)
 			return err
 		},
-		WallToggle:     ToggleWall,
-		StopAccount:    stopAccount,
-		Status:         gameStatus,
-		Select:         setCurrent,
-		Rename:         renameAccount,
-		Delete:         deleteAccount,
-		Duplicate:      duplicateAccount,
-		AccountQuality: setAccountQuality,
-		SetMaskTitles:  setMaskTitlesOn,
-		Settings:       settingsView,
+		WallToggle:    ToggleWall,
+		StopAccount:   stopAccount,
+		Status:        gameStatus,
+		Select:        setCurrent,
+		Rename:        renameAccount,
+		Delete:        deleteAccount,
+		Duplicate:     duplicateAccount,
+		SetMaskTitles: setMaskTitlesOn,
+		Settings:      settingsView,
 		SaveSettings: func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int) error {
 			return applySettings(skyExe, deviceID, mirrorDir, closeLauncher, multiQuality, multiFps, mouseArbiter, arbiterMin)
 		},

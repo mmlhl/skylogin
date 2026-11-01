@@ -4,7 +4,7 @@
  * 信息密度最高，运行中的客户端在详情页统一管理。
  */
 import { computed, ref } from "vue";
-import { Flame, LayoutGrid, LayoutDashboard, Monitor, Settings, Eye, EyeOff, Plus, Pencil, Play, Square, Layers, RefreshCw, CopyPlus, SlidersHorizontal } from "lucide-vue-next";
+import { Flame, LayoutGrid, LayoutDashboard, Monitor, Settings, Eye, EyeOff, Plus, Pencil, Play, Square, Layers, RefreshCw, CopyPlus } from "lucide-vue-next";
 import type { LauncherStore } from "../contract";
 
 const props = defineProps<{ store: LauncherStore }>();
@@ -95,7 +95,6 @@ const runningSelf = computed(() => !!cur.value?.running);
           <p class="deyebrow">{{ channelLabel(cur.channel) }}</p>
           <div class="dtitle">
             <h3>{{ store.maskAll ? cur.maskedName : cur.name }}</h3>
-            <button class="ico" title="游戏设置（画质 / 帧率）" @click="demoUi.openQuality(cur.id)"><SlidersHorizontal /></button>
             <button class="ico" title="修改别名" @click="demoUi.openRename(cur.id)"><Pencil /></button>
             <span v-if="runningSelf" class="pill live"><em class="dot ok live" />运行中</span>
             <span v-else-if="expired" class="pill exp"><em class="dot bad" />凭证过期</span>

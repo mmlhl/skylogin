@@ -75,10 +75,6 @@ export const api = {
 	setMaskTitles: (on: boolean) =>
 		request("/api/ui/mask", { method: "POST", body: JSON.stringify({ on }) }),
 
-	/** 保存某行账号自己的画质/帧率（mode 空 / fps 0 = 跟随游戏） */
-	setAccountQuality: (id: string, mode: string, fps: number) =>
-		request("/api/accounts/quality", { method: "POST", body: JSON.stringify({ id, mode, fps }) }),
-
 	/** 把正在运行的客户端窗口按 cols×rows 网格铺到主屏；w/h 自定义窗口尺寸 */
 	arrange: (cols: number, rows: number, size?: { w: number; h: number }) =>
 		request("/api/arrange", {

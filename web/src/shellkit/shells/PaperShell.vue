@@ -4,7 +4,7 @@
  * 每个账号一条全宽横幅，展开的那条露出操作，运行 / 过期内联处理。
  */
 import { ref, watch } from "vue";
-import { Flame, Minus, Square, X, Layers, Plus, Eye, EyeOff, Settings, Pencil, Play, RefreshCw, ChevronDown, LayoutDashboard, SlidersHorizontal } from "lucide-vue-next";
+import { Flame, Minus, Square, X, Layers, Plus, Eye, EyeOff, Settings, Pencil, Play, RefreshCw, ChevronDown, LayoutDashboard } from "lucide-vue-next";
 import type { LauncherStore } from "../contract";
 
 const props = defineProps<{ store: LauncherStore }>();
@@ -77,7 +77,6 @@ function toggle(a: Account) {
             <button v-else class="btn primary" @click="store.launch(a.id)"><Play />启动光遇</button>
             <button class="btn" @click="store.refreshCred(a.id)"><RefreshCw />刷新凭证</button>
             <button class="btn" @click="demoUi.openMulti()"><Layers />多开</button>
-            <button class="ico" title="游戏设置（画质 / 帧率）" @click="demoUi.openQuality(a.id)"><SlidersHorizontal /></button>
             <button class="ico" title="修改别名" @click="demoUi.openRename(a.id)"><Pencil /></button>
           </div>
         </div>

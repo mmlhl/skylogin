@@ -454,37 +454,3 @@ func setAccountCredState(userID, state, reason string) {
 		}
 	}
 }
-
-// setAccountQuality 保存某行账号的游戏画质/帧率偏好（行级，跟随记录走）。
-// mode 合法值：空 = 跟随游戏，或 LowPower / Default / HighQuality / Presentation；
-// fps 合法值：0 = 跟随游戏，或 30 / 60 / 120。id 可以是副本键或 PlayerID。
-func setAccountQuality(id, mode string, fps int) error {
-	switch mode {
-	case "", "LowPower", "Default", "HighQuality", "Presentation":
-	default:
-		return errors.New("未知画质档位")
-	}
-	switch fps {
-	case 0, 30, 60, 120:
-	default:
-		return errors.New("帧率只支持 30 / 60 / 120")
-	}
-	list, err := loadAccounts()
-	if err != nil {
-		return err
-	}
-	key := resolveAccountKey(list, id)
-	found := false
-	for i := range list {
-		if accountKey(list[i]) == key {
-			list[i].QualityMode = mode
-			list[i].QualityFps = fps
-			found = true
-			break
-		}
-	}
-	if !found {
-		return errors.New("没有找到该账号")
-	}
-	return saveList(list)
-}
