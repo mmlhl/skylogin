@@ -120,6 +120,14 @@ export const store: LauncherStore = {
     }
   },
 
+  duplicate(id) {
+    const acc = state.accounts.find((a) => a.id === id);
+    if (!acc) return;
+    const copy: Account = { ...acc, id: id + "-copy", name: acc.name + " · 第二区", current: false };
+    state.accounts.push(copy);
+    toast("已添加一条副本");
+  },
+
   remove(id) {
     const i = state.accounts.findIndex((a) => a.id === id);
     if (i < 0) return;

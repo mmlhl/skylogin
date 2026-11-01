@@ -27,6 +27,8 @@ export interface Account {
   /** 本次运行秒数（demo 用计时器驱动；正式版由 store 适配层推算） */
   runSeconds: number;
   current: boolean;
+  /** 副本标注的区（android / ios）；主记录为空 */
+  region?: string;
 }
 
 /** 后端推给界面的「需要用户处理」提示（目前是网易凭证过期） */
@@ -94,6 +96,8 @@ export interface LauncherStore {
   refreshCred(id: string): void;
   rename(id: string, name: string): void;
   remove(id: string): void;
+  /** 复制一份同账号的记录（同一账号的另一个区：安卓 / iOS）。 */
+  duplicate(id: string): void;
   toggleMask(): void;
   /**
    * 添加账号。不带参数 = 打开添加入口（demo 弹「模拟扫码」，正式版弹真实登录流程）；

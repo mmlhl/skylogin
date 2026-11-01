@@ -91,31 +91,42 @@ func saveList(list []Account) error {
 	return secretfile.WriteFile(accountsPath(), b, 0o600)
 }
 
+// saveAccount 保存/更新一条账号记录。
+//
+// 两条铁律，否则"同账号两个区"的记录会被互相吃掉：
+//   - 带 RowID 的副本只覆盖**自己那一行**，绝不碰 RowID 为空的主记录；
+//   - RowID 为空的主记录只覆盖"主记录里 PlayerID 相同的行"，
+//     不会把副本顶掉，也不会把别人的副本变成主记录。
 func saveAccount(a Account) error {
 	list, _ := loadAccounts()
 	replaced := false
-	for i := range list {
-		if list[i].PlayerID == a.PlayerID {
-			// 保留已有的"凭证元信息"，除非调用方明确给了新值。
-			// 否则一次普通保存（比如只更新票据时间）就会把
-			// credState/lastError 清成空，界面上的"需刷新"标记会莫名消失。
-			if a.Source == "" {
-				a.Source = list[i].Source
+	if a.RowID != "" {
+		for i := range list {
+			if list[i].RowID != a.RowID {
+				continue
 			}
-			if a.LoginMethod == "" {
-				a.LoginMethod = list[i].LoginMethod
-			}
-			if a.CredState == "" {
-				a.CredState = list[i].CredState
-				a.LastError = list[i].LastError
-				a.LastCheck = list[i].LastCheck
-			}
-			if a.DeviceID == "" {
-				a.DeviceID = list[i].DeviceID
-			}
+			a = mergeCredMeta(a, list[i])
 			list[i] = a
 			replaced = true
 			break
+		}
+		// RowID 找不到对应行（比如换机恢复）：当成新行追加，绝不去改主记录
+	} else {
+		if idx := loginTarget(list, a); idx >= 0 {
+			a = mergeCredMeta(a, list[idx])
+			list[idx] = a
+			replaced = true
+		} else {
+			// 老数据里可能已经有一条同 PlayerID 的主记录（渠道字段为空的那种），兜底认领
+			for i := range list {
+				if list[i].RowID != "" || list[i].PlayerID != a.PlayerID {
+					continue
+				}
+				a = mergeCredMeta(a, list[i])
+				list[i] = a
+				replaced = true
+				break
+			}
 		}
 	}
 	if !replaced {
@@ -124,19 +135,46 @@ func saveAccount(a Account) error {
 	if err := saveList(list); err != nil {
 		return err
 	}
-	// 新登录的账号自动设为当前
-	return setCurrent(a.PlayerID)
+	// 新登录/更新的账号自动设为当前（按行键，副本才不会被主记录顶掉）
+	return setCurrent(accountKey(a))
 }
 
-// deleteAccount 删除指定账号。
-func deleteAccount(playerID string) error {
+// mergeCredMeta 用旧行的凭证元信息补齐新值的空缺，避免一次普通保存
+// （比如只更新票据时间）把 credState/lastError 清空。
+func mergeCredMeta(a, old Account) Account {
+	if a.Source == "" {
+		a.Source = old.Source
+	}
+	if a.LoginMethod == "" {
+		a.LoginMethod = old.LoginMethod
+	}
+	if a.CredState == "" {
+		a.CredState = old.CredState
+		a.LastError = old.LastError
+		a.LastCheck = old.LastCheck
+	}
+	if a.DeviceID == "" {
+		a.DeviceID = old.DeviceID
+	}
+	if a.RowID == "" && old.RowID != "" {
+		a.RowID = old.RowID
+	}
+	if a.Region == "" && old.Region != "" {
+		a.Region = old.Region
+	}
+	return a
+}
+
+// deleteAccount 删除指定账号（id 可以是 RowID，也可以是旧版 PlayerID）。
+func deleteAccount(id string) error {
 	list, err := loadAccounts()
 	if err != nil {
 		return errors.New("还没有账号")
 	}
+	key := resolveAccountKey(list, id)
 	out := make([]Account, 0, len(list))
 	for _, a := range list {
-		if a.PlayerID != playerID {
+		if accountKey(a) != key {
 			out = append(out, a)
 		}
 	}
@@ -146,10 +184,10 @@ func deleteAccount(playerID string) error {
 	if err := saveList(out); err != nil {
 		return err
 	}
-	if cur, _ := currentID(); cur == playerID {
+	if cur, _ := currentID(); cur == key || cur == id {
 		_ = os.Remove(currentPath())
 		if len(out) > 0 {
-			_ = setCurrent(out[0].PlayerID)
+			_ = setCurrent(accountKey(out[0]))
 		}
 	}
 	return nil
@@ -169,8 +207,9 @@ func renameAccount(playerID, name string) error {
 		return errors.New("还没有账号")
 	}
 	found := false
+	key := resolveAccountKey(list, playerID)
 	for i := range list {
-		if list[i].PlayerID == playerID {
+		if accountKey(list[i]) == key {
 			list[i].Name = name
 			found = true
 			break
@@ -190,25 +229,26 @@ func currentID() (string, error) {
 	return strings.TrimSpace(string(b)), nil
 }
 
-func setCurrent(playerID string) error {
-	if playerID == "" {
+func setCurrent(id string) error {
+	if id == "" {
 		return errors.New("缺少账号 ID")
 	}
 	list, err := loadAccounts()
 	if err != nil {
 		return errors.New("还没有账号")
 	}
+	key := resolveAccountKey(list, id)
 	found := false
 	for _, a := range list {
-		if a.PlayerID == playerID {
+		if accountKey(a) == key {
 			found = true
 			break
 		}
 	}
 	if !found {
-		return fmt.Errorf("没有找到账号 %s", playerID)
+		return fmt.Errorf("没有找到账号 %s", id)
 	}
-	return os.WriteFile(currentPath(), []byte(playerID), 0o600)
+	return os.WriteFile(currentPath(), []byte(key), 0o600)
 }
 
 // pickAccount 优先返回当前选中的账号，否则返回最近使用的。
@@ -219,7 +259,7 @@ func pickAccount() (Account, error) {
 	}
 	if cur, err := currentID(); err == nil && cur != "" {
 		for _, a := range list {
-			if a.PlayerID == cur {
+			if accountKey(a) == cur || a.PlayerID == cur {
 				return a, nil
 			}
 		}
@@ -246,18 +286,26 @@ func maskID(id string) string {
 	}
 }
 
-// displayName 优先用别名，没有就用华为昵称。
+// displayName 优先用别名，没有就用昵称；副本带上区标记，方便和主记录区分。
 func displayName(a Account) string {
 	if strings.TrimSpace(a.Name) != "" {
 		return a.Name
 	}
+	base := ""
 	if strings.TrimSpace(a.NickName) != "" {
-		return a.NickName
+		base = a.NickName
+	} else if len(a.PlayerID) >= 4 {
+		base = "玩家 " + a.PlayerID[len(a.PlayerID)-4:]
+	} else {
+		base = "未命名账号"
 	}
-	if len(a.PlayerID) >= 4 {
-		return "玩家 " + a.PlayerID[len(a.PlayerID)-4:]
+	if a.RowID != "" {
+		if l := regionLabel(a.Region); l != "" {
+			return base + " · " + l
+		}
+		return base + " · 第二区"
 	}
-	return "未命名账号"
+	return base
 }
 
 // accountView 把账号转成 UI 用的结构（不含"是否当前"）。
@@ -292,12 +340,15 @@ func accountView(a Account) map[string]any {
 
 	return map[string]any{
 		"credState":    state,
-		"running":      accountRunning(a.PlayerID),
+		"running":      accountRunning(accountKey(a)),
 		"source":       source,
 		"loginMethod":  a.LoginMethod,
 		"lastError":    a.LastError,
 		"lastCheck":    a.LastCheck,
-		"id":           a.PlayerID,
+		"id":           accountKey(a),
+		"rowId":        a.RowID,
+		"region":       a.Region,
+		"regionLabel":  regionLabel(a.Region),
 		"name":         displayName(a),
 		"nick":         a.NickName,
 		"channel":      ch,

@@ -66,6 +66,7 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
         running: !!a.running,
         runSeconds: a.running && begin ? Math.floor((now - begin) / 1000) : 0,
         current: a.current,
+        region: a.region,
       };
     });
     for (const k of [...startedAt.keys()]) {
@@ -146,6 +147,20 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
     remove(id) {
       void api.deleteAccount(id).then((r) => {
         if (r.ok === false) toast(r.message || "删除失败");
+      });
+    },
+
+    duplicate(id) {
+      const a = find(id);
+      // 按现有区猜另一个区：iOS 的副本默认标安卓，其余默认标 iOS；识别不出就留空，
+      // 进游戏选完区后可以改别名标注。
+      const nextRegion = a?.region === "ios" ? "android" : a?.region === "android" ? "ios" : "";
+      void api.duplicateAccount(id, nextRegion).then((r) => {
+        if (r.ok === false) {
+          toast(r.message || "复制失败");
+          return;
+        }
+        toast(`已添加一条副本${nextRegion ? "（" + (nextRegion === "ios" ? "iOS 区" : "安卓区") + "）" : ""}，点它启动后进游戏选另一个区`);
       });
     },
 
