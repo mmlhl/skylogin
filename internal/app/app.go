@@ -31,6 +31,13 @@ type Account struct {
 	OpenID       string `json:"open_id"`
 	UpdatedAt    int64  `json:"updated_at"`
 
+	// RowID 是本机的"行"标识，允许同一个 PlayerID 存成多条记录
+	// （典型场景：同一个网易账号的安卓区和 iOS 区各一条）。
+	// 旧数据没有这个字段，此时一律退回用 PlayerID 当键。
+	RowID string `json:"row_id,omitempty"`
+	// Region 记录这一行走的是哪个区：android / ios / 空 = 还没识别出来。
+	Region string `json:"region,omitempty"`
+
 	// 以下字段只对网易账号有意义，华为账号留空。
 	//
 	// 网易账号靠 MPay token 持久化：token → create_ticket → 票。
@@ -129,6 +136,7 @@ func RunUI(title string) error {
 		Select:      setCurrent,
 		Rename:      renameAccount,
 		Delete:      deleteAccount,
+		Duplicate:   duplicateAccount,
 		Settings:    settingsView,
 		SaveSettings: func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int) error {
 			return applySettings(skyExe, deviceID, mirrorDir, closeLauncher, multiQuality, multiFps, mouseArbiter, arbiterMin)

@@ -28,7 +28,50 @@ const (
 	shimBrowserName = "webview_support_browser.exe"
 	shimRealName    = "webview_support_browser.real.exe"
 	shimMarkerName  = ".shim-backup"
+	// shimChannelFileName 是镜像里预置的"这条记录专属 channel"。
+	// 有它就用它（同一个账号行永远同一个 profile，选区才记得住），
+	// 没有就按镜像目录名派生（多开的临时实例）。
+	shimChannelFileName = ".shim-channel"
 )
+
+// readShimChannel 读镜像里预置的 channel；格式不对或没有就返回空。
+func readShimChannel(cefDir string) string {
+	b, err := os.ReadFile(filepath.Join(cefDir, shimChannelFileName))
+	if err != nil {
+		return ""
+	}
+	s := strings.TrimSpace(string(b))
+	if s == "" || len(s) > 64 {
+		return ""
+	}
+	for _, r := range s {
+		ok := r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		if !ok {
+			return ""
+		}
+	}
+	return s
+}
+
+// writeShimChannelHint 把账号行专属 channel 写进镜像，给浏览器壳读。
+func writeShimChannelHint(mirrorRoot, key string) {
+	if key == "" {
+		return
+	}
+	ch := cefChannelFor(key)
+	if ch == "" {
+		return
+	}
+	cefDir := filepath.Join(mirrorRoot, "webviewsupport.cef904430")
+	if _, err := os.Stat(cefDir); err != nil {
+		return
+	}
+	if err := os.WriteFile(filepath.Join(cefDir, shimChannelFileName), []byte(ch), 0o644); err != nil {
+		logf("浏览器壳：写 channel 提示失败: %v", err)
+		return
+	}
+	logf("浏览器壳：%s 固定使用 channel=%s", filepath.Base(mirrorRoot), ch)
+}
 
 // IsWebviewShim 判断当前进程是不是被游戏当成浏览器拉起来的。
 func IsWebviewShim() bool {
@@ -48,7 +91,10 @@ func RunWebviewShim() int {
 		return 1
 	}
 
-	channel := shimChannel(filepath.Base(filepath.Dir(dir)))
+	channel := readShimChannel(dir)
+	if channel == "" {
+		channel = shimChannel(filepath.Base(filepath.Dir(dir)))
+	}
 	args := rewriteChannel(os.Args[1:], channel)
 	logf("浏览器壳：镜像 %s → channel=%s", filepath.Base(dir), channel)
 

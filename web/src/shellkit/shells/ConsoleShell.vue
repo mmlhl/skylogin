@@ -4,7 +4,7 @@
  * 信息密度最高，运行中的客户端在详情页统一管理。
  */
 import { computed } from "vue";
-import { Flame, LayoutGrid, LayoutDashboard, Monitor, Settings, Eye, EyeOff, Plus, Pencil, Play, Square, Layers, RefreshCw } from "lucide-vue-next";
+import { Flame, LayoutGrid, LayoutDashboard, Monitor, Settings, Eye, EyeOff, Plus, Pencil, Play, Square, Layers, RefreshCw, CopyPlus } from "lucide-vue-next";
 import type { LauncherStore } from "../contract";
 
 const props = defineProps<{ store: LauncherStore }>();
@@ -95,6 +95,7 @@ const runningSelf = computed(() => !!cur.value?.running);
         <button v-if="runningSelf" class="btn" @click="store.stop(cur.id)"><Square />停止运行</button>
         <button v-else class="btn primary" @click="store.launch(cur.id)"><Play />启动光遇</button>
         <button class="btn" @click="store.refreshCred(cur.id)"><RefreshCw />刷新凭证</button>
+        <button class="btn" title="同一账号在另一个区（安卓/iOS）再存一条" @click="store.duplicate(cur.id)"><CopyPlus />复制到另一区</button>
         <button class="btn" @click="demoUi.openMulti()"><Layers />多开</button>
       </div>
 

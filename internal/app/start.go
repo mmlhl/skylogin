@@ -285,7 +285,7 @@ func launchMany(ids []string) (string, error) {
 	}
 	if len(ids) == 0 {
 		for i := range all {
-			ids = append(ids, all[i].PlayerID)
+			ids = append(ids, accountKey(all[i]))
 			if len(ids) >= 2 {
 				break
 			}
@@ -298,7 +298,7 @@ func launchMany(ids []string) (string, error) {
 	var picked []Account
 	for _, id := range ids {
 		for i := range all {
-			if all[i].PlayerID == id {
+			if accountKey(all[i]) == id {
 				picked = append(picked, all[i])
 				break
 			}
@@ -308,8 +308,8 @@ func launchMany(ids []string) (string, error) {
 		return "", fmt.Errorf("选中的账号不足两个")
 	}
 	for _, a := range picked {
-		if accountRunning(a.PlayerID) {
-			return "", fmt.Errorf("账号 %s 已经在运行了，请先停止它再开多开", a.NickName)
+		if accountRunning(accountKey(a)) {
+			return "", fmt.Errorf("账号 %s 已经在运行了，请先停止它再开多开", displayName(a))
 		}
 	}
 
@@ -373,7 +373,7 @@ func launchMany(ids []string) (string, error) {
 	// 第一个客户端的窗口先弹出来，后面的就被单实例检测拦下。
 	installs := make([]string, len(picked))
 	for i := range picked {
-		m, err := prepareMirror(exe)
+		m, err := prepareMirror(exe, channelKeyForAccount(picked[i]))
 		if err != nil {
 			logf("多开：准备镜像失败: %v", err)
 			return "", fmt.Errorf("准备镜像目录失败: %w", err)

@@ -92,7 +92,7 @@ func clientLabels() map[uint32]string {
 	if accs, err := loadAccounts(); err == nil {
 		clientsMu.Lock()
 		for _, a := range accs {
-			if pid, ok := runningByAccount[a.PlayerID]; ok && fever.ProcessAlive(pid) {
+			if pid, ok := runningByAccount[accountKey(a)]; ok && fever.ProcessAlive(pid) {
 				labels[pid] = displayName(a)
 			}
 		}

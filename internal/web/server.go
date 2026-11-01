@@ -53,6 +53,8 @@ type Hooks struct {
 	Rename          func(string, string) error
 	SetGameID       func(string, string) error
 	Delete          func(string) error
+	// Duplicate 把一条账号复制成"另一个区"的第二行（同一 PlayerID、新 RowID）。
+	Duplicate       func(id, region string) (string, error)
 	Settings        func() map[string]any
 	SaveSettings    func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int) error
 	Cleanup         func(accounts, cache, logs bool) ([]string, error)
@@ -367,6 +369,16 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		writeJSON(w, map[string]any{"ok": true})
+	})
+
+	mux.HandleFunc("/api/accounts/duplicate", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		id, err := s.hooks.Duplicate(q.Get("id"), q.Get("region"))
+		if err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "id": id})
 	})
 
 	mux.HandleFunc("/api/settings", func(w http.ResponseWriter, r *http.Request) {
