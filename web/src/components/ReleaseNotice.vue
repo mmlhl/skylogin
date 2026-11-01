@@ -26,6 +26,7 @@ interface Latest {
 }
 
 const ANN_KEY = "annSeenVersion";
+const DISMISS_KEY = "updateDismissedBuild";
 
 function openChannel(url: string) {
   void api.openExternal(url);
@@ -35,7 +36,7 @@ function changelogLines(list: string[]) {
   return h("ul", { style: "margin:4px 0 0;padding-left:18px" }, list.map((t) => h("li", t)));
 }
 
-/** 有更新时的弹窗（force 时不给取消按钮、点遮罩不关）。 */
+/** 有更新时的弹窗。force = 必须更新：不给「不再提示」、点遮罩不关。 */
 function showUpdate(latest: Latest) {
   const buttons = [
     h(
@@ -62,7 +63,12 @@ function showUpdate(latest: Latest) {
         h("p", { style: "margin:6px 0 2px" }, latest.changelog || "暂无更新说明"),
         h("div", { style: "margin-top:10px" }, buttons),
       ]),
-    positiveText: latest.force ? "知道了，去更新" : undefined,
+    positiveText: latest.force ? "知道了，去更新" : "知道了",
+    // 非强制更新时给「本版本不再提示」：记住已忽略的构建号，之后不再自动弹
+    negativeText: latest.force ? undefined : "本版本不再提示",
+    onNegativeClick: () => {
+      localStorage.setItem(DISMISS_KEY, String(latest.build));
+    },
     closable: !latest.force,
     maskClosable: !latest.force,
   });
@@ -92,22 +98,30 @@ function showAnnouncements(list: {
   });
 }
 
-/** 启动自动检查（仅构建版；本地开发版 build=0 跳过，不打扰开发）。 */
+/** 启动自动检查（仅构建版；本地开发版 build=0 跳过，不打扰开发）。
+ *  用户点过「本版本不再提示」的构建号之后不再自动弹（关于页手动检查不受限）。 */
 async function autoCheck() {
   try {
     const r = await api.releaseCheck();
     if (r.ok === false) return;
     const build = Number((r as { build?: number }).build ?? 0);
     const latest = (r as { latest?: Latest }).latest;
-    if (build > 0 && r.hasUpdate && latest) showUpdate(latest);
-    // 公告：增量拉取（本地未看过任何公告从 0 开始）
+    const dismissed = Number(localStorage.getItem(DISMISS_KEY) || "0");
+    if (build > 0 && r.hasUpdate && latest && dismissed < latest.build) showUpdate(latest);
+    // 公告：增量拉取（本地未看过任何公告从 0 开始）；
+    // build_code 非空 = 只弹给构建号更旧的客户端（与云端语义一致）
     const seen = Number(localStorage.getItem(ANN_KEY) || "0");
     const ar = (await api.releaseAnnouncements(seen)) as {
       ok: boolean;
-      list?: { id: number; title: string; content: { author_words?: string; fixes?: string[]; updates?: string[] } }[];
+      list?: {
+        id: number;
+        title: string;
+        build_code?: number;
+        content: { author_words?: string; fixes?: string[]; updates?: string[] };
+      }[];
     };
     if (ar.ok !== false) {
-      const list = ar.list ?? [];
+      const list = (ar.list ?? []).filter((a) => !a.build_code || a.build_code > build);
       if (list.length) {
         showAnnouncements(list);
         localStorage.setItem(ANN_KEY, String(Math.max(...list.map((a) => a.id))));
