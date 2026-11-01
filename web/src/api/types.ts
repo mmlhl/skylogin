@@ -104,6 +104,11 @@ export interface Settings {
   railWidth: number;
   /** 窗口标题 / 监控墙标签 / 列表的隐私打码开关（同一状态） */
   maskTitles: boolean;
+  /** CI 注入的构建号（本地开发版 0）与构建时间 */
+  appBuild: string;
+  appBuildTime: string;
+  /** 下载渠道（独立模块 release 注入） */
+  release: { github: string; pan: string };
   /** 多开镜像目录（第 2 个客户端从这里启动） */
   mirrorDir: string;
   /** 默认镜像目录（游戏所在盘） */

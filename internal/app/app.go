@@ -143,7 +143,11 @@ func RunUI(title string) error {
 		Delete:        deleteAccount,
 		Duplicate:     duplicateAccount,
 		SetMaskTitles: setMaskTitlesOn,
-		Settings:      settingsView,
+		GetBuild:      func() int { return buildNumber() },
+		OpenURL: func(url string) error {
+			return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+		},
+		Settings: settingsView,
 		SaveSettings: func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int) error {
 			return applySettings(skyExe, deviceID, mirrorDir, closeLauncher, multiQuality, multiFps, mouseArbiter, arbiterMin)
 		},

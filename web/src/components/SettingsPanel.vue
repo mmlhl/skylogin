@@ -74,6 +74,36 @@ async function toggleLauncher(v: boolean) {
   if (r.ok === false) message.error(r.message || "保存失败");
 }
 
+/* ---- 网盘与关于 ---- */
+const checking = ref(false);
+const checkResult = ref<null | { hasUpdate: boolean; version?: string; changelog?: string; force?: boolean; downloadUrl?: string; error?: string }>(null);
+
+async function checkUpdate() {
+  checking.value = true;
+  checkResult.value = null;
+  try {
+    const r = await api.releaseCheck();
+    if (r.ok === false) {
+      checkResult.value = { hasUpdate: false, error: r.message || "检查失败" };
+      return;
+    }
+    const latest = (r as { latest?: { version?: string; changelog?: string; force?: boolean; download_url?: string } }).latest;
+    checkResult.value = {
+      hasUpdate: !!r.hasUpdate,
+      version: latest?.version,
+      changelog: latest?.changelog,
+      force: latest?.force,
+      downloadUrl: latest?.download_url,
+    };
+  } finally {
+    checking.value = false;
+  }
+}
+
+function openChannel(url: string) {
+  void api.openExternal(url);
+}
+
 /** 重新申请：向服务器要一个新设备号，等于换一台设备登录，所以先二次确认 */
 function confirmRenew() {
   dialog.warning({
@@ -208,6 +238,44 @@ async function openLogs() {
         </div>
 
         <!-- 数据 -->
+        <p class="sect">网盘与关于</p>
+        <div class="row">
+          <span class="key">当前版本</span>
+          <span class="val mono">v{{ state.version }}<template v-if="state.settings.appBuild !== '0'"> · 构建 {{ state.settings.appBuild }}</template>
+            <template v-if="state.settings.appBuildTime"> · {{ state.settings.appBuildTime }}</template></span>
+        </div>
+        <div class="row">
+          <span class="key">检查更新</span>
+          <span class="val">
+            <button class="btn sm" :disabled="checking" @click="checkUpdate">{{ checking ? "检查中…" : "检查更新" }}</button>
+          </span>
+        </div>
+        <div v-if="checkResult" class="row">
+          <span class="key">结果</span>
+          <span class="val">
+            <template v-if="checkResult.error">检查失败：{{ checkResult.error }}</template>
+            <template v-else-if="checkResult.hasUpdate">
+              <b>新版本 v{{ checkResult.version }}{{ checkResult.force ? "（必须更新）" : "" }}</b>
+              <span class="dim"> — {{ checkResult.changelog }}</span>
+            </template>
+            <template v-else>已是最新版本</template>
+          </span>
+        </div>
+        <div v-if="checkResult?.hasUpdate" class="row">
+          <span class="key">下载</span>
+          <span class="val">
+            <button class="btn sm" @click="openChannel(checkResult.downloadUrl || state.settings.release.github)">GitHub</button>
+            <button class="btn sm" @click="openChannel(state.settings.release.pan)">123 网盘</button>
+          </span>
+        </div>
+        <div class="row">
+          <span class="key">下载渠道</span>
+          <span class="val">
+            <button class="btn sm" @click="openChannel(state.settings.release.github)">GitHub 发布页</button>
+            <button class="btn sm" @click="openChannel(state.settings.release.pan)">123 网盘</button>
+          </span>
+        </div>
+
         <p class="sect">数据</p>
         <div class="row">
           <span class="key">数据目录</span>

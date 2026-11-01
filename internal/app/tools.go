@@ -7,12 +7,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 
 	"skylogin/internal/fever"
 	"skylogin/internal/protocol"
+	"skylogin/internal/release"
 )
 
 // Version 是版本号，发布构建时用链接参数注入：
@@ -21,6 +23,19 @@ import (
 //
 // 不注入时用下面这个默认值（本地开发用）。
 var Version = "1.0.0"
+
+// Build 是 CI 注入的构建号（run_number），本地构建为 0；BuildTime 同理。
+// 更新检查按 Build 与云端比较：0 = 开发版，启动时不做自动检查。
+var (
+	Build     = "0"
+	BuildTime = ""
+)
+
+// buildNumber 把注入的构建号转成整数（本地未注入时 0 = 开发版，不做自动检查）。
+func buildNumber() int {
+	n, _ := strconv.Atoi(Build)
+	return n
+}
 
 // RepoURL 是项目地址。
 const RepoURL = "https://github.com/mmlhl/skylogin"
@@ -38,15 +53,21 @@ func settingsView() map[string]any {
 	}
 	found := fileExists(exe)
 	return map[string]any{
-		"skyExe":           exe,
-		"skyFound":         found,
-		"skyAuto":          auto,
-		"deviceId":         deviceIDForUI(),
-		"deviceIdSet":      true,
-		"deviceIdSource":   deviceIDSource(),
-		"deviceInfo":       deviceInfoForUI(),
-		"closeLauncher":    c.CloseLauncherEnabled(),
-		"railWidth":        c.RailWidth,
+		"skyExe":         exe,
+		"skyFound":       found,
+		"skyAuto":        auto,
+		"deviceId":       deviceIDForUI(),
+		"deviceIdSet":    true,
+		"deviceIdSource": deviceIDSource(),
+		"deviceInfo":     deviceInfoForUI(),
+		"closeLauncher":  c.CloseLauncherEnabled(),
+		"railWidth":      c.RailWidth,
+		"appBuild":       Build,
+		"appBuildTime":   BuildTime,
+		"release": map[string]string{
+			"github": release.GitHubURL,
+			"pan":    release.PanURL,
+		},
 		"maskTitles":       maskEnabled(),
 		"mirrorDir":        fever.MirrorRoot(exe, c.MirrorDir),
 		"mirrorDefault":    fever.DefaultMirrorRoot(exe),

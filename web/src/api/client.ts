@@ -71,6 +71,16 @@ export const api = {
 			}),
 		}),
 
+	/** 检查更新（构建号由后端注入，本地开发版为 0） */
+	releaseCheck: () => request("/api/release/check", { method: "POST" }),
+
+	/** 增量拉取公告（since = 已见过的最大公告序号） */
+	releaseAnnouncements: (since: number) =>
+		request(`/api/release/announcements${qs({ since })}`, { method: "POST" }),
+
+	/** 用系统浏览器打开下载渠道（白名单在 release 包里） */
+	openExternal: (url: string) => request("/api/openurl", { method: "POST", body: JSON.stringify({ url }) }),
+
 	/** 切换隐私打码（窗口标题 / 监控墙标签 / 列表显示同一开关） */
 	setMaskTitles: (on: boolean) =>
 		request("/api/ui/mask", { method: "POST", body: JSON.stringify({ on }) }),

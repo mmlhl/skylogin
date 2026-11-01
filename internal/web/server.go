@@ -17,6 +17,7 @@ import (
 	"github.com/skip2/go-qrcode"
 
 	"skylogin/internal/huawei"
+	"skylogin/internal/release"
 )
 
 // 前端构建产物（web/ 目录用 Vite 构建到这里）。
@@ -55,6 +56,10 @@ type Hooks struct {
 	Delete          func(string) error
 	// AccountQuality 保存某行账号的游戏画质/帧率偏好。
 	SetMaskTitles func(on bool) bool
+	// GetBuild 返回 CI 注入的构建号（本地构建为 0）。
+	GetBuild func() int
+	// OpenURL 用系统浏览器打开下载渠道链接（白名单在 release 包里）。
+	OpenURL func(url string) error
 	// Duplicate 创建一条账号的副本（同 PlayerID 的第二条本地记录，键 xxx-2）。
 	Duplicate    func(id, region string) (string, error)
 	Settings     func() map[string]any
@@ -418,6 +423,51 @@ func (s *Server) Handler() http.Handler {
 
 	// 左栏宽度：用户拖完存到本地配置（WebView2 每次端口都是随机的，
 	// localStorage 按端口隔离，靠它记不住）
+	// ── 版本检查 / 公告 / 下载渠道（独立模块，fork 移除见 internal/release）──
+	mux.HandleFunc("/api/release/check", func(w http.ResponseWriter, r *http.Request) {
+		build := 0
+		if s.hooks.GetBuild != nil {
+			build = s.hooks.GetBuild()
+		}
+		latest, has, err := release.CheckUpdate(build)
+		if err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "hasUpdate": has, "latest": latest, "build": build})
+	})
+
+	mux.HandleFunc("/api/release/announcements", func(w http.ResponseWriter, r *http.Request) {
+		since := 0
+		if v := r.URL.Query().Get("since"); v != "" {
+			_, _ = fmt.Sscanf(v, "%d", &since)
+		}
+		list, err := release.Announcements(since)
+		if err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "list": list})
+	})
+
+	mux.HandleFunc("/api/openurl", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			URL string `json:"url"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&body)
+		if !release.AllowExternal(body.URL) {
+			writeJSON(w, map[string]any{"ok": false, "message": "该链接不在允许的下载渠道里"})
+			return
+		}
+		if s.hooks.OpenURL != nil {
+			if err := s.hooks.OpenURL(body.URL); err != nil {
+				writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+				return
+			}
+		}
+		writeJSON(w, map[string]any{"ok": true})
+	})
+
 	mux.HandleFunc("/api/ui/mask", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			On *bool `json:"on"`

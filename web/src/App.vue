@@ -20,6 +20,7 @@ import { createRealStore } from "./realStore";
 import { api } from "./api/client";
 import { startPolling } from "./composables/useAppState";
 import LaunchAlertDialog from "./components/LaunchAlertDialog.vue";
+import ReleaseNotice from "./components/ReleaseNotice.vue";
 import type { Channel } from "./api/types";
 
 import ChannelPicker from "./components/ChannelPicker.vue";
@@ -164,6 +165,7 @@ onUnmounted(() => {
     <n-message-provider>
       <n-dialog-provider>
         <LaunchAlertDialog />
+        <ReleaseNotice />
         <ShellHost :store="realStore" :default-index="2" :show-switcher="false" :load-pref="loadShellPref" :save-pref="saveShellPref" />
 
         <ChannelPicker v-model:show="showChannelPicker" :mode="pickerMode" @pick="onPick" />

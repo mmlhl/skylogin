@@ -25,6 +25,9 @@ on:
 permissions:
   contents: write
 
+env:
+  UPDATE_API: https://api-skylogin.mmlhl.party
+
 jobs:
   build:
     name: 构建 Windows 版
@@ -83,10 +86,29 @@ jobs:
         env:
           CGO_ENABLED: '0'
         run: |
-          $ldflags = "-s -w -H=windowsgui -X skylogin/internal/app.Version=${{ steps.ver.outputs.version }}"
+          $bt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm UTC")
+          $ldflags = "-s -w -H=windowsgui -X skylogin/internal/app.Version=${{ steps.ver.outputs.version }} -X skylogin/internal/app.Build=${{ github.run_number }} -X skylogin/internal/app.BuildTime=$bt"
           go build -trimpath -ldflags $ldflags -o skylogin.exe ./cmd/skylogin
           $size = [math]::Round((Get-Item skylogin.exe).Length / 1MB, 1)
           Write-Host "构建完成: skylogin.exe ($size MB)"
+
+      - name: 登记新版本到更新服务
+        if: steps.ver.outputs.release == 'true' && env.APP_KEY != ''
+        env:
+          APP_KEY: ${{ secrets.APP_KEY }}
+        shell: pwsh
+        run: |
+          $payload = @{
+            version = "${{ steps.ver.outputs.version }}"
+            build = ${{ github.run_number }}
+            download_url = "https://github.com/mmlhl/skylogin/releases/latest"
+            changelog = "构建 ${{ github.run_number }}"
+            force = $false
+          } | ConvertTo-Json -Compress
+          try {
+            Invoke-RestMethod -Uri "${{ vars.UPDATE_API }}/admin/version" -Method Post -ContentType "application/json; charset=utf-8" -Headers @{ "X-App-Key" = $env:APP_KEY } -Body $payload
+            Write-Host "已登记版本"
+          } catch { Write-Warning ("登记失败: " + $_.Exception.Message) }
 
       - name: 创建 Release
         if: steps.ver.outputs.release == 'true'
