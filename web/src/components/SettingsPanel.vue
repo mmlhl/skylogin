@@ -16,7 +16,7 @@
  *   /api/settings { closeLauncher / mirrorDir }
  *   /api/open-logs、/api/cleanup
  */
-import { computed, ref } from "vue";
+import { computed, h, ref } from "vue";
 import { X, Check } from "lucide-vue-next";
 import { useDialog, useMessage } from "naive-ui";
 import { api } from "../api/client";
@@ -76,7 +76,7 @@ async function toggleLauncher(v: boolean) {
 
 /* ---- 网盘与关于 ---- */
 const checking = ref(false);
-const checkResult = ref<null | { hasUpdate: boolean; version?: string; changelog?: string; force?: boolean; downloadUrl?: string; error?: string }>(null);
+const checkResult = ref<null | { hasUpdate: boolean; error?: string }>(null);
 
 async function checkUpdate() {
   checking.value = true;
@@ -88,13 +88,38 @@ async function checkUpdate() {
       return;
     }
     const latest = (r as { latest?: { version?: string; changelog?: string; force?: boolean; download_url?: string } }).latest;
-    checkResult.value = {
-      hasUpdate: !!r.hasUpdate,
-      version: latest?.version,
-      changelog: latest?.changelog,
-      force: latest?.force,
-      downloadUrl: latest?.download_url,
-    };
+    if (r.hasUpdate && latest) {
+      // 结果用弹窗展示：更新公告 + 两个下载按钮
+      dialog[latest.force ? "error" : "info"]({
+        title: `发现新版本 v${latest.version}${latest.force ? "（必须更新）" : ""}`,
+        content: () =>
+          h("div", [
+            h("p", { style: "margin:6px 0 2px;white-space:pre-wrap" }, latest.changelog || "暂无更新说明"),
+            h("div", { style: "margin-top:10px;display:flex;gap:8px" }, [
+              h(
+                "button",
+                {
+                  onClick: () => openChannel(latest.download_url || state.settings.release.github),
+                  style: "padding:6px 14px;border-radius:8px;border:1px solid rgba(255,255,255,.2);background:transparent;color:inherit;cursor:pointer",
+                },
+                "GitHub 下载",
+              ),
+              h(
+                "button",
+                {
+                  onClick: () => openChannel(state.settings.release.pan),
+                  style: "padding:6px 14px;border-radius:8px;border:0;background:#d8b47c;color:#161619;cursor:pointer",
+                },
+                "123 网盘",
+              ),
+            ]),
+          ]),
+        closable: !latest.force,
+        maskClosable: !latest.force,
+      });
+    } else {
+      message.success("已是最新版本");
+    }
   } finally {
     checking.value = false;
   }
@@ -211,21 +236,16 @@ async function openLogs() {
         <!-- 多开 -->
         <p class="sect">多开</p>
         <div class="row">
-          <span class="key">镜像目录</span>
+          <span class="key">镜像目录 <span class="iinfo" title="多开时第 2 个客户端从这里启动（硬链接，不额外占空间），退出后自动删除；必须和游戏同一个磁盘，且只能选空文件夹。多开启动前会强制窗口模式，并按账号设置预写画质/帧率。">i</span></span>
           <span class="val mono ellipsis" :title="s.mirrorDir">{{ s.mirrorDir || s.mirrorDefault }}</span>
           <button class="act" @click="pickMirrorDir">修改</button>
         </div>
-        <p class="note">窗口模式会强制开启（这是网格排列的前提）；画质 / 帧率现在在账号详情里按账号设置（多开弹窗里也可以临时覆盖）。</p>
-        <p class="note">
-          第 2 个客户端从这里启动，退出后自动删除。
-          <b>必须和游戏在同一个磁盘</b>（硬链接，不额外占空间），且只能选空文件夹。
-          {{ s.mirrorSameVolume ? "" : `当前不在同一磁盘：会复制一份约 ${s.mirrorSizeText}，占用真实空间。` }}
-        </p>
+        <p v-if="!s.mirrorSameVolume" class="note warn">{{ `当前不在同一磁盘：会复制一份约 ${s.mirrorSizeText}，占用真实空间。` }}</p>
 
         <!-- 登录设备 -->
         <p class="sect">登录设备</p>
         <div class="row">
-          <span class="key">设备号</span>
+          <span class="key">设备号 <span class="iinfo" title="这台机器在网易 / 华为侧登记的身份指纹：同一个设备号登录不会被当成新设备。重置或更换后，账号可能需要重新验证。清理数据会一并清掉它。">i</span></span>
           <span class="val mono ellipsis" :title="s.deviceId">{{ s.deviceId }}</span>
         </div>
         <div class="row">
@@ -250,26 +270,14 @@ async function openLogs() {
             <button class="btn sm" :disabled="checking" @click="checkUpdate">{{ checking ? "检查中…" : "检查更新" }}</button>
           </span>
         </div>
-        <div v-if="checkResult" class="row">
-          <span class="key">结果</span>
+        <div class="row">
+          <span class="key">源码</span>
           <span class="val">
-            <template v-if="checkResult.error">检查失败：{{ checkResult.error }}</template>
-            <template v-else-if="checkResult.hasUpdate">
-              <b>新版本 v{{ checkResult.version }}{{ checkResult.force ? "（必须更新）" : "" }}</b>
-              <span class="dim"> — {{ checkResult.changelog }}</span>
-            </template>
-            <template v-else>已是最新版本</template>
-          </span>
-        </div>
-        <div v-if="checkResult?.hasUpdate" class="row">
-          <span class="key">下载</span>
-          <span class="val">
-            <button class="btn sm" @click="openChannel(checkResult.downloadUrl || state.settings.release.github)">GitHub</button>
-            <button class="btn sm" @click="openChannel(state.settings.release.pan)">123 网盘</button>
+            <button class="btn sm" @click="openChannel('https://github.com/mmlhl/skylogin')">GitHub 仓库</button>
           </span>
         </div>
         <div class="row">
-          <span class="key">下载渠道</span>
+          <span class="key">查看发布版本</span>
           <span class="val">
             <button class="btn sm" @click="openChannel(state.settings.release.github)">GitHub 发布页</button>
             <button class="btn sm" @click="openChannel(state.settings.release.pan)">123 网盘</button>
@@ -361,6 +369,23 @@ async function openLogs() {
   padding-right: 2px;
 }
 
+.iinfo {
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 2px;
+  border: 1px solid var(--line2, rgba(255, 255, 255, 0.15));
+  border-radius: 50%;
+  font-size: 10px;
+  font-style: normal;
+  color: var(--dim, #98a2ae);
+  cursor: help;
+  vertical-align: 1px;
+}
+.note.warn {
+  color: #e8b45c;
+}
 .sect {
   margin: 18px 0 8px;
   font-size: 11.5px;
