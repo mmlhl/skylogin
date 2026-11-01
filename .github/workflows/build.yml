@@ -85,7 +85,7 @@ jobs:
         env:
           CGO_ENABLED: '0'
         run: |
-          $bt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm UTC")
+          $bt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mmZ")
           $ldflags = "-s -w -H=windowsgui -X skylogin/internal/app.Version=${{ steps.ver.outputs.version }} -X skylogin/internal/app.Build=${{ github.run_number }} -X skylogin/internal/app.BuildTime=$bt"
           go build -trimpath -ldflags $ldflags -o skylogin.exe ./cmd/skylogin
           $size = [math]::Round((Get-Item skylogin.exe).Length / 1MB, 1)
