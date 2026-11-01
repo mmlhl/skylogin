@@ -57,6 +57,14 @@ func init() {
 	}
 }
 
+// setReleaseState 记录公告已读序号 / 被忽略的更新构建号。
+func setReleaseState(annSeen, dismissedBuild int) error {
+	c := loadConfig()
+	c.ReleaseAnnSeen = annSeen
+	c.UpdateDismissedBuild = dismissedBuild
+	return saveConfig(c)
+}
+
 // buildNumber 把注入的构建号转成整数（本地未注入时 0 = 开发版，不做自动检查）。
 func buildNumber() int {
 	n, _ := strconv.Atoi(Build)
@@ -95,6 +103,8 @@ func settingsView() map[string]any {
 			"pan":    release.PanURL,
 		},
 		"maskTitles":       maskEnabled(),
+		"releaseAnnSeen":   c.ReleaseAnnSeen,
+		"updateDismissed":  c.UpdateDismissedBuild,
 		"mirrorDir":        fever.MirrorRoot(exe, c.MirrorDir),
 		"mirrorDefault":    fever.DefaultMirrorRoot(exe),
 		"mirrorSameVolume": fever.SameVolume(fever.MirrorRoot(exe, c.MirrorDir), filepath.Dir(exe)),

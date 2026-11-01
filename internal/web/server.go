@@ -58,6 +58,8 @@ type Hooks struct {
 	SetMaskTitles func(on bool) bool
 	// GetBuild 返回 CI 注入的构建号（本地构建为 0）。
 	GetBuild func() int
+	// SetReleaseState 记录公告已读序号与被忽略的更新构建号。
+	SetReleaseState func(annSeen, dismissedBuild int) error
 	// OpenURL 用系统浏览器打开下载渠道链接（白名单在 release 包里）。
 	OpenURL func(url string) error
 	// Duplicate 创建一条账号的副本（同 PlayerID 的第二条本地记录，键 xxx-2）。
@@ -461,6 +463,21 @@ func (s *Server) Handler() http.Handler {
 		}
 		if s.hooks.OpenURL != nil {
 			if err := s.hooks.OpenURL(body.URL); err != nil {
+				writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+				return
+			}
+		}
+		writeJSON(w, map[string]any{"ok": true})
+	})
+
+	mux.HandleFunc("/api/release/state", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			AnnSeen        int `json:"annSeen"`
+			DismissedBuild int `json:"dismissedBuild"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<10)).Decode(&body)
+		if s.hooks.SetReleaseState != nil {
+			if err := s.hooks.SetReleaseState(body.AnnSeen, body.DismissedBuild); err != nil {
 				writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
 				return
 			}

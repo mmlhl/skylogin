@@ -109,6 +109,9 @@ export interface Settings {
   appBuildTime: string;
   /** 下载渠道（独立模块 release 注入） */
   release: { github: string; pan: string };
+  /** 公告已读序号 / 被忽略的更新构建号（存后端，localStorage 端口随机记不住） */
+  releaseAnnSeen: number;
+  updateDismissed: number;
   /** 多开镜像目录（第 2 个客户端从这里启动） */
   mirrorDir: string;
   /** 默认镜像目录（游戏所在盘） */

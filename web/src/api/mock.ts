@@ -63,6 +63,8 @@ function fakeState(): AppState {
       appBuild: "123",
       appBuildTime: "11-01 20:00",
       release: { github: "https://github.com/mmlhl/skylogin/releases/latest", pan: "https://example.com/pan" },
+      releaseAnnSeen: 0,
+      updateDismissed: 0,
       maskTitles: true,
       mirrorDir: "D:\\SkyLoginMirror",
       mirrorDefault: "D:\\SkyLoginMirror",

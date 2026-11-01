@@ -14,6 +14,7 @@ import { onMounted, ref } from "vue";
 import { useDialog } from "naive-ui";
 import { h } from "vue";
 import { api } from "../api/client";
+import { state } from "../composables/useAppState";
 
 const dialog = useDialog();
 
@@ -25,8 +26,9 @@ interface Latest {
   force: boolean;
 }
 
-const ANN_KEY = "annSeenVersion";
-const DISMISS_KEY = "updateDismissedBuild";
+function annSeenValue() {
+  return state.settings.releaseAnnSeen;
+}
 
 function openChannel(url: string) {
   void api.openExternal(url);
@@ -67,7 +69,8 @@ function showUpdate(latest: Latest) {
     // 非强制更新时给「本版本不再提示」：记住已忽略的构建号，之后不再自动弹
     negativeText: latest.force ? undefined : "本版本不再提示",
     onNegativeClick: () => {
-      localStorage.setItem(DISMISS_KEY, String(latest.build));
+      // 存后端：localStorage 按"协议+端口"隔离，端口随机等于每次都清空
+      void api.releaseState(annSeenValue(), latest.build);
     },
     closable: !latest.force,
     maskClosable: !latest.force,
@@ -106,11 +109,11 @@ async function autoCheck() {
     if (r.ok === false) return;
     const build = Number((r as { build?: number }).build ?? 0);
     const latest = (r as { latest?: Latest }).latest;
-    const dismissed = Number(localStorage.getItem(DISMISS_KEY) || "0");
+    const dismissed = state.settings.updateDismissed;
     if (build > 0 && r.hasUpdate && latest && dismissed < latest.build) showUpdate(latest);
-    // 公告：增量拉取（本地未看过任何公告从 0 开始）；
+    // 公告：增量拉取（已读序号存后端；首次为 0）
     // build_code 非空 = 只弹给构建号更旧的客户端（与云端语义一致）
-    const seen = Number(localStorage.getItem(ANN_KEY) || "0");
+    const seen = state.settings.releaseAnnSeen;
     const ar = (await api.releaseAnnouncements(seen)) as {
       ok: boolean;
       list?: {
@@ -124,7 +127,7 @@ async function autoCheck() {
       const list = (ar.list ?? []).filter((a) => !a.build_code || a.build_code > build);
       if (list.length) {
         showAnnouncements(list);
-        localStorage.setItem(ANN_KEY, String(Math.max(...list.map((a) => a.id))));
+        void api.releaseState(Math.max(...list.map((a) => a.id)), state.settings.updateDismissed);
       }
     }
   } catch {

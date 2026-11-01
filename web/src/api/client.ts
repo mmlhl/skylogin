@@ -78,6 +78,10 @@ export const api = {
 	releaseAnnouncements: (since: number) =>
 		request(`/api/release/announcements${qs({ since })}`, { method: "POST" }),
 
+	/** 记录公告已读序号 / 被忽略的更新构建号（存后端配置） */
+	releaseState: (annSeen: number, dismissedBuild: number) =>
+		request("/api/release/state", { method: "POST", body: JSON.stringify({ annSeen, dismissedBuild }) }),
+
 	/** 用系统浏览器打开下载渠道（白名单在 release 包里） */
 	openExternal: (url: string) => request("/api/openurl", { method: "POST", body: JSON.stringify({ url }) }),
 

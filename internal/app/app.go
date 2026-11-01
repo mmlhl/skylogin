@@ -135,15 +135,16 @@ func RunUI(title string) error {
 			_, err := arrangeClients(cols, rows, w, h)
 			return err
 		},
-		WallToggle:    ToggleWall,
-		StopAccount:   stopAccount,
-		Status:        gameStatus,
-		Select:        setCurrent,
-		Rename:        renameAccount,
-		Delete:        deleteAccount,
-		Duplicate:     duplicateAccount,
-		SetMaskTitles: setMaskTitlesOn,
-		GetBuild:      func() int { return buildNumber() },
+		WallToggle:      ToggleWall,
+		StopAccount:     stopAccount,
+		Status:          gameStatus,
+		Select:          setCurrent,
+		Rename:          renameAccount,
+		Delete:          deleteAccount,
+		Duplicate:       duplicateAccount,
+		SetMaskTitles:   setMaskTitlesOn,
+		GetBuild:        func() int { return buildNumber() },
+		SetReleaseState: setReleaseState,
 		OpenURL: func(url string) error {
 			return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
 		},

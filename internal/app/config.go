@@ -52,6 +52,10 @@ type Config struct {
 	WinMax int `json:"win_max,omitempty"`
 	// MaskTitles = false 表示游戏窗口标题 / 监控墙标签不打码；缺省 = 打码（true）
 	MaskTitles *bool `json:"mask_titles,omitempty"`
+	// 公告与更新弹窗的"已读"状态：WebView2 端口随机、localStorage 记不住，
+	// 所以存这里（与界面壳偏好同因同解）
+	ReleaseAnnSeen       int `json:"release_ann_seen,omitempty"`
+	UpdateDismissedBuild int `json:"update_dismissed_build,omitempty"`
 
 	// 多开默认设置：启动前写进每个客户端的 preferences.sav（internal/prefs）。
 	// 画质用游戏认识的名字（实测见过 LowPower / Presentation），空 = 跟随游戏；
