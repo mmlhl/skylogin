@@ -16,6 +16,7 @@ import (
 
 	"github.com/skip2/go-qrcode"
 
+	"skylogin/internal/channel"
 	"skylogin/internal/huawei"
 	"skylogin/internal/release"
 )
@@ -535,7 +536,7 @@ func (s *Server) Handler() http.Handler {
 
 	// 渠道网页登录（B站 / 4399 / vivo）：子进程打开官方登录页，
 	// 捕获凭证后在线验证并存账号。路径保留各渠道原入口。
-	channelKeys := []string{"bili", "m4399", "vivo"}
+	channelKeys := []string{channel.KeyBili, channel.KeyM4399, channel.KeyVivo}
 	for _, ck := range channelKeys {
 		key := ck
 		mux.HandleFunc("/api/"+key+"/login/start", func(w http.ResponseWriter, r *http.Request) {

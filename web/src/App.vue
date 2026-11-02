@@ -87,7 +87,7 @@ async function onPick(entry: { kind: "qrcode" | "sms" | "mpay" | "biliweb" | "m4
   showChannelPicker.value = false;
   if (entry.kind === "biliweb") {
     // 刷新已有账号时带上目标 uid：登录完成后校验是不是同一个号，防止登错账号覆盖
-    void api.startChannelLogin("bili", refreshTarget.value?.accountId || "");
+    void api.startChannelLogin("bilibili", refreshTarget.value?.accountId || "");
     showBiliLogin.value = true;
     return;
   }
@@ -169,7 +169,7 @@ onUnmounted(() => {
         <ShellHost :store="realStore" :default-index="2" :show-switcher="false" :load-pref="loadShellPref" :save-pref="saveShellPref" />
 
         <ChannelPicker v-model:show="showChannelPicker" :mode="pickerMode" @pick="onPick" />
-        <ChannelWebLoginDialog v-model:show="showBiliLogin" kind="bili" />
+        <ChannelWebLoginDialog v-model:show="showBiliLogin" kind="bilibili" />
         <ChannelWebLoginDialog v-model:show="showM4399Login" kind="m4399" />
         <ChannelWebLoginDialog v-model:show="showVivoLogin" kind="vivo" />
         <MpayLoginDialog v-model:show="showMpayLogin" />

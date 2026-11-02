@@ -221,10 +221,10 @@ func dedupeStrings(in []string) []string {
 	return out
 }
 
-// autoOpenWall 3 个以上客户端时自动打开监控墙：游戏窗口最小 1024×720，
-// 3 个以上屏幕必然互相遮挡。
+// autoOpenWall 多开（2 个及以上）时自动打开监控墙：窗口一多就有遮挡，
+// 监控墙是主要的查看与切换方式。
 func autoOpenWall() {
-	if !win.WallOpen() && len(runningPids()) >= 3 {
+	if !win.WallOpen() && len(runningPids()) >= 2 {
 		if _, err := ToggleWall(); err != nil {
 			logf("自动打开监控墙失败: %v", err)
 		} else {
