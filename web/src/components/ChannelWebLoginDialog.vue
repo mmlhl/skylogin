@@ -10,7 +10,7 @@ import { onUnmounted, ref, watch } from "vue";
 import { NModal, useMessage } from "naive-ui";
 import { api } from "../api/client";
 
-const props = defineProps<{ show: boolean; kind: "bili" | "m4399" | "vivo" }>();
+const props = defineProps<{ show: boolean; kind: "bilibili" | "m4399" | "vivo" }>();
 const emit = defineEmits<{ (e: "update:show", v: boolean): void }>();
 
 const message = useMessage();
@@ -19,7 +19,7 @@ const text = ref("请在弹出的窗口里登录");
 let timer: number | undefined;
 
 const COPY = {
-  bili: {
+  bilibili: {
     title: "B站账号登录",
     waiting: "请在弹出的窗口里登录 B站账号（扫码 / 验证码 / 密码都可以）",
   },

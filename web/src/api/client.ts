@@ -143,11 +143,11 @@ export const api = {
    * 渠道网页登录（B站 / 4399 / vivo 共用一套流程，key 区分渠道）。
    * 打开官方登录页子进程，捕获凭证后在线验证并存账号。
    */
-  startChannelLogin: (key: "bili" | "m4399" | "vivo", targetUserID = "") =>
+  startChannelLogin: (key: "bilibili" | "m4399" | "vivo", targetUserID = "") =>
     request(`/api/${key}/login/start`, { method: "POST", body: JSON.stringify({ targetUserId: targetUserID }) }),
 
   /** 渠道网页登录进度（waiting / done / failed） */
-  channelLoginStatus: (key: "bili" | "m4399" | "vivo") => request(`/api/${key}/login/status`),
+  channelLoginStatus: (key: "bilibili" | "m4399" | "vivo") => request(`/api/${key}/login/status`),
 
   /** 保存设置（只传要改的字段） */
   saveSettings: (payload: {
