@@ -25,7 +25,7 @@ interface Entry {
   hint: string;
   initial: string;
   /** qrcode 扫码 / sms 手机号验证码 / mpay 网易官方登录窗（账号密码等）/ 渠道网页登录；group 是二级菜单入口 */
-  kind: "qrcode" | "sms" | "mpay" | "biliweb" | "m4399web" | "vivoweb" | "group";
+  kind: "qrcode" | "sms" | "mpay" | "channelscan" | "biliweb" | "m4399web" | "vivoweb" | "group";
   channel: Channel;
 }
 
@@ -33,7 +33,7 @@ interface Entry {
  *  手机号登录不再单独列出：官方登录窗里自带手机号登录（2026-10-26 起我们自己的
  *  短信接口被网易卡住，官方窗口是唯一稳定的路） */
 const NETEASE_ENTRIES: Entry[] = [
-  { key: "netease-qr", name: "扫码登录", hint: "用光遇手游扫码", initial: "码", kind: "qrcode", channel: "netease" },
+  { key: "netease-qr", name: "扫码登录", hint: "用光遇手游 / 网易大神扫官方窗里的二维码", initial: "码", kind: "channelscan", channel: "netease" },
   { key: "netease-pwd", name: "账号密码登录", hint: "网易官方登录窗：账号密码 / 手机号", initial: "密", kind: "mpay", channel: "netease" },
 ];
 
@@ -43,10 +43,30 @@ const ADD_TOP: Entry[] = [
   { key: "m4399", name: "4399账号", hint: "在弹出的窗口里登录 4399 账号", initial: "4", kind: "m4399web", channel: "m4399" },
   { key: "vivo", name: "vivo账号", hint: "在弹出的窗口里登录 vivo 账号", initial: "V", kind: "vivoweb", channel: "vivo" },
   { key: "huawei", name: "华为账号", hint: "用华为手机扫码", initial: "华", kind: "qrcode", channel: "huawei" },
+  // 渠道服扫码单独放到顶层：它开的是官方登录窗、窗口里直接就是二维码，
+  // 埋到「网易账号 → 第二级」里等于让用户多点两下（2026-11-05 反馈）。
+  { key: "netease-channel", name: "渠道服扫码", hint: "打开游戏到「加好友」界面扫码，支持华为 / vivo / B站 / 4399 / 九游", initial: "渠", kind: "channelscan", channel: "netease" },
   { key: "netease-group", name: "网易账号", hint: "扫码 / 账号密码（含手机号）", initial: "网", kind: "group", channel: "netease" },
 ];
 
-const props = defineProps<{ show: boolean; mode: "channel" | "netease" | "bilibili" | "m4399" | "vivo" | "add" }>();
+/** 九游只有"游戏内扫码"一种方式，单独一组 */
+const UC_ENTRIES: Entry[] = [
+  {
+    key: "uc-channel",
+    name: "游戏内扫码",
+    hint: "打开游戏到「加好友」界面扫一次，凭证会写回这个账号",
+    initial: "扫",
+    kind: "channelscan",
+    channel: "uc_platform",
+  },
+];
+
+const props = defineProps<{
+  show: boolean;
+  mode: "channel" | "netease" | "bilibili" | "m4399" | "vivo" | "uc_platform" | "add";
+  /** 「渠道服扫码」的说明文字（后端给，渠道清单在 Go 侧维护） */
+  scanHelp?: string;
+}>();
 const emit = defineEmits<{
   (e: "update:show", v: boolean): void;
   (e: "pick", entry: Entry): void;
@@ -67,9 +87,11 @@ const FILTER: Record<string, Entry["channel"]> = {
   bilibili: "bilibili",
   m4399: "m4399",
   vivo: "vivo",
+  uc_platform: "uc_platform",
 };
 
 const list = computed(() => {
+  if (props.mode === "uc_platform") return UC_ENTRIES;
   if (props.mode === "add") return neteaseOpen.value ? NETEASE_ENTRIES : ADD_TOP;
   return NETEASE_ENTRIES.concat(ADD_TOP).filter((e) => e.channel === FILTER[props.mode] && e.kind !== "group");
 });
@@ -79,6 +101,7 @@ const TITLE: Record<string, string> = {
   bilibili: "刷新凭证 · B站",
   m4399: "刷新凭证 · 4399",
   vivo: "刷新凭证 · vivo",
+  uc_platform: "刷新凭证 · 九游",
   add: "添加账号",
 };
 const title = computed(() => (props.mode === "add" && neteaseOpen.value ? "添加账号 · 网易" : TITLE[props.mode]));
@@ -87,10 +110,11 @@ const tip = computed(() => {
   if (props.mode === "bilibili") return "重新登录同一个 B站账号，凭证会更新到这个账号上";
   if (props.mode === "m4399") return "重新登录同一个 4399 账号，凭证会更新到这个账号上";
   if (props.mode === "vivo") return "重新登录同一个小号，凭证会更新到这个账号上";
+  if (props.mode === "uc_platform") return "九游账号只能靠游戏内扫码：打开游戏到「加好友」界面扫一次";
   if (props.mode === "add") {
     return neteaseOpen.value
       ? "三种方式最终都会保存同样的登录凭证，之后启动不用再输"
-      : "华为账号靠扫码；B站/4399/vivo 在弹出的窗口里登录";
+      : props.scanHelp || "渠道服扫码：打开游戏到「加好友」界面点扫码，用对应渠道的 App 扫窗口里的二维码";
   }
   return "用华为手机重新扫码，凭证会更新到这个账号上";
 });

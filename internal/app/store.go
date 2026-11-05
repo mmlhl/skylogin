@@ -77,6 +77,23 @@ func loadAccounts() ([]Account, error) {
 			fixed = true
 		}
 	}
+	// 老记录没有 token 元信息，但 token 本身就存着——解析出来补上，
+	// 这样不用等下次登录，详情页立刻能看到凭证等级和签发时间。
+	for i := range list {
+		if list[i].MpayToken == "" {
+			continue
+		}
+		sa := int(tokenSaValue(list[i].MpayToken))
+		at := tokenLoginUnix(list[i].MpayToken)
+		if sa != 0 && list[i].TokenSa != sa {
+			list[i].TokenSa = sa
+			fixed = true
+		}
+		if at > 0 && list[i].TokenAt != at {
+			list[i].TokenAt = at
+			fixed = true
+		}
+	}
 	if fixed {
 		if err := saveList(list); err != nil {
 			logf("修复账号 id 失败: %v", err)
@@ -158,6 +175,18 @@ func saveAccount(a Account) error {
 			break
 		}
 		// CopyKey 找不到对应行（比如换机恢复）：当成新行追加，绝不去改原始行
+	} else if a.RowKey != "" {
+		// 行键：同一个玩家的不同来源（网页登录 / 渠道服扫码）各占一行，
+		// 只覆盖自己那一行，不去动另一条。
+		for i := range list {
+			if list[i].RowKey != a.RowKey {
+				continue
+			}
+			a = mergeCredMeta(a, list[i])
+			list[i] = a
+			replaced = true
+			break
+		}
 	} else {
 		if idx := loginTarget(list, a); idx >= 0 {
 			a = mergeCredMeta(a, list[idx])
@@ -166,6 +195,7 @@ func saveAccount(a Account) error {
 		}
 	}
 	if !replaced {
+		a.fillMeta() // 新行：补上首次添加时间 / token 元信息
 		list = append(list, a)
 	}
 	// 凭证按 PlayerID 同步给同身份的所有行（token/凭证状态是身份级的）
@@ -188,6 +218,38 @@ func saveAccount(a Account) error {
 	}
 	// 新登录/更新的账号自动设为当前（按行键）
 	return setCurrent(accountKey(a))
+}
+
+// markAccountLaunched 记下"这个账号最后一次成功启动"的时间。
+//
+// 只改这一个字段，不整行回写：启动期间别的流程（凭证状态、票据时间）
+// 也在动同一行，整行写回容易把它们覆盖掉。
+func markAccountLaunched(key, gameID string) {
+	if key == "" {
+		return
+	}
+	list, err := loadAccounts()
+	if err != nil {
+		return
+	}
+	for i := range list {
+		if accountKey(list[i]) != key {
+			continue
+		}
+		list[i].LastLogin = time.Now().Unix()
+		if list[i].CreatedAt == 0 {
+			// 老记录没有建档时间：拿这次登录当起点，总比一直显示「—」强，
+			// 界面上"添加时间"就是"本版本开始记录的时间"。
+			list[i].CreatedAt = list[i].LastLogin
+		}
+		if gameID != "" {
+			list[i].GameID = gameID
+		}
+		if err := saveList(list); err != nil {
+			logf("记录登录时间失败: %v", err)
+		}
+		return
+	}
 }
 
 // mergeCredMeta 用旧行的凭证元信息补齐新值的空缺，避免一次普通保存
@@ -213,7 +275,45 @@ func mergeCredMeta(a, old Account) Account {
 	if a.Region == "" && old.Region != "" {
 		a.Region = old.Region
 	}
+	// 环境和时间戳：这一行是"同一个号"的续写，旧值一律保留
+	if a.MpayPath == "" {
+		a.MpayPath = old.MpayPath
+	}
+	if a.MpayVersion == "" {
+		a.MpayVersion = old.MpayVersion
+	}
+	if a.GameID == "" {
+		a.GameID = old.GameID
+	}
+	if a.CreatedAt == 0 {
+		a.CreatedAt = old.CreatedAt
+	}
+	if a.LastLogin == 0 {
+		a.LastLogin = old.LastLogin
+	}
+	if a.TokenAt == 0 {
+		a.TokenSa, a.TokenAt = old.TokenSa, old.TokenAt
+	}
+	a.fillMeta()
 	return a
+}
+
+// fillMeta 补齐"记账用"的字段：首次添加时间、token 的等级与签发时间。
+//
+// 放在保存这一层做，是因为账号有六七个入口（扫码/短信/密码窗/渠道网页/
+// 游戏内扫码/华为扫码），让每个入口各自记得写一遍迟早会漏。
+func (a *Account) fillMeta() {
+	if a.CreatedAt == 0 {
+		a.CreatedAt = time.Now().Unix()
+	}
+	if a.MpayToken != "" {
+		if sa := int(tokenSaValue(a.MpayToken)); sa != 0 {
+			a.TokenSa = sa
+		}
+		if t := tokenLoginUnix(a.MpayToken); t > 0 {
+			a.TokenAt = t
+		}
+	}
 }
 
 // deleteAccount 删除指定账号（id 可以是副本键，也可以是原始行的 PlayerID）。
@@ -373,6 +473,11 @@ func accountView(a Account) map[string]any {
 			// 渠道服：key 直接用账号文件里的渠道名，展示名带"渠道"后缀
 			ch = a.Channel
 			label = channel.LabelOf(a.Channel) + "渠道"
+		} else if a.Channel != "" {
+			// 渠道服扫码带回来的其它渠道（nearme_vivo 这类）：
+			// 名字就是网易服务端的渠道标识，直接用；展示名走 displayChannel
+			ch = a.Channel
+			label = displayChannel(a.Channel) + "渠道"
 		}
 	}
 	// 凭证状态：给界面显示"这个账号还能不能直接用"
@@ -413,6 +518,45 @@ func accountView(a Account) map[string]any {
 		"level":        a.PlayerLevel,
 		"updatedTs":    a.UpdatedAt,
 		"updated":      time.Unix(a.UpdatedAt, 0).Format("01-02 15:04"),
+
+		// ── 详情页用的环境/时间信息 ──────────────────────────────
+		// 全给原始值 + 格式化值两份：界面显示用后者，以后做"存了几天"的
+		// 相对时间计算用前者。
+		"mpayPath":      a.MpayPath,
+		"mpayVersion":   a.MpayVersion,
+		"gameId":        a.GameID,
+		"createdAt":     a.CreatedAt,
+		"created":       fmtStamp(a.CreatedAt),
+		"lastLogin":     a.LastLogin,
+		"lastLoginText": fmtStamp(a.LastLogin),
+		"tokenSa":       a.TokenSa,
+		"tokenSaLabel":  tokenSaLabel(a.TokenSa),
+		"tokenAt":       a.TokenAt,
+		"tokenAtText":   fmtStamp(a.TokenAt),
+	}
+}
+
+// fmtStamp 把 unix 秒格式化成"2026-11-05 21:30"；0 返回空串（界面显示 —）。
+func fmtStamp(t int64) string {
+	if t <= 0 {
+		return ""
+	}
+	return time.Unix(t, 0).Format("2006-01-02 15:04")
+}
+
+// tokenSaLabel 把 sa 等级翻译成人话，详情页直接显示。
+func tokenSaLabel(sa int) string {
+	switch sa {
+	case -9:
+		return "账号级（长期）"
+	case 3:
+		return "会话级（可续期）"
+	case -4:
+		return "大神会话"
+	case 0:
+		return ""
+	default:
+		return fmt.Sprintf("未知（sa=%d）", sa)
 	}
 }
 

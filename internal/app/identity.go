@@ -21,6 +21,11 @@ func accountKey(a Account) string {
 	if a.CopyKey != "" {
 		return a.CopyKey
 	}
+	// 同一个玩家的不同来源各占一行（典型：vivo 网页登录 + 渠道服扫码）。
+	// 两行 PlayerID 一样，只靠这个行键区分，否则会互相覆盖、界面联动。
+	if a.RowKey != "" {
+		return a.RowKey
+	}
 	return a.PlayerID
 }
 
@@ -42,7 +47,7 @@ func nextCopyKey(list []Account, basePlayerID string) string {
 }
 
 // resolveAccountKey 把界面/API 传来的 id 解析成存储键。
-// id 可以是副本键（"xxx-2"）或原始行的 PlayerID。
+// id 可以是行键（RowKey）、副本键（"xxx-2"）或原始行的 PlayerID。
 func resolveAccountKey(list []Account, id string) string {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -50,6 +55,12 @@ func resolveAccountKey(list []Account, id string) string {
 	}
 	for i := range list {
 		if list[i].CopyKey == id {
+			return id
+		}
+	}
+	// 行键优先于 PlayerID：同一玩家可能有两行（网页登录 + 扫码）
+	for i := range list {
+		if list[i].RowKey == id {
 			return id
 		}
 	}
@@ -77,6 +88,11 @@ func findAccount(list []Account, id string) (Account, bool) {
 func loginTarget(list []Account, a Account) int {
 	for i := range list {
 		if list[i].CopyKey != "" {
+			continue
+		}
+		// 带行键的是"同一玩家的另一种来源"（网页登录 / 扫码各一行），
+		// 普通登录不该覆盖它。
+		if list[i].RowKey != "" && list[i].RowKey != a.RowKey {
 			continue
 		}
 		if list[i].PlayerID != a.PlayerID {

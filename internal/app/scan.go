@@ -102,7 +102,12 @@ func StartScanLogin() (ScanState, error) {
 			logf("[诊断] 建码用的是游戏内参数（game_id=%s）", profile.LongGameID)
 		}
 	} else {
-		uuid, _, cerr = c.CreateLoginHosted(devID, profile.HostedGameID, profile.ShortGameID, proto().AppChannel, profile.HostedCv)
+		remember := "2"
+		if scanRemember1Enabled() {
+			remember = "1"
+			logf("[诊断] 建码 is_remember=1（试服务端记住行为）")
+		}
+		uuid, _, cerr = c.CreateLoginHostedFull(devID, profile.HostedGameID, profile.ShortGameID, proto().AppChannel, profile.HostedCv, remember)
 	}
 	if cerr != nil {
 		st := ScanState{Status: "error", Message: "建码失败: " + cerr.Error()}
@@ -167,7 +172,7 @@ func waitScan(uuid string, c *mpay.Client, stop chan struct{}, devID string) {
 			rawCode := code // 诊断用：留着最初的 10 位 code
 			saved := false
 			alreadyAdded := false
-			if t, xerr := launcher.ExchangeTicket(code, xdev); xerr != nil {
+			if t, xerr := launcher.ExchangeTicketWithSid(code, xdev, platformSid()); xerr != nil {
 				logf("换票失败（退回原始 code）: %v", xerr)
 			} else {
 				logf("换票成功: %s -> %s (channel=%s)", maskCode(code), maskTicket(t.Ticket), t.Channel)
@@ -312,6 +317,11 @@ func persistNetEase(ticket, devID string) (string, bool, error) {
 	}
 	// 是不是"已经在列表里"的号——决定提示语，别再假装添加了一个新账号
 	_, existed := findAccountByUserID(id)
+	// 记下这次建码用的 game id：同一个号用 a50 码和 ma75 码换出来的凭证
+	// 等级不一样（sa:-9 / sa:3），以后查"多久过期"得靠它区分。
+	scanMu.Lock()
+	gameID := scanGame
+	scanMu.Unlock()
 
 	acc := Account{
 		Name:        name,
@@ -322,6 +332,7 @@ func persistNetEase(ticket, devID string) (string, bool, error) {
 		UserID:      id,
 		MpayToken:   token,
 		DeviceID:    devID,
+		GameID:      gameID,
 		Source:      "qrcode",
 		LoginMethod: "qrcode",
 		UpdatedAt:   time.Now().Unix(),
@@ -393,37 +404,21 @@ func scanGameParamsEnabled() bool {
 	return err == nil
 }
 
-// mpayGameParamsEnabled 让「账号密码登录」那个官方窗口用光遇自己的 game id 初始化。
-//
-// 窗口里的二维码是 mpay.dll 按 init 时给的 game_id 建的：给 a50 就是平台码
-// （只能网易大神扫），给 ma75 就是游戏内的码（光遇手游可扫）。
-func mpayGameParamsEnabled() bool {
-	_, err := os.Stat(filepath.Join(dataDir(), "mpay_game.on"))
-	return err == nil
-}
-
-// mpayPlatformDLLEnabled 让「账号密码登录」加载**平台目录**那份 mpay.dll（4.21），
-// 而不是游戏目录里的 4.20。诊断用：想验证平台的登录会不会签出带 u_ki 的 token。
-func mpayPlatformDLLEnabled() bool {
-	_, err := os.Stat(filepath.Join(dataDir(), "mpay_dll_platform.on"))
-	return err == nil
-}
-
-// mpayPlatformDBEnabled 让 DLL 用平台自己的数据目录（unisdk），并跳过清理旧登录态。
-//
-// 目的：复用平台缓存的登录态，让 DLL 静默登录成平台那个账号，
-// 看它回调出来的 token 里有没有 u_ki（平台登录才有的字段）。
-func mpayPlatformDBEnabled() bool {
-	_, err := os.Stat(filepath.Join(dataDir(), "mpay_use_platform_db.on"))
-	return err == nil
-}
-
 // scanNewDeviceEnabled 让本次扫码用一台新登记的 a50 设备。
 //
 // 诊断用：验证服务端的"记住状态"是不是按设备隔离的——是的话，每个账号
 // 用自己的设备就不会互相顶掉。
 func scanNewDeviceEnabled() bool {
 	_, err := os.Stat(filepath.Join(dataDir(), "scan_new_device.on"))
+	return err == nil
+}
+
+// scanRemember1Enabled 让建码时 is_remember=1。
+//
+// 诊断用：平台建码传的是 2，我们想看 1 会不会让服务端在扫码确认后
+// 把这个账号写进加载湾的"记住列表"（third_party_account 返回的那个）。
+func scanRemember1Enabled() bool {
+	_, err := os.Stat(filepath.Join(dataDir(), "scan_remember1.on"))
 	return err == nil
 }
 

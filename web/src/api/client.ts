@@ -208,6 +208,16 @@ export const api = {
   mpayLoginStart: (targetUserId = "") =>
     request("/api/mpay-login/start", { method: "POST", body: JSON.stringify({ targetUserId }) }),
 
+  /** 保存官方登录窗的调试参数（设置页「开发者调试」） */
+  saveMpayDebug: (dll: string, game: string, skipLogout: boolean, dataPath: string) =>
+    request("/api/mpay/debug", {
+      method: "POST",
+      body: JSON.stringify({ dll, game, skipLogout, dataPath }),
+    }),
+
+  /** 渠道服游戏内扫码：强制用游戏身份开窗，渠道服 App 也能扫 */
+  mpayChannelStart: () => request("/api/mpay-login/channel-start", { method: "POST", body: "{}" }),
+
   /** 账号密码登录进度 */
   mpayLoginStatus: () => request("/api/mpay-login/status"),
 

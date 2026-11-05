@@ -11,14 +11,14 @@
  * 数据：composables/useAppState.ts 每秒从 Go 的 /api/state 拉一次，
  * Go 是唯一真相来源。
  */
-import { onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { NConfigProvider, NMessageProvider, NDialogProvider, darkTheme, zhCN, dateZhCN } from "naive-ui";
 import type { GlobalThemeOverrides } from "naive-ui";
 
 import ShellHost from "./shellkit/ShellHost.vue";
 import { createRealStore } from "./realStore";
 import { api } from "./api/client";
-import { startPolling } from "./composables/useAppState";
+import { startPolling, state } from "./composables/useAppState";
 import LaunchAlertDialog from "./components/LaunchAlertDialog.vue";
 import ReleaseNotice from "./components/ReleaseNotice.vue";
 import type { Channel } from "./api/types";
@@ -58,6 +58,8 @@ const themeOverrides: GlobalThemeOverrides = {
 
 /* ---------------- 登录流程弹层的状态 ---------------- */
 const showChannelPicker = ref(false);
+/* 「渠道服扫码」的说明文字由后端给（渠道清单在 Go 侧维护，加渠道不用改这里） */
+const scanHelp = computed(() => (state as any).channelScan?.help ?? "");
 const pickerMode = ref<"channel" | "netease" | "bilibili" | "m4399" | "vivo" | "add">("add");
 const showBiliLogin = ref(false);
 const showM4399Login = ref(false);
@@ -83,7 +85,7 @@ function openPicker(mode: "channel" | "netease" | "bilibili" | "m4399" | "vivo" 
 }
 
 /** 选完登录方式 → 进对应界面 */
-async function onPick(entry: { kind: "qrcode" | "sms" | "mpay" | "biliweb" | "m4399web" | "vivoweb" | "group"; channel: Channel }) {
+async function onPick(entry: { kind: "qrcode" | "sms" | "mpay" | "channelscan" | "biliweb" | "m4399web" | "vivoweb" | "group"; channel: Channel }) {
   showChannelPicker.value = false;
   if (entry.kind === "biliweb") {
     // 刷新已有账号时带上目标 uid：登录完成后校验是不是同一个号，防止登错账号覆盖
@@ -104,6 +106,13 @@ async function onPick(entry: { kind: "qrcode" | "sms" | "mpay" | "biliweb" | "m4
   }
   if (entry.kind === "sms") {
     showSMS.value = true;
+    return;
+  }
+  if (entry.kind === "channelscan") {
+    // 扫码窗：以游戏身份（ma75）开官方登录窗，默认用平台目录那份 mpay.dll。
+    // 网易账号、渠道服账号都走这里——扫的是什么号就存成什么号。
+    await api.mpayChannelStart();
+    showMpayLogin.value = true;
     return;
   }
   if (entry.kind === "mpay") {
@@ -168,7 +177,7 @@ onUnmounted(() => {
         <ReleaseNotice />
         <ShellHost :store="realStore" :default-index="2" :show-switcher="false" :load-pref="loadShellPref" :save-pref="saveShellPref" />
 
-        <ChannelPicker v-model:show="showChannelPicker" :mode="pickerMode" @pick="onPick" />
+        <ChannelPicker v-model:show="showChannelPicker" :mode="pickerMode" :scan-help="scanHelp" @pick="onPick" />
         <ChannelWebLoginDialog v-model:show="showBiliLogin" kind="bilibili" />
         <ChannelWebLoginDialog v-model:show="showM4399Login" kind="m4399" />
         <ChannelWebLoginDialog v-model:show="showVivoLogin" kind="vivo" />

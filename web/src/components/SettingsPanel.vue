@@ -16,7 +16,7 @@
  *   /api/settings { closeLauncher / mirrorDir }
  *   /api/open-logs、/api/cleanup
  */
-import { computed, h, ref } from "vue";
+import { computed, h, ref, watch } from "vue";
 import { X, Check } from "lucide-vue-next";
 import { useDialog, useMessage } from "naive-ui";
 import { api } from "../api/client";
@@ -41,8 +41,61 @@ function close() {
   emit("update:show", false);
 }
 
-/* ---- 界面方案 ---- */
-function chooseShell(i: number) {
+/* ---- 开发者调试：官方登录窗的参数 ---- */
+const mpayDll = ref("game");
+const mpayGame = ref("a50");
+const mpaySkipLogout = ref(false);
+const mpayDataPath = ref("");
+const savingDebug = ref(false);
+const debugSaved = ref(false);
+
+function markDebugDirty() {
+  debugSaved.value = false;
+}
+
+// 只在「打开设置」时跟后端对齐一次。
+// 不能盯着 state.settings 同步：那个对象每秒都被轮询换新，
+// 用户刚选完下拉框，下一次轮询就把它弹回去了。
+watch(
+  () => props.show,
+  (v) => {
+    if (!v) return;
+    const d = state.settings.mpayDebug;
+    if (!d) return;
+    mpayDll.value = d.dll || "game";
+    mpayGame.value = d.game || "a50";
+    mpaySkipLogout.value = !!d.skipLogout;
+    mpayDataPath.value = d.dataPath || "";
+    debugSaved.value = false;
+  },
+  { immediate: true },
+);
+
+async function saveMpayDebug(open: boolean) {
+  savingDebug.value = true;
+  try {
+    const r = await api.saveMpayDebug(
+      mpayDll.value,
+      mpayGame.value,
+      mpaySkipLogout.value,
+      mpayDataPath.value.trim(),
+    );
+    if (r.ok === false) {
+      message.error(r.message || "保存失败");
+      return;
+    }
+    debugSaved.value = true;
+    message.success("调试参数已保存");
+    if (open) {
+      const res = await api.mpayLoginStart("");
+      if (res.ok === false) message.error(res.message || "打开登录窗失败");
+    }
+  } finally {
+    savingDebug.value = false;
+  }
+}
+
+/* ---- 界面方案 ---- */function chooseShell(i: number) {
   if (activeShell.value === i) return;
   activeShell.value = i;
   void api.saveShell(i).then((r) => {
@@ -310,6 +363,48 @@ async function openLogs() {
           <span class="key">交流群</span>
           <span class="val mono">{{ QQ_GROUP }}</span>
           <button class="act" @click="copyGroup">复制群号</button>
+        </div>
+
+        <!-- 开发者调试：官方登录窗用哪份 DLL / 哪个 game id（以前是 .on 开关文件，容易搞混） -->
+        <p class="sect">开发者调试</p>
+        <div class="row">
+          <span class="key">mpay.dll</span>
+          <span class="val">
+            <select v-model="mpayDll" class="sel" @change="markDebugDirty">
+              <option value="game">游戏目录（4.20）</option>
+              <option value="platform">平台目录（4.21）</option>
+            </select>
+          </span>
+        </div>
+        <div class="row">
+          <span class="key">game id</span>
+          <span class="val">
+            <select v-model="mpayGame" class="sel" @change="markDebugDirty">
+              <option value="a50">a50 · 平台码（只认网易大神）</option>
+              <option value="ma75">ma75 · 游戏码（光遇手游可扫）</option>
+            </select>
+          </span>
+        </div>
+        <div class="row">
+          <span class="key">跳过清理登录态</span>
+          <span class="val">
+            <input v-model="mpaySkipLogout" type="checkbox" @change="markDebugDirty" />
+            <span class="dim"> 打开窗口前不清旧登录态（让它直接静默登录上次那个号）</span>
+          </span>
+        </div>
+        <div class="row">
+          <span class="key">数据目录</span>
+          <span class="val">
+            <input v-model="mpayDataPath" class="inp" placeholder="留空 = 用默认（%APPDATA%\Netease\Mpay）" />
+          </span>
+        </div>
+        <div class="row">
+          <span class="key" />
+          <span class="val">
+            <button class="btn sm" :disabled="savingDebug" @click="saveMpayDebug(false)">保存</button>
+            <button class="btn sm" :disabled="savingDebug" @click="saveMpayDebug(true)">保存并打开官方登录窗</button>
+            <span v-if="debugSaved" class="dim">已保存</span>
+          </span>
         </div>
 
         <p class="sect">数据</p>

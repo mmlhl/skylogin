@@ -78,6 +78,7 @@ const RepoURL = "https://github.com/mmlhl/skylogin"
 // settingsView 给界面用的设置快照。
 func settingsView() map[string]any {
 	c := loadConfig()
+	mp := mpayDebug()
 	exe := c.SkyExe
 	auto := false
 	if !fileExists(exe) {
@@ -120,6 +121,12 @@ func settingsView() map[string]any {
 		"repo":             RepoURL,
 		"goVersion":        runtime.Version(),
 		"protocol":         protocolSource(),
+		"mpayDebug": map[string]any{
+			"dll":        mp.DLL,
+			"game":       mp.Game,
+			"skipLogout": mp.SkipLogout,
+			"dataPath":   mp.DataPath,
+		},
 	}
 }
 
