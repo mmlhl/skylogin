@@ -462,12 +462,16 @@ func (c *Client) QRImage(uuid, longGameID, appCv string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-// ScanStatus 查询二维码状态；confirmed 为 true 时同时返回票据与渠道。
-func (c *Client) ScanStatus(uuid, longGameID string) (status int, code, channel string, err error) {
+// ScanStatus 查询二维码状态；confirmed 时同时返回票据、渠道和原始响应。
+//
+// raw 是整条 query 响应：扫码后手机那边勾了什么（比如"不失效"）如果影响返回
+// 字段，只能从原始 JSON 里看出来，所以一并交给调用方写日志。
+func (c *Client) ScanStatus(uuid, longGameID string) (status int, code, channel string, raw map[string]any, err error) {
 	data, qerr := c.Query(uuid, longGameID)
 	if qerr != nil {
-		return 0, "", "", qerr
+		return 0, "", "", nil, qerr
 	}
+	raw = data
 	if q, ok := data["qrcode"].(map[string]any); ok {
 		if st, _ := q["status"].(float64); st >= 0 {
 			status = int(st)
@@ -477,5 +481,5 @@ func (c *Client) ScanStatus(uuid, longGameID string) (status int, code, channel 
 		code, _ = info["code"].(string)
 		channel, _ = info["login_channel"].(string)
 	}
-	return status, code, channel, nil
+	return status, code, channel, raw, nil
 }

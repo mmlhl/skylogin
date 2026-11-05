@@ -75,6 +75,8 @@ export interface ScanState {
   channel: string;
   uuid: string;
   expireAt: number;
+  /** 这次登录的是列表里已有的账号（只是更新了凭证，没有新增） */
+  existing?: boolean;
 }
 
 /** 设置面板需要的全部信息 */

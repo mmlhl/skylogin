@@ -24,7 +24,9 @@ const countdown = ref(0);
 let timer: number | undefined;
 
 const scan = computed(() => state.scan);
-const done = computed(() => scan.value.status === "done");
+/** start 请求返回前不认服务端状态：上一次登录留下的 done 会让弹窗一开就显示"已添加" */
+const ready = ref(false);
+const done = computed(() => ready.value && !starting.value && scan.value.status === "done");
 
 /** 当前在第几步 */
 const step = computed(() => {
@@ -45,6 +47,21 @@ const tip = computed(() => {
   return "用光遇手游或网易大神扫一扫";
 });
 
+/**
+ * 展示在二维码区的提示。
+ *
+ * 除了 start 本身失败，还有一种情况：码扫了、也确认了，但换凭证/存账号失败
+ * （status=ready 且没有二维码）。这时不能落回"正在生成二维码"——那会让人以为
+ * 卡住了，得告诉用户重扫。
+ */
+const notice = computed(() => {
+  if (error.value) return error.value;
+  if (!scan.value.qr && !done.value && !starting.value && scan.value.status === "ready") {
+    return scan.value.message || "账号没保存成功，请重新扫码";
+  }
+  return "";
+});
+
 /** 倒计时（只用于提示，不影响逻辑） */
 function startCountdown() {
   window.clearInterval(timer);
@@ -60,12 +77,14 @@ function startCountdown() {
 async function start() {
   error.value = "";
   starting.value = true;
+  ready.value = false;
   countdown.value = 0;
   try {
     const r = await api.startScan();
     if (r.ok === false) error.value = r.message || "申请二维码失败";
   } finally {
     starting.value = false;
+    ready.value = true;
     startCountdown();
   }
 }
@@ -79,7 +98,13 @@ watch(
 
 watch(done, (v) => {
   if (!v) return;
-  window.setTimeout(() => emit("update:show", false), 700);
+  // 已有账号只更新了凭证时，多留一会儿让用户看清提示
+  const wait = scan.value.existing ? 2600 : 700;
+  window.setTimeout(() => {
+    emit("update:show", false);
+    // 自动收起时也要停掉轮询，否则后端会一直停在 done，下次打开又是"已添加"的假象
+    void api.stopScan();
+  }, wait);
 });
 
 function close() {
@@ -97,7 +122,7 @@ function close() {
     :step="step"
     :tip="tip"
     :loading="starting"
-    :error="error"
+    :error="notice"
     :done="done"
     @update:show="(v: boolean) => (v ? emit('update:show', true) : close())"
     @retry="start"

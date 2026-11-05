@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"skylogin/internal/mpay"
-	"skylogin/internal/profile"
 )
 
 // SendSMS 发验证码。
@@ -61,30 +60,11 @@ func CompleteSMSLogin(mobile, code, targetUserID string) error {
 	}
 	logf("验证码校验通过，拿到票据（%s）", maskTicket(ticket))
 	c := mpay.New()
-	// 票据换登录态：优先 mobile/finish（账号级 token，长期有效）。
-	// 两路上下文各试一次——先跟我们 verify_sms 同款（票就是这个上下文发的），
-	// 再用平台抓包的原始参数；都失败退回 login/ticket（会话级，老行为兜底）。
-	var out map[string]any
-	var finishErrs []string
-	for _, v := range []struct{ name, long, short, ch, cv string }{
-		{"我们的 SMS 上下文", profile.HostedGameID, profile.ShortGameID, "a50_sdk_cn", "c4.20.0"},
-		{"平台原始参数", profile.HostedGameID, "a50", "netease.allysdk3rd", "c4.21.0"},
-	} {
-		o, ferr := c.FinishSMS(ticket, dev, v.long, v.short, v.ch, v.cv)
-		if ferr == nil {
-			out = o
-			logf("mobile/finish（%s）通过，拿到账号级凭证", v.name)
-			break
-		}
-		finishErrs = append(finishErrs, fmt.Sprintf("%s: %v", v.name, ferr))
-	}
-	if out == nil {
-		logf("mobile/finish 都失败（%s），退回 login/ticket", strings.Join(finishErrs, "；"))
-		var err error
-		out, err = loginTicketAuto(c, ticket, dev)
-		if err != nil {
-			return fmt.Errorf("用票据换登录态失败: %w", err)
-		}
+	// 票据换登录态：优先 mobile/finish（账号级 token，长期有效），
+	// 失败退回 login/ticket（会话级，老行为兜底）。见 exchangeSMSLoginTicket。
+	out, err := exchangeSMSLoginTicket(c, ticket, dev)
+	if err != nil {
+		return fmt.Errorf("用票据换登录态失败: %w", err)
 	}
 	user, _ := out["user"].(map[string]any)
 	token, _ := user["token"].(string)
@@ -132,7 +112,7 @@ func CompleteSMSLogin(mobile, code, targetUserID string) error {
 	}
 	_ = setCurrent(acc.PlayerID)
 	clearAuthHint()
-	logf("手机号登录成功并已保存: %s", acc.Name)
+	logf("手机号登录成功并已保存: %s 凭证等级: %s", acc.Name, tokenGrade(token))
 	return nil
 }
 
