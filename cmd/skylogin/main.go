@@ -56,8 +56,55 @@ func main() {
 	centerY := flag.Int("center-y", 0, "登录窗中心 Y（屏幕坐标）")
 	dataPath := flag.String("data-path", "", "mpay 数据目录（诊断用）")
 	noLogout := flag.Bool("no-logout", false, "不清理旧登录态，直接静默登录（诊断用）")
+	qrOnly := flag.Bool("qr-only", false, "登录窗只显示二维码页（渠道服扫码用）")
 	hidden := flag.Bool("hidden", false, "登录窗口不可见（静默续期用，页面脚本照常执行）")
+	probeToken := flag.Bool("probe-channel-token", false, "探测渠道服账号的 accessToken 还有没有效（后台定时用）")
+	qrProbe := flag.Bool("qr-probe", false, "自己建一张游戏码并轮询，验证渠道 App 扫码后会不会吐回渠道凭证（开发用）")
+	qrProbeSeconds := flag.Int("qr-probe-seconds", 900, "二维码等待秒数（过期会自动换新码）")
+	qrProbeHosted := flag.Bool("qr-probe-hosted", false, "建托管码（a50 + dst_jf_game_id=ma75），而不是游戏码")
+	pkgProbe := flag.Bool("probe-channel-package", false, "验证 channel_login_slots.json 里的渠道整包还能不能换出登录态（开发用）")
+	refreshProbe := flag.Bool("probe-refresh", false, "验证渠道服账号能不能用 refresh_token 续期（开发用）")
+	myappProbe := flag.Bool("probe-myapp", false, "应用宝微信扫码探针（开发用）")
+	uilessMode := flag.String("probe-uiless", "", "诊断：直接调 mpay.dll 的无界面登录接口（setuser / token / ticket）")
+	uilessFile := flag.String("uiless-file", "", "setuser 用的槽位文件（默认 channel_login_slots.json）")
+	uilessUID := flag.String("uiless-uid", "", "token 模式：uid")
+	uilessToken := flag.String("uiless-token", "", "token 模式：token")
+	uilessAccount := flag.String("uiless-account", "", "ticket 模式：给哪个账号签票（空 = 第一条带整包的）")
+	uilessAtk := flag.String("uiless-atk", "", "ticket 模式：直接用这个 atk 签票（不落库）")
+	uilessOpenid := flag.String("uiless-openid", "", "配合 --uiless-atk：openid")
+	uilessDevice := flag.String("uiless-device", "", "先 SetDeviceInfo 再调接口（换票要同一个设备号）")
+	uilessCh := flag.String("uiless-channel", "", "init 用的 app_channel（空 = a50_sdk_cn；试 myapp）")
+	uilessFake := flag.Bool("uiless-fake-api", false, "把服务地址指到本地假服务器，看 DLL 发什么")
+	loginTimeout := flag.Int("timeout", 0, "登录窗等待秒数（0 = 默认 5 分钟）")
 	flag.Parse()
+
+	// 定时探测模式：不开界面、不弹窗，测完就退出
+	if *probeToken {
+		app.ProbeChannelToken()
+		return
+	}
+	// 渠道服扫码探针：不加载 mpay.dll、不开官方登录窗，自己建码自己轮询
+	if *qrProbe {
+		app.ProbeChannelQR(*qrProbeSeconds, *qrProbeHosted)
+		return
+	}
+	// 渠道整包探针：离线验证扫码存下来的那坨凭证还能不能用
+	if *pkgProbe {
+		app.ProbeChannelPackage("")
+		return
+	}
+	if *refreshProbe {
+		app.ProbeRefreshToken()
+		return
+	}
+	if *myappProbe {
+		app.ProbeMyApp()
+		return
+	}
+	if *uilessMode != "" {
+		runUILessProbe(*uilessMode, *uilessFile, *uilessUID, *uilessToken, *uilessAccount, *uilessAtk, *uilessOpenid, *uilessDevice, *uilessCh, *uilessFake, *skyDir, *skin, *game, *logPath)
+		return
+	}
 
 	if *weblogin {
 		runWebLogin(*profile, *out)
@@ -68,7 +115,7 @@ func main() {
 		return
 	}
 	if *mpaylogin {
-		runMpayLogin(*skyDir, *skin, *game, *out, *logPath, *centerX, *centerY, *dataPath, *noLogout)
+		runMpayLogin(*skyDir, *skin, *game, *out, *logPath, *centerX, *centerY, *dataPath, *noLogout, *qrOnly, time.Duration(*loginTimeout)*time.Second)
 		return
 	}
 
@@ -89,11 +136,71 @@ func main() {
 	}
 }
 
+// runUILessProbe 诊断：直接调 mpay.dll 的无界面登录接口。
+//
+// 目的：验证"能不能让 DLL 自己认账号"——成了就不用去解 mpay.db 的加密。
+// 结果写日志，进程跑完硬退出（和 mpaylogin 一样，避免 WebView2 线程卡住）。
+func runUILessProbe(mode, slotsFile, uid, token, account, atk, openid, device, channel string, fakeAPI bool, skyDir, skin, game, logPath string) {
+	if skyDir == "" {
+		fmt.Fprintln(os.Stderr, "probe-uiless 需要 --sky")
+		os.Exit(2)
+	}
+	o := mpayhost.UILessOptions{
+		Options: mpayhost.Options{
+			SkyDir:  skyDir,
+			SkinZip: skin,
+			GameID:  game,
+			Channel: "a50_sdk_cn",
+			LogPath: logPath,
+		},
+		Action:  mpayhost.UILessAction(mode),
+		UID:     uid,
+		Token:   token,
+		Device:  device,
+		Ch:      channel,
+		FakeURL: fakeAPI,
+	}
+	if slotsFile == "" {
+		slotsFile = filepath.Join(os.Getenv("APPDATA"), "SkyLogin", "channel_login_slots.json")
+	}
+	if mode == string(mpayhost.ActionSetUser) {
+		s, err := mpayhost.LoadSlotsFile(slotsFile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "读槽位失败:", err)
+			os.Exit(2)
+		}
+		o.Slots = s
+		fmt.Printf("槽位来自 %s（%d 个）\n", slotsFile, len(s))
+	}
+	// ticket 模式：先签一张票，再交给 DLL
+	if mode == string(mpayhost.ActionTicket) && atk != "" && openid != "" {
+		tk, err := app.MintTicketWithCred(openid, atk, "", "")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "用外部凭证签票失败:", err)
+			os.Exit(2)
+		}
+		o.Ticket = tk
+		fmt.Printf("已用外部 atk 签票（%d 字符）\n", len(tk))
+	}
+	if mode == string(mpayhost.ActionTicket) && o.Ticket == "" {
+		tk, who, err := app.MintTicketForProbe(account)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "签票失败:", err)
+			os.Exit(2)
+		}
+		o.Ticket = tk
+		fmt.Printf("已为 %s 签票（%d 字符）\n", who, len(tk))
+	}
+	res := mpayhost.ProbeUILess(o)
+	fmt.Printf("结果: ok=%v ticket=%d字符 err=%s\n", res.OK, len(res.Ticket), res.Error)
+	mpayhost.Shutdown()
+}
+
 // runMpayLogin 加载官方 mpay.dll，弹官方登录窗，拿到票据后写结果文件退出。
 //
 // 交给子进程做，是因为 mpay.dll 是原生 SDK：它自己拉消息循环、起 WebView2，
 // 崩起来是直接访问违例，放在主界面进程里会把界面一起带走。
-func runMpayLogin(skyDir, skin, game, outPath, logPath string, centerX, centerY int, dataPath string, noLogout bool) {
+func runMpayLogin(skyDir, skin, game, outPath, logPath string, centerX, centerY int, dataPath string, noLogout, qrOnly bool, timeout time.Duration) {
 	if skyDir == "" || outPath == "" {
 		fmt.Fprintln(os.Stderr, "mpaylogin 需要 --sky 和 --out")
 		os.Exit(2)
@@ -103,12 +210,13 @@ func runMpayLogin(skyDir, skin, game, outPath, logPath string, centerX, centerY 
 		SkinZip:    skin,
 		GameID:     game,
 		Channel:    "a50_sdk_cn",
-		Timeout:    5 * time.Minute,
+		Timeout:    timeout,
 		LogPath:    logPath,
 		CenterX:    centerX,
 		CenterY:    centerY,
 		DataPath:   dataPath,
 		SkipLogout: noLogout,
+		QRCodeOnly: qrOnly,
 	})
 	res.Finished = time.Now().Unix()
 	b, _ := json.Marshal(res)

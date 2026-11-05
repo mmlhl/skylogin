@@ -56,6 +56,16 @@ func MpayLoginStatus() map[string]any {
 // targetUserID 非空表示"给已有账号刷新凭证"，登录完成后会校验账号一致，
 // 避免把 A 的凭证覆盖成 B 的。
 func StartMpayLogin(targetUserID string) error {
+	return startMpayLogin(targetUserID, "")
+}
+
+// StartChannelScanLogin 打开官方登录窗并强制用**游戏身份**（ma75）初始化，
+// 让渠道服客户端（华为这类）也能扫码。扫完存成对应的渠道账号。
+func StartChannelScanLogin() error {
+	return startMpayLogin("", profile.LongGameID)
+}
+
+func startMpayLogin(targetUserID, forceGame string) error {
 	mpayLoginMu.Lock()
 	if mpayLoginTr.snapshot().Running {
 		mpayLoginMu.Unlock()
@@ -78,33 +88,25 @@ func StartMpayLogin(targetUserID string) error {
 		mpayLoginTr.set("failed", "没找到网易发烧平台的皮肤资源，请先安装或更新发烧平台", "", "")
 		return fmt.Errorf("没找到发烧平台的 skin.zip")
 	}
-	// 诊断开关：改用平台目录那份 mpay.dll（4.21）。平台登录签出来的 token 里
-	// 带 u_ki，而游戏这份（4.20）不带——想验证换成 4.21 能不能拿到 u_ki。
-	if mpayPlatformDLLEnabled() || mpayPlatformDBEnabled() {
-		if d := filepath.Dir(skin); d != "" {
-			if _, err := os.Stat(filepath.Join(d, "mpay.dll")); err == nil {
-				skyDir = d
-				logf("[诊断] 改用平台目录的 mpay.dll：%s", d)
-			} else {
-				logf("[诊断] 平台目录没有 mpay.dll（%s），仍用游戏目录那份", d)
-			}
-		}
+	// 用哪份 DLL、哪个 game id、要不要跳过清理登录态，全部来自设置页的
+	// 「开发者调试」（见 mpaydebug.go），不再靠 .on 开关文件。
+	dbg := mpayDebug()
+	// 扫码窗默认用**平台目录**那份 mpay.dll（版本更新），并以游戏身份 ma75 初始化：
+	// 这是实测下来扫码更稳的组合（拿到的凭证带游戏 g_i，寿命也更长）。
+	// 用户在「开发者调试」里显式选过 DLL 时以他的选择为准。
+	if forceGame != "" && dbg.DLL == "" {
+		dbg.DLL = "platform"
 	}
-	// 诊断开关：把数据目录指到平台自己的 unisdk，并跳过清理旧登录态，
-	// 让 DLL 直接静默登录成平台缓存的那个账号（想看它的 token 有没有 u_ki）。
+	skillDir, dllFrom := mpayDebugDLLDir(skyDir, skin)
+	if skillDir != skyDir {
+		logf("[调试] 加载 %s 的 mpay.dll：%s", dllFrom, skillDir)
+		skyDir = skillDir
+	}
 	dataPath := ""
-	skipLogout := false
-	if mpayPlatformDBEnabled() {
-		// 把平台缓存的凭证库**复制一份**再用，绝不碰平台自己的那份。
-		src := filepath.Join(os.Getenv("LOCALAPPDATA"), "FeverGames", "FeverGamesInstaller", "unisdk")
-		dst := filepath.Join(dataDir(), "platformdb")
-		if err := copyDbFiles(src, dst); err != nil {
-			logf("[诊断] 复制平台凭证库失败: %v", err)
-		} else {
-			dataPath = dst
-			skipLogout = true
-			logf("[诊断] 用平台凭证库的副本：%s（跳过清理旧登录态）", dst)
-		}
+	skipLogout := dbg.SkipLogout
+	if dbg.DataPath != "" {
+		dataPath = dbg.DataPath
+		logf("[调试] 数据目录：%s", dataPath)
 	}
 
 	exe, err := os.Executable()
@@ -124,10 +126,12 @@ func StartMpayLogin(targetUserID string) error {
 	//   - a50（默认）：登录窗里的二维码是"平台码"，只能网易大神扫
 	//   - ma75：变成"游戏内那种码"，光遇手游能扫，DLL 会自己走 exchange_token
 	// 两种扫完回调的 token 等级可能不同，所以单独留个开关对比。
-	gameID := profile.HostedGameID
-	if mpayGameParamsEnabled() {
-		gameID = profile.LongGameID
-		logf("[诊断] 官方登录窗改用游戏内 game id 初始化：%s", gameID)
+	gameID := mpayDebugGameID()
+	if forceGame != "" {
+		gameID = forceGame
+		logf("渠道服扫码：登录窗用游戏身份初始化（%s）", gameID)
+	} else if gameID != profile.HostedGameID {
+		logf("[调试] 登录窗用游戏内 game id 初始化：%s", gameID)
 	}
 	args := []string{
 		"--mpaylogin",
@@ -136,6 +140,11 @@ func StartMpayLogin(targetUserID string) error {
 		"--game", gameID,
 		"--out", outPath,
 		"--log", logPath,
+	}
+	// 渠道服扫码：用户只能扫码，让登录窗直接停在二维码页，
+	// 省掉"先出来一个账号密码表单、再点右下角小二维码按钮"那一步。
+	if forceGame != "" {
+		args = append(args, "--qr-only")
 	}
 	// 官方登录窗以主界面为中心弹出，把主界面的中心点告诉子进程；
 	// 拿不到（浏览器模式没有原生窗口）就让子进程用屏幕中心
@@ -286,6 +295,19 @@ func watchMpayLogin(cmd *exec.Cmd, outPath, targetUserID string) {
 		return
 	}
 
+	// 渠道服扫的码：不是网易账号，走渠道自己那套存
+	if res.Channel != "" && res.Channel != "netease" {
+		name, cerr := saveChannelScannedAccount(res)
+		if cerr != nil {
+			logf("渠道服扫码保存失败: %v", cerr)
+			mpayLoginTr.set("failed", cerr.Error(), res.Account, "")
+			return
+		}
+		clearAuthHint()
+		mpayLoginTr.set("done", "已添加渠道账号："+name, name, "")
+		return
+	}
+
 	token, userID, account, err := resolveMPayCredentials(res)
 	if err != nil {
 		mpayLoginTr.set("failed", err.Error(), res.Account, "")
@@ -317,6 +339,9 @@ func watchMpayLogin(cmd *exec.Cmd, outPath, targetUserID string) {
 		PlayerID:    userID,
 		MpayToken:   token,
 		DeviceID:    dev,
+		GameID:      res.GameID,
+		MpayPath:    res.DLLPath,
+		MpayVersion: res.DLLVersion,
 		Source:      "mpaydll",
 		LoginMethod: "password",
 		CredState:   "ok",
