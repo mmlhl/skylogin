@@ -54,6 +54,8 @@ func main() {
 	logPath := flag.String("log", "", "诊断日志文件")
 	centerX := flag.Int("center-x", 0, "登录窗中心 X（屏幕坐标）")
 	centerY := flag.Int("center-y", 0, "登录窗中心 Y（屏幕坐标）")
+	dataPath := flag.String("data-path", "", "mpay 数据目录（诊断用）")
+	noLogout := flag.Bool("no-logout", false, "不清理旧登录态，直接静默登录（诊断用）")
 	hidden := flag.Bool("hidden", false, "登录窗口不可见（静默续期用，页面脚本照常执行）")
 	flag.Parse()
 
@@ -66,7 +68,7 @@ func main() {
 		return
 	}
 	if *mpaylogin {
-		runMpayLogin(*skyDir, *skin, *game, *out, *logPath, *centerX, *centerY)
+		runMpayLogin(*skyDir, *skin, *game, *out, *logPath, *centerX, *centerY, *dataPath, *noLogout)
 		return
 	}
 
@@ -91,20 +93,22 @@ func main() {
 //
 // 交给子进程做，是因为 mpay.dll 是原生 SDK：它自己拉消息循环、起 WebView2，
 // 崩起来是直接访问违例，放在主界面进程里会把界面一起带走。
-func runMpayLogin(skyDir, skin, game, outPath, logPath string, centerX, centerY int) {
+func runMpayLogin(skyDir, skin, game, outPath, logPath string, centerX, centerY int, dataPath string, noLogout bool) {
 	if skyDir == "" || outPath == "" {
 		fmt.Fprintln(os.Stderr, "mpaylogin 需要 --sky 和 --out")
 		os.Exit(2)
 	}
 	res := mpayhost.Login(mpayhost.Options{
-		SkyDir:  skyDir,
-		SkinZip: skin,
-		GameID:  game,
-		Channel: "a50_sdk_cn",
-		Timeout: 5 * time.Minute,
-		LogPath: logPath,
-		CenterX: centerX,
-		CenterY: centerY,
+		SkyDir:     skyDir,
+		SkinZip:    skin,
+		GameID:     game,
+		Channel:    "a50_sdk_cn",
+		Timeout:    5 * time.Minute,
+		LogPath:    logPath,
+		CenterX:    centerX,
+		CenterY:    centerY,
+		DataPath:   dataPath,
+		SkipLogout: noLogout,
 	})
 	res.Finished = time.Now().Unix()
 	b, _ := json.Marshal(res)

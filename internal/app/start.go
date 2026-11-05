@@ -495,6 +495,12 @@ func mintTicket(acc Account, dev *device.ClientProfile) (string, string, error) 
 			{a50Long, a50Short, "a50", a50Dev},
 			{ownLong, ownShort, "token 自带", acc.DeviceID},
 		}
+		if ownLong != a50Long {
+			// token 是别的应用签的（扫码：g_i=光遇 ma75），拿 a50 上下文去签必然
+			// 1306 用户登录失效——2026-11-05 实测每次都要先白撞两次（还带 700ms
+			// 退避）才回退。直接把顺序反过来，a50 只当最后兜底。
+			contexts[0], contexts[1] = contexts[1], contexts[0]
+		}
 		var lastErr error
 		tried := 0
 		for _, ctx := range contexts {

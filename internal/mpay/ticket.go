@@ -65,6 +65,24 @@ func (e *TicketError) Error() string {
 	return fmt.Sprintf("MPay 拒绝: %d %s", e.Code, e.Reason)
 }
 
+// ExchangeQrCode 用二维码里的 code 直接换登录态。
+//
+// 这是**游戏自己**扫码走的口（10-24 抓包里光遇本体 14:36:49 调的就是它）：
+//
+//	POST /mpay/api/users/login/qrcode/exchange_token
+//	     encrypt_code=<32 位十六进制>   ← mpay.dll 内部算的，我们只会传明文/猜测值
+//
+// 参数照抄游戏那次请求。encryptCode 传什么由调用方决定——目前只用于诊断，
+// 看服务端对明文 code / 各种哈希的反应。
+func (c *Client) ExchangeQrCode(encryptCode, deviceID, longGameID, shortGameID string) (map[string]any, error) {
+	form := baseForm(deviceID, longGameID, shortGameID, "a50_sdk_cn", "c4.20.0", "0.0.0.0")
+	form.Set("encrypt_code", encryptCode)
+	form.Set("opt_fields", "nickname,avatar,realname_status,mobile_bind_status,mask_related_mobile,related_login_status")
+	form.Set("transid", newTransID())
+	form.Set("uni_transaction_id", newTransID())
+	return c.postForm("/mpay/api/users/login/qrcode/exchange_token", nil, form)
+}
+
 // baseForm 是 MPay PC 端请求的公共参数。
 func baseForm(deviceID, longGameID, shortGameID, appChannel, cv, gv string) url.Values {
 	form := url.Values{}

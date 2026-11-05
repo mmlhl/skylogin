@@ -89,28 +89,83 @@ function showUpdatedOnce(latest: Latest) {
   });
 }
 
-/** 公告弹窗：多条合并展示（标题 + 作者的话 + 修复/更新列表）。 */
+/** 公告弹窗：简洁展示（标题 + 最多 6 条要点），并给出交流群入口。 */
 function showAnnouncements(list: {
+  id: number;
   title: string;
   content: { author_words?: string; fixes?: string[]; updates?: string[] };
 }[]) {
   if (!list.length) return;
   const blocks = list.map((a) => {
-    const parts = [a.content.author_words, ...[a.content.fixes, a.content.updates].flat().filter(Boolean)];
+    // 只留要点，作者的话不铺开——公告要短
+    const points = [...(a.content.fixes ?? []), ...(a.content.updates ?? [])].filter(Boolean).slice(0, 6);
     return h("div", { style: "margin-bottom:10px" }, [
       h("b", a.title),
       h(
-        "div",
-        { style: "white-space:pre-wrap" },
-        parts.filter(Boolean).join("\n"),
+        "ul",
+        { style: "margin:6px 0 0;padding-left:18px;line-height:1.7" },
+        points.map((t) => h("li", t)),
       ),
     ]);
   });
+  blocks.push(
+    h("div", { style: "margin-top:8px;font-size:12px;opacity:.75" }, [
+      "交流群（QQ）：",
+      h(
+        "a",
+        {
+          style: "cursor:pointer;text-decoration:underline",
+          onClick: () => void copyGroup(),
+        },
+        QQ_GROUP,
+      ),
+    ]),
+  );
   dialog.info({
-    title: "公告",
+    title: "更新公告",
     content: () => h("div", blocks),
     positiveText: "知道了",
+    negativeText: "本次更新不再提醒",
+    onPositiveClick: () => {
+      // 知道了 = 看过这条公告，下次不再弹
+      void api.releaseState(
+        Math.max(...list.map((a) => a.id)),
+        state.settings.updateDismissed,
+        state.settings.updatePending,
+      );
+    },
+    onNegativeClick: () => {
+      // 不再提醒 = 公告已读 + 本次更新也不再提示
+      const build = Number((state.settings as { appBuild?: string }).appBuild ?? 0);
+      void api.releaseState(
+        Math.max(...list.map((a) => a.id)),
+        build > 0 ? build : state.settings.updateDismissed,
+        state.settings.updatePending,
+      );
+    },
   });
+}
+
+/** 交流群号 */
+const QQ_GROUP = "1053415841";
+
+async function copyGroup() {
+  try {
+    await navigator.clipboard.writeText(QQ_GROUP);
+    return;
+  } catch {
+    /* 退回 execCommand */
+  }
+  const ta = document.createElement("textarea");
+  ta.value = QQ_GROUP;
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand("copy");
+  } catch {
+    /* 复制失败就算了，号码已经在弹窗里显示 */
+  }
+  document.body.removeChild(ta);
 }
 
 /** 启动自动检查（仅构建版；本地开发版 build=0 跳过，不打扰开发）。
@@ -138,38 +193,43 @@ async function autoCheck() {
         void api.releaseState(state.settings.releaseAnnSeen, dismissed, latest.build);
       }
       if (dismissed < latest.build) showUpdate(latest);
-      return;
-    }
-
-    if (pending !== 0 && pending <= build) {
+    } else if (pending !== 0 && pending <= build) {
       // 之前在用旧版时提示过更新，现在追上了：弹一次「已更新」就清账
       showUpdatedOnce(latest);
       state.settings.updatePending = 0;
       void api.releaseState(state.settings.releaseAnnSeen, dismissed, 0);
     }
 
-    // 公告：增量拉取（已读序号存后端；首次为 0）
-    // build_code 非空 = 只弹给构建号更旧的客户端（与云端语义一致）
-    const seen = state.settings.releaseAnnSeen;
-    const ar = (await api.releaseAnnouncements(seen)) as {
-      ok: boolean;
-      list?: {
-        id: number;
-        title: string;
-        build_code?: number;
-        content: { author_words?: string; fixes?: string[]; updates?: string[] };
-      }[];
-    };
-    if (ar.ok !== false) {
-      const list = (ar.list ?? []).filter((a) => !a.build_code || a.build_code > build);
-      if (list.length) {
-        showAnnouncements(list);
-        void api.releaseState(Math.max(...list.map((a) => a.id)), state.settings.updateDismissed, state.settings.updatePending);
-      }
-    }
+    // 公告：**不管有没有更新都要查**，进入就弹（以前放在 return 后面，有更新时永远看不到）
+    await checkAnnouncements(build);
   } catch {
     /* 离线 / 云端不可达：静默，关于页可手动检查 */
   }
+}
+
+/** 拉未读公告，有就弹。只看"没读过的序号"，不再用 build_code 过滤——
+ *  否则当前版本对应的那条公告会被自己的构建号挡掉（这就是之前"不自动弹"的原因）。 */
+async function checkAnnouncements(build: number) {
+  const seen = state.settings.releaseAnnSeen;
+  const ar = (await api.releaseAnnouncements(seen)) as {
+    ok: boolean;
+    list?: {
+      id: number;
+      title: string;
+      build_code?: number;
+      content: { author_words?: string; fixes?: string[]; updates?: string[] };
+    }[];
+  };
+  if (ar.ok === false) return;
+  const list = (ar.list ?? []).filter((a) => a.id > seen);
+  if (!list.length) return;
+  showAnnouncements(list);
+  void api.releaseState(
+    Math.max(...list.map((a) => a.id)),
+    state.settings.updateDismissed,
+    state.settings.updatePending,
+  );
+  void build;
 }
 
 /** 关于页手动检查的结果（SettingsPanel 自己调 api，这里只处理启动自动化） */

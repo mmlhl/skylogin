@@ -20,9 +20,18 @@ const phase = ref<"waiting" | "done" | "failed">("waiting");
 const text = ref("请在弹出的网易登录窗口里完成登录");
 const canCancel = ref(true);
 let timer: number | undefined;
+// 这一次弹窗里是否见到过"进行中"。上一次登录留下的 done 会让弹窗一开就"登录成功"
+let sawActive = false;
 
 async function poll() {
   const r = await api.mpayLoginStatus();
+  if (r.phase === "done" && !sawActive) {
+    phase.value = "failed";
+    text.value = "没有检测到登录窗口，请重试";
+    canCancel.value = false;
+    stop();
+    return;
+  }
   if (r.phase === "done") {
     phase.value = "done";
     text.value = "登录成功，已保存账号";
@@ -40,6 +49,7 @@ async function poll() {
       window.setTimeout(() => emit("update:show", false), 700);
     }
   } else if (r.phase === "waiting") {
+    sawActive = true;
     text.value = r.message || "请在弹出的网易登录窗口里完成登录";
   }
 }
@@ -65,6 +75,7 @@ watch(
       phase.value = "waiting";
       text.value = "正在打开网易登录窗口…";
       canCancel.value = true;
+      sawActive = false;
       stop();
       timer = window.setInterval(poll, 1200);
       poll();

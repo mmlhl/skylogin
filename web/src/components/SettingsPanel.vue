@@ -129,6 +129,30 @@ function openChannel(url: string) {
   void api.openExternal(url);
 }
 
+/** 交流群：复制群号（WebView2 里 navigator.clipboard 可用，失败退回 execCommand） */
+const QQ_GROUP = "1053415841";
+
+async function copyGroup() {
+  try {
+    await navigator.clipboard.writeText(QQ_GROUP);
+    message.success("群号已复制：" + QQ_GROUP);
+    return;
+  } catch {
+    /* 退回到下面的兜底 */
+  }
+  const ta = document.createElement("textarea");
+  ta.value = QQ_GROUP;
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand("copy");
+    message.success("群号已复制：" + QQ_GROUP);
+  } catch {
+    message.warning("复制失败，请手动记下：" + QQ_GROUP);
+  }
+  document.body.removeChild(ta);
+}
+
 /** 重新申请：向服务器要一个新设备号，等于换一台设备登录，所以先二次确认 */
 function confirmRenew() {
   dialog.warning({
@@ -281,6 +305,11 @@ async function openLogs() {
             <button class="btn sm" @click="openChannel(state.settings.release.github)">GitHub 发布页</button>
             <button class="btn sm" @click="openChannel(state.settings.release.pan)">123 网盘</button>
           </span>
+        </div>
+        <div class="row">
+          <span class="key">交流群</span>
+          <span class="val mono">{{ QQ_GROUP }}</span>
+          <button class="act" @click="copyGroup">复制群号</button>
         </div>
 
         <p class="sect">数据</p>

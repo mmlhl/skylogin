@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -77,6 +78,34 @@ func StartMpayLogin(targetUserID string) error {
 		mpayLoginTr.set("failed", "没找到网易发烧平台的皮肤资源，请先安装或更新发烧平台", "", "")
 		return fmt.Errorf("没找到发烧平台的 skin.zip")
 	}
+	// 诊断开关：改用平台目录那份 mpay.dll（4.21）。平台登录签出来的 token 里
+	// 带 u_ki，而游戏这份（4.20）不带——想验证换成 4.21 能不能拿到 u_ki。
+	if mpayPlatformDLLEnabled() || mpayPlatformDBEnabled() {
+		if d := filepath.Dir(skin); d != "" {
+			if _, err := os.Stat(filepath.Join(d, "mpay.dll")); err == nil {
+				skyDir = d
+				logf("[诊断] 改用平台目录的 mpay.dll：%s", d)
+			} else {
+				logf("[诊断] 平台目录没有 mpay.dll（%s），仍用游戏目录那份", d)
+			}
+		}
+	}
+	// 诊断开关：把数据目录指到平台自己的 unisdk，并跳过清理旧登录态，
+	// 让 DLL 直接静默登录成平台缓存的那个账号（想看它的 token 有没有 u_ki）。
+	dataPath := ""
+	skipLogout := false
+	if mpayPlatformDBEnabled() {
+		// 把平台缓存的凭证库**复制一份**再用，绝不碰平台自己的那份。
+		src := filepath.Join(os.Getenv("LOCALAPPDATA"), "FeverGames", "FeverGamesInstaller", "unisdk")
+		dst := filepath.Join(dataDir(), "platformdb")
+		if err := copyDbFiles(src, dst); err != nil {
+			logf("[诊断] 复制平台凭证库失败: %v", err)
+		} else {
+			dataPath = dst
+			skipLogout = true
+			logf("[诊断] 用平台凭证库的副本：%s（跳过清理旧登录态）", dst)
+		}
+	}
 
 	exe, err := os.Executable()
 	if err != nil {
@@ -91,11 +120,20 @@ func StartMpayLogin(targetUserID string) error {
 	mpayLoginCancel = false
 	mpayLoginMu.Unlock()
 
+	// 诊断开关：用光遇自己的 game id 初始化 DLL。
+	//   - a50（默认）：登录窗里的二维码是"平台码"，只能网易大神扫
+	//   - ma75：变成"游戏内那种码"，光遇手游能扫，DLL 会自己走 exchange_token
+	// 两种扫完回调的 token 等级可能不同，所以单独留个开关对比。
+	gameID := profile.HostedGameID
+	if mpayGameParamsEnabled() {
+		gameID = profile.LongGameID
+		logf("[诊断] 官方登录窗改用游戏内 game id 初始化：%s", gameID)
+	}
 	args := []string{
 		"--mpaylogin",
 		"--sky", skyDir,
 		"--skin", skin,
-		"--game", profile.HostedGameID,
+		"--game", gameID,
 		"--out", outPath,
 		"--log", logPath,
 	}
@@ -104,6 +142,12 @@ func StartMpayLogin(targetUserID string) error {
 	if cx, cy, ok := win.MainWindowCenter(); ok && cx > 0 && cy > 0 {
 		logf("网易登录窗将居中到 (%d,%d)", cx, cy)
 		args = append(args, "--center-x", strconv.Itoa(cx), "--center-y", strconv.Itoa(cy))
+	}
+	if dataPath != "" {
+		args = append(args, "--data-path", dataPath)
+	}
+	if skipLogout {
+		args = append(args, "--no-logout")
 	}
 	cmd := exec.Command(exe, args...)
 	cmd.Dir = skyDir
@@ -118,6 +162,35 @@ func StartMpayLogin(targetUserID string) error {
 	mpayLoginMu.Unlock()
 
 	go watchMpayLogin(cmd, outPath, targetUserID)
+	return nil
+}
+
+// copyDbFiles 把平台 unisdk 目录里的凭证库等文件复制一份到 dst（诊断用）。
+func copyDbFiles(src, dst string) error {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	copied := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".db") && !strings.HasSuffix(name, ".cfg") && !strings.HasSuffix(name, ".dat") {
+			continue
+		}
+		if err := copyFile(filepath.Join(src, name), filepath.Join(dst, name)); err != nil {
+			return err
+		}
+		copied++
+	}
+	if copied == 0 {
+		return fmt.Errorf("%s 里没有凭证文件", src)
+	}
 	return nil
 }
 
@@ -253,7 +326,9 @@ func watchMpayLogin(cmd *exec.Cmd, outPath, targetUserID string) {
 	if acc.Name == "" {
 		acc.Name = userID
 	}
-	if old, ok := findAccountByUserID(userID); ok {
+	existedAcc, existed := findAccountByUserID(userID)
+	if existed {
+		old := existedAcc
 		// 老记录可能把用户 id 当成了别名（早先拿不到 display_username 时的兜底）。
 		// 这次能拿到真正的账号名，就顺手把它修掉。
 		if account != "" && looksLikeBareAccountID(old.Name) {
@@ -274,7 +349,13 @@ func watchMpayLogin(cmd *exec.Cmd, outPath, targetUserID string) {
 	_ = setCurrent(acc.PlayerID)
 	clearAuthHint()
 	logf("官方窗口登录成功，账号已保存")
-	mpayLoginTr.set("done", "登录成功，已保存", account, userID)
+	if existed {
+		// 登的还是列表里已有的号：凭证更新了，但别说成"新增成功"
+		logf("官方窗口登录的是已有账号，已更新凭证（不是新增）")
+		mpayLoginTr.set("done", "这个账号已经在列表里了，凭证已更新", account, userID)
+	} else {
+		mpayLoginTr.set("done", "登录成功，已保存", account, userID)
+	}
 }
 
 // resolveMPayCredentials 把子进程的结果变成 (token, userId, 账号名)。
@@ -295,7 +376,24 @@ func resolveMPayCredentials(res mpayhost.Result) (token, userID, account string,
 	token = slotToken(res.Slots)
 	userID = slotUserID(res.Slots)
 	if token != "" {
-		logf("使用登录回调里的 token（账号级凭证，%d 字符）", len(token))
+		logf("使用登录回调里的 token（%d 字符，凭证等级: %s，字段: %s）",
+			len(token), tokenGrade(token), tokenKeyList(token))
+	}
+	// 回调里如果有 JSON 扩展信息，把**键**打出来（不打值）。
+	// 扫码登录时 DLL 走的是 exchange_token，idv 那边正是从它的
+	// extra_unisdk_data 里取 SAUTH 身份/EXT_ACCESS_TOKEN 来导入账号的——
+	// 我们想知道回调里到底有没有这类字段。
+	for i, s := range res.Slots {
+		if strings.HasPrefix(strings.TrimSpace(s), "{") {
+			logf("回调 slot%d 是 JSON：%s", i, jsonKeySummary(s))
+		}
+	}
+	// 扫码回调里除了会话 token，还带一个 EXT_ACCESS_TOKEN（38 位十六进制）。
+	// 实测它只有一分钟左右的命（刚登录时能查资料、能签票，下一分钟就 1306），
+	// 不能当持久凭证，所以只留个诊断开关来观察它的寿命。
+	if access := accessTokenFromSlots(res.Slots); access != "" && userID != "" && dev != "" && scanProbeEnabled() {
+		logf("回调里带 EXT_ACCESS_TOKEN（%d 字符），后台观察寿命（不存它）", len(access))
+		go watchAccessTokenLifetime(access, userID, dev)
 	}
 
 	// 回调没给 token：用 DLL 出的票换（会话级，兜底）
@@ -323,15 +421,85 @@ func resolveMPayCredentials(res mpayhost.Result) (token, userID, account string,
 		return "", "", account, fmt.Errorf("没有识别出登录的账号 id，请重试")
 	}
 
-	// 仍然没有账号名：按官方启动器的方式查一次用户资料
+	// 仍然没有账号名：按官方启动器的方式查一次用户资料。
+	// 上下文必须跟 token 走：token 是哪个应用签的，就用那个应用的 game id 查，
+	// 拿 a50 去查光遇（ma75）签的 token 会 1306，别名只能退回用 id。
 	if account == "" {
-		if user, e := mpay.New().GetUserInfo(token, userID, dev, profile.HostedGameID, "a50"); e == nil {
+		longID, shortID := ticketContextForToken(token)
+		if user, e := mpay.New().GetUserInfo(token, userID, dev, longID, shortID); e == nil {
 			account = mpay.DisplayNameOf(user)
 		} else {
 			logf("查账号显示名失败: %v", e)
 		}
 	}
 	return token, userID, account, nil
+}
+
+// jsonKeySummary 把一段 JSON 概括成"键(类型,长度)"列表，值一概不输出。
+func jsonKeySummary(raw string) string {
+	var m map[string]any
+	if json.Unmarshal([]byte(raw), &m) != nil {
+		return "(解析失败)"
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		switch v := m[k].(type) {
+		case string:
+			parts = append(parts, fmt.Sprintf("%s(str,%d)", k, len(v)))
+		case nil:
+			parts = append(parts, k+"(null)")
+		default:
+			parts = append(parts, fmt.Sprintf("%s(%T)", k, v))
+		}
+	}
+	return "{" + strings.Join(parts, " ") + "}"
+}
+
+// accessTokenFromSlots 从回调的 JSON 扩展信息里取 EXT_ACCESS_TOKEN。
+//
+// 结构是 slot 里一段 JSON → "extra_unisdk_data" 是一段**内层 JSON 字符串**
+// → 里面 {"EXT_ACCESS_TOKEN":"yd_…"}。取不到就返回空串。
+func accessTokenFromSlots(slots []string) string {
+	for _, s := range slots {
+		s = strings.TrimSpace(s)
+		if !strings.HasPrefix(s, "{") {
+			continue
+		}
+		var outer map[string]any
+		if json.Unmarshal([]byte(s), &outer) != nil {
+			continue
+		}
+		raw, _ := outer["extra_unisdk_data"].(string)
+		if raw == "" {
+			continue
+		}
+		var inner map[string]any
+		if json.Unmarshal([]byte(raw), &inner) != nil {
+			continue
+		}
+		if v, _ := inner["EXT_ACCESS_TOKEN"].(string); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// watchAccessTokenLifetime 观察 EXT_ACCESS_TOKEN 能活多久，只在失效时写一行日志。
+func watchAccessTokenLifetime(access, userID, dev string) {
+	longID, shortID := ticketContextForToken(access)
+	for i := 1; i <= 30; i++ {
+		time.Sleep(time.Minute)
+		if _, err := mpay.New().GetUserInfo(access, userID, dev, longID, shortID); err != nil {
+			logf("[寿命] EXT_ACCESS_TOKEN 第 %d 分钟已失效（%v）", i, err)
+			return
+		}
+	}
+	logf("[寿命] EXT_ACCESS_TOKEN 30 分钟后仍可用（观察结束）")
 }
 
 // slotToken 在回调数组里找 user_token（形态是 1-eyJ…）。
@@ -390,7 +558,8 @@ func repairBareAccountNames() {
 		if !looksLikeBareAccountID(a.Name) {
 			continue
 		}
-		user, err := mpay.New().GetUserInfo(a.MpayToken, a.UserID, a.DeviceID, profile.HostedGameID, "a50")
+		longID, shortID := ticketContextForToken(a.MpayToken)
+		user, err := mpay.New().GetUserInfo(a.MpayToken, a.UserID, a.DeviceID, longID, shortID)
 		if err != nil {
 			continue
 		}

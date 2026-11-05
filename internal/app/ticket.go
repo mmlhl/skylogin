@@ -130,6 +130,28 @@ func ensureA50DeviceID() (string, error) {
 	return id, nil
 }
 
+// registerFreshA50Device 登记一台**新的** a50 设备（不写回 config）。
+//
+// 诊断用：验证"服务端的记住状态是按设备存的"——每个账号用自己的设备，
+// 就不会互相顶掉。注册完只返回 id，账号记录里会带上它。
+func registerFreshA50Device() (string, error) {
+	c := loadConfig()
+	name, mac, res := hostName(), primaryMac(), win.ScreenResolution()
+	id, key, err := mpay.New().RegisterDevice(a50Long, a50Short, mpay.DeviceInfo{
+		Name:       name,
+		Mac:        mac,
+		Resolution: res,
+		UniqueID:   randomHex(16),
+		ProcessID:  os.Getpid(),
+	})
+	if err != nil {
+		return "", err
+	}
+	logf("诊断：已登记一台新的 a50 设备 %s（key %d 字符）", id, len(key))
+	_ = c
+	return id, nil
+}
+
 // registerDevice 用指定模式生成 unique_id 并注册，成功后写回 config。
 func registerDevice(c *Config, mode string) (string, error) {
 	if mode != modeRandom && mode != modeFingerprint {

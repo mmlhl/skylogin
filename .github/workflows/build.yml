@@ -85,18 +85,31 @@ jobs:
       - name: 跑测试
         run: go test ./...
 
+      - name: 计算更新说明
+        id: notes
+        shell: pwsh
+        run: |
+          # 更新说明只有一个来源：仓库根目录的 RELEASE_NOTES.md。
+          # Release 正文和更新服务里的 changelog 都用它，保证两处永远一致；
+          # 没有这个文件时才按提交记录拼（老行为）。
+          if (Test-Path RELEASE_NOTES.md) {
+            $notes = ((Get-Content RELEASE_NOTES.md -Encoding utf8) | Where-Object { $_.Trim() }) -join "`n"
+          } else {
+            $prev = (git tag --sort=-creatordate)[1]
+            $lines = if ($prev) { git log --oneline "$prev..HEAD" | Where-Object { $_ -notmatch '^[0-9a-f]{7} (ci|docs)[:(（]' -and $_ -notmatch '诊断' } } else { @() }
+            $notes = ($lines | ForEach-Object { $_ -replace '^[0-9a-f]{7} ', '- ' }) -join "`n"
+          }
+          "notes<<NOTE" >> $env:GITHUB_OUTPUT
+          $notes >> $env:GITHUB_OUTPUT
+          "NOTE" >> $env:GITHUB_OUTPUT
+          Write-Host "更新说明:"; Write-Host $notes
+
       - name: 构建 exe
         shell: pwsh
         env:
           CGO_ENABLED: '0'
         run: |
           $bt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mmZ")
-          # 上一个 tag：按创建时间排序取第二个（第一个是本次的 tag）
-          $prev = (git tag --sort=-creatordate)[1]
-          $notes = if ($prev) { (git log --oneline "$prev..HEAD" | ForEach-Object { $_ -replace '^[0-9a-f]{7} ', '- ' }) -join "`n" } else { "" }
-          "notes<<NOTE" >> $env:GITHUB_OUTPUT
-          $notes >> $env:GITHUB_OUTPUT
-          "NOTE" >> $env:GITHUB_OUTPUT
           $ldflags = "-s -w -H=windowsgui -X skylogin/internal/app.Version=${{ steps.ver.outputs.version }} -X skylogin/internal/app.Build=${{ github.run_number }} -X skylogin/internal/app.BuildTime=$bt"
           go build -trimpath -ldflags $ldflags -o skylogin.exe ./cmd/skylogin
           $size = [math]::Round((Get-Item skylogin.exe).Length / 1MB, 1)
@@ -112,7 +125,7 @@ jobs:
             version = "${{ steps.ver.outputs.version }}"
             build = ${{ github.run_number }}
             download_url = "https://github.com/mmlhl/skylogin/releases/latest"
-            changelog = "${{ steps.ver.outputs.notes }}"
+            changelog = "${{ steps.notes.outputs.notes }}"
             force = $false
           } | ConvertTo-Json -Compress
           try {
@@ -130,46 +143,35 @@ jobs:
           files: skylogin.exe
           draft: false
           prerelease: false
+          # 结构：本次更新置顶，使用说明收在后面
           body: |
-            ## 光遇账号登录器 ${{ steps.ver.outputs.version }}
-
-            - 支持：华为渠道 / 网易官方 / B站 / 4399 / vivo
-            - 多开：数量不限，窗口自动排列 + 监控墙
-            - 单文件 exe，免安装，不注入游戏进程
+            ## 光遇账号登录器 v${{ steps.ver.outputs.version }}
 
             ### 本次更新
-            ${{ steps.ver.outputs.notes }}
+            ${{ steps.notes.outputs.notes }}
 
-            ### 文件
-            - `skylogin.exe` —— 主程序
+            ### 使用说明
 
-            ### 支持的账号
-            - ✅ **华为渠道**账号（扫码添加）
-            - ✅ **网易官方（官服）**账号（扫码 / 手机号 / 网页登录）
-            - ✅ **B站 / 4399 / vivo** 渠道账号（网页登录）
-            - ❌ 小米、TapTap 等其它渠道暂不支持
+            **支持的账号**
+            - 华为渠道账号（扫码添加）
+            - 网易官方（官服）账号（扫码 / 手机号 / 网页登录）
+            - B站 / 4399 / vivo 渠道账号（网页登录）
+            - 小米、TapTap 等其它渠道暂不支持
 
-            ### 怎么用
+            **怎么用**
             1. 下载 `skylogin.exe`，双击运行（会请求管理员权限，光遇本体需要）
             2. 点「添加账号」选登录方式，按提示扫码或登录
             3. 选好账号，点「启动光遇」；多开在「多开」里配置
 
-            扫一次码之后就不用再扫了，之后每次双击 → 点启动即可。
-            多个账号可以随时在左边切换。
+            扫一次码之后就不用再扫了，之后每次双击 → 点启动即可。多个账号可以随时在左边切换。
 
-            ### 说明
+            **说明**
             - 单个 exe，免安装；不装证书、不改 hosts、不开代理、不注入游戏进程
             - 启动前会自动关闭发烧平台，用完可以自己再打开
             - 窗口大小随屏幕自适应，记住上次的位置和尺寸（换屏幕自动重算）
-            - 本版重点：网易账号凭证长期有效不再频繁过期；凭证文件加密存储；
-              多开堆叠四种方案可选（监控墙里也能一键重排）；排列等客户端
-              站稳后再动（防闪退，闪退会弹窗提示）；关闭登录器再打开，
-              运行中的游戏照常识别
+            - 网易账号凭证长期有效，不再频繁过期；凭证文件加密存储
             - 出问题时点界面里的「打开日志」，把 log.txt 发出来
 
-            ### 文件
-            - `skylogin.exe` —— 主程序
-            - `Source code` —— 源码压缩包（GitHub 自动生成）
+            **下载**：本页 `skylogin.exe`，或 [123 网盘](https://1822397226.share.123pan.cn/123pan/87OJjv-vhMl?pwd=l5sX)
 
-
-
+            **交流群**：QQ `1053415841`（使用问题、反馈都放这里）

@@ -30,7 +30,7 @@ func performLogin(sess *huawei.Client, scan *huawei.ScanReply, log func(string))
 		_ = secretfile.WriteFile(filepath.Join(dataDir(), "last_scan.json"), rec, 0o600)
 	}
 
-	logf("扫码成功 userID=%s account=%s accountType=%s siteID=%s qrCode=%s", scan.UserID, scan.UserAccount, scan.AccountType, scan.SiteID, record.QrCode)
+	logf("扫码成功 userID=%s account=%s accountType=%s siteID=%s qrCode=%s", scan.UserID, scan.UserAccount, scan.AccountType, scan.SiteID, maskCode(record.QrCode))
 	if record.RawJSON != "" {
 		logf("轮询原文: %s", truncate(record.RawJSON, 400))
 	}

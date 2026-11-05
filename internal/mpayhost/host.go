@@ -40,6 +40,12 @@ type Options struct {
 	// 登录窗以宿主窗口为中心弹出，所以把宿主放到主界面的中心
 	CenterX int
 	CenterY int
+
+	// DataPath 非空时把 mpay 的数据目录指过去（对应 mpay_option_data_path）。
+	// 诊断用：指到平台自己的 unisdk 目录，就能复用平台缓存的登录态。
+	DataPath string
+	// SkipLogout 为 true 时不清理旧登录态，让 DLL 直接静默登录上次的账号。
+	SkipLogout bool
 }
 
 // Result 是登录结果，由子进程写给主进程。
@@ -59,6 +65,7 @@ const (
 
 	// 回调槽位（按 NtUniSdkMpay.dll 的虚表排布，末尾的几个槽官方 ApiCallBack 没用到，填空函数占位）
 	slotLogin  = 1 // 登录完成 (this, code, structUserResponseInfo*)
+	slotLogout = 2 // 退出登录完成 (this)
 	slotTicket = 5 // 取票结果 (this, code, ticket, ?)
 
 	wsPopup        = 0x80000000
@@ -137,6 +144,11 @@ var (
 	decided  = make(chan Result, 1)
 	loginOK  bool // 登录回调成功了（取票可能还在路上）
 
+	// logout 回调只到一次；用它判断"旧登录态清完了没有"，别死等固定时间
+	logoutOnce    sync.Once
+	logoutDone    = make(chan struct{})
+	clearingLogin bool // 正在清旧登录态：这期间进来的回调都不是登录结果
+
 	dllHandle *syscall.DLL
 	hostHwnd  uintptr
 )
@@ -196,6 +208,7 @@ func Login(opts Options) Result {
 
 	installLogHook(dll, inst)
 	setParentWindow(dll, hwnd)
+	setDataPath(dll, opts.DataPath)
 	setSkin(dll, inst, opts.SkinZip)
 
 	buildCallbacks()
@@ -221,6 +234,18 @@ func Login(opts Options) Result {
 	logf("init -> %d", r)
 	if r == 0 {
 		return fail("MPay 初始化失败，请确认游戏能正常被发烧平台启动")
+	}
+
+	// 弹窗之前先清掉上一次留下的登录态。
+	//
+	// 上一次登录成功后，DLL 会把账号会话写进自己的 db；下次调用 login() 时它
+	// 直接用这个会话静默登录成同一个账号——窗口刚建出来就"自动确认"了，
+	// 想添加第二个账号根本插不上手（日志里是 LoginForm show: false 然后
+	// NotifyLoginFinishForAas）。官方 logout() 是清这块状态的入口。
+	if opts.SkipLogout {
+		logf("诊断：跳过清理旧登录态，让 DLL 直接静默登录上次的账号")
+	} else {
+		clearCachedLogin(dll, inst)
 	}
 
 	// login(1, 0)：1 = 显示登录窗，0 = 默认皮肤
@@ -299,6 +324,27 @@ func setParentWindow(dll *syscall.DLL, hwnd uintptr) {
 	p.Call(uintptr(unsafe.Pointer(key)), uintptr(unsafe.Pointer(&val)))
 }
 
+// setDataPath 把 mpay 的落盘目录指到别处（mpay_option_data_path）。
+//
+// 传的是 C 字符串指针。诊断用：指到平台自己的 unisdk 目录，
+// DLL 就能读到平台缓存的那套登录态，直接静默登录成平台那个账号。
+func setDataPath(dll *syscall.DLL, dir string) {
+	if dir == "" {
+		return
+	}
+	p, err := dll.FindProc("?SetOption@CMpay_Interface@Mpay@@SAXPEBDPEBX@Z")
+	if err != nil {
+		return
+	}
+	key, _ := syscall.BytePtrFromString("mpay_option_data_path")
+	val, verr := syscall.BytePtrFromString(dir)
+	if verr != nil {
+		return
+	}
+	p.Call(uintptr(unsafe.Pointer(key)), uintptr(unsafe.Pointer(val)))
+	logf("数据目录 -> %s", dir)
+}
+
 // setSkin 加载官方皮肤包。没有它 DLL 根本不会把登录窗建出来。
 func setSkin(dll *syscall.DLL, inst uintptr, skin string) {
 	if skin == "" {
@@ -366,8 +412,61 @@ func buildCallbacks() {
 		vtable[i] = stub
 	}
 	vtable[slotLogin] = syscall.NewCallback(onLoginFinish)
+	vtable[slotLogout] = syscall.NewCallback(onLogoutFinish)
 	vtable[slotTicket] = syscall.NewCallback(onTicketResult)
 	cbObject[0] = uintptr(unsafe.Pointer(&vtable[0]))
+}
+
+// onLogoutFinish 对应官方 ApiCallBack 的"退出登录完成"回调（槽位 2）。
+//
+// 只给 clearCachedLogin 用：清旧登录态是异步的，等这个回调比干等固定时间稳。
+// 这里只关一下信号量，绝不能 emit —— 它不是登录结果。
+func onLogoutFinish(this uintptr) uintptr {
+	logoutOnce.Do(func() { close(logoutDone) })
+	return 0
+}
+
+// clearCachedLogin 用官方 logout() 清掉上一次登录留下的会话。
+//
+// 不清的话，下次 login() 时 DLL 会拿缓存的 AAS 会话直接静默登录成上次那个
+// 账号：登录窗刚建出来就"自动确认"了（日志表现为 LoginForm show: false →
+// NotifyLoginFinishForAas），用户根本没法换成另一个账号，也就添不了新账号。
+//
+// 这个 logout 走的是"本进程还没登录过"的状态，作用是清本地缓存的账号会话，
+// 不会把我们已经保存的账号凭证在服务端作废；它失败也不影响后面弹窗登录。
+func clearCachedLogin(dll *syscall.DLL, inst uintptr) {
+	p, err := dll.FindProc("?logout@CMpay_Interface@Mpay@@QEAAXXZ")
+	if err != nil {
+		logf("这个 mpay.dll 没有 logout，跳过清理旧登录态")
+		return
+	}
+	mu.Lock()
+	clearingLogin = true
+	mu.Unlock()
+	defer func() {
+		mu.Lock()
+		clearingLogin = false
+		mu.Unlock()
+	}()
+
+	logf("先清掉上次留下的登录态，否则登录窗会直接静默登录成上次的账号")
+	p.Call(inst)
+
+	timeout := time.After(2 * time.Second)
+	for {
+		pumpMessages()
+		select {
+		case <-logoutDone:
+			logf("旧登录态已清掉，登录窗会从空白开始")
+			return
+		case <-timeout:
+			// 没登录过的时候 DLL 可能压根不回调，那就继续弹窗
+			logf("没等到 logout 回调，直接弹登录窗")
+			return
+		default:
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // onLoginFinish 对应官方 ApiCallBack 的登录完成回调。
@@ -376,6 +475,16 @@ func buildCallbacks() {
 //
 //	[0] 用户 id   [1] 设备 id   [2] user_token   [8] 扩展信息 JSON
 func onLoginFinish(this, code, info uintptr) uintptr {
+	mu.Lock()
+	clearing := clearingLogin
+	mu.Unlock()
+	if clearing {
+		// 清旧登录态时 DLL 偶尔也会走一遍登录回调；这时候还没有人操作窗口，
+		// 当成登录结果会把刚弹出来的窗口直接判失败，所以只能丢掉。
+		logf("清旧登录态期间的回调，忽略: code=%d", code)
+		return 0
+	}
+
 	got := make([]string, 9)
 	if info != 0 {
 		for i := range got {
