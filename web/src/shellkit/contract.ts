@@ -8,7 +8,7 @@
  * 壳本身对用哪套实现毫无感知。
  */
 
-export type Channel = "huawei" | "netease" | "bilibili" | "m4399" | "vivo";
+export type Channel = "huawei" | "netease" | "bilibili" | "m4399" | "vivo" | "uc_platform";
 export type CredState = "ok" | "expired";
 
 export interface Account {
@@ -37,6 +37,30 @@ export interface Account {
   qualityFps?: number;
   /** 副本键（"PlayerID-2" 样式）；空 = 原始行 */
   copyKey?: string;
+
+  // ── 账号详情（登录环境与时间，见 Go 侧 accountView）──
+  /** 登录窗加载的 mpay.dll 路径（空 = 这个渠道不走 DLL） */
+  mpayPath?: string;
+  /** mpay.dll 版本号 */
+  mpayVersion?: string;
+  /** 登录用的平台身份：ma75 / a50 … */
+  gameId?: string;
+  /** 登录方式原文：qrcode / password / sms / channelscan */
+  loginMethod?: string;
+  /** 登录来源原文：qrcode / weblogin / mpaydll / channelscan … */
+  source?: string;
+  /** 添加到本机的时间（展示串） */
+  created?: string;
+  /** 最后一次成功启动的时间（展示串） */
+  lastLogin?: string;
+  /** 凭证等级的人话描述（账号级 / 会话级 / 大神会话） */
+  tokenSaLabel?: string;
+  /** 凭证签发时间（展示串） */
+  tokenAt?: string;
+  /** 上次验证凭证的时间（unix 秒） */
+  lastCheck?: number;
+  /** 上次失败原因 */
+  lastError?: string;
 }
 
 /** 后端推给界面的「需要用户处理」提示（目前是网易凭证过期） */
@@ -160,8 +184,26 @@ export interface LauncherStore {
   readonly toasts: { id: number; text: string }[];
 }
 
-export const channelLabel = (c: Channel): string =>
-  c === "huawei" ? "华为渠道" : c === "netease" ? "网易官方" : c === "m4399" ? "4399渠道" : c === "vivo" ? "vivo渠道" : "B站渠道";
+export const channelLabel = (c: Channel | string): string => {
+  switch (c) {
+    case "huawei":
+      return "华为渠道";
+    case "netease":
+      return "网易官方";
+    case "m4399":
+      return "4399渠道";
+    case "vivo":
+    case "nearme_vivo":
+      return "vivo渠道";
+    case "bilibili":
+      return "B站渠道";
+    case "myapp":
+      return "应用宝渠道";
+  }
+  // 渠道服扫码拿到的其它渠道（小米/OPPO…）：渠道名以网易服务端返回的为准，
+  // 认不出来就原样显示，别硬塞成 B站。
+  return c ? `${c}渠道` : "渠道服";
+};
 
 /** 秒数 → 「42 分钟 / 1 小时 03 分」。 */
 export function fmtRun(seconds: number): string {

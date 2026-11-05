@@ -179,6 +179,11 @@ func findAccountByUserID(userID string) (Account, bool) {
 		return Account{}, false
 	}
 	for _, a := range list {
+		// 带行键的是"另一条来源"（比如扫码加的那行），不做名字继承：
+		// 否则重新用网页登录加一次，会把名字改成"… · 扫码"。
+		if a.RowKey != "" {
+			continue
+		}
 		if managedChannel(a.Channel) && (a.UserID == userID || a.PlayerID == userID) {
 			return a, true
 		}

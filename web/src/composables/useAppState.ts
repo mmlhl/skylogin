@@ -47,6 +47,7 @@ function emptyState(): AppState {
       repo: "",
       goVersion: "",
       protocol: "",
+    mpayDebug: { dll: "game", game: "a50", skipLogout: false, dataPath: "" },
     },
     authHint: {},
     launchAlert: null,

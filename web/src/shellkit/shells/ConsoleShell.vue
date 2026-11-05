@@ -4,7 +4,7 @@
  * 信息密度最高，运行中的客户端在详情页统一管理。
  */
 import { computed, ref } from "vue";
-import { Flame, LayoutGrid, LayoutDashboard, Monitor, Settings, Eye, EyeOff, Plus, Pencil, Play, Square, Layers, RefreshCw, CopyPlus, SlidersHorizontal } from "lucide-vue-next";
+import { Flame, LayoutGrid, LayoutDashboard, Monitor, Settings, Eye, EyeOff, Plus, Pencil, Play, Square, Layers, RefreshCw, CopyPlus, SlidersHorizontal, ChevronDown } from "lucide-vue-next";
 import type { LauncherStore } from "../contract";
 
 const props = defineProps<{ store: LauncherStore }>();
@@ -36,6 +36,50 @@ function onDividerDown(e: MouseEvent) {
 }
 const expired = computed(() => cur.value?.cred === "expired");
 const runningSelf = computed(() => !!cur.value?.running);
+
+// 详情默认只露最常用的四项，其余收在「更多信息」里（换账号时保持展开状态，
+// 正在排查过期问题的用户不用每次重新点开）
+const detailOpen = ref(false);
+
+// 详情面板里的标签（都是"人话"，原文值只在 Go 日志和 accounts.json 里）。
+// 登录方式按来源细分：同样是扫码，手机扫和游戏内让渠道客户端扫不是一回事。
+function loginLabel(a?: { loginMethod?: string; source?: string }): string {
+  switch (a?.loginMethod) {
+    case "qrcode":
+      return "扫码（手机）";
+    case "password":
+      return "账号密码（官方窗）";
+    case "sms":
+      return "手机验证码";
+    case "channelscan":
+      return "渠道服游戏内扫码";
+  }
+  switch (a?.source) {
+    case "weblogin":
+      return "渠道网页登录";
+    case "channel":
+      return "渠道登录";
+    case "mpaydll":
+      return "账号密码（官方窗）";
+  }
+  return "—";
+}
+
+// mpay 一栏只显示版本，路径放在 title 里（太长，而且用户基本不看）
+const mpayLabel = computed(() => {
+  const v = cur.value?.mpayVersion;
+  if (!v) return "—";
+  return "mpay " + v;
+});
+
+// 上次验证凭证的时间：只有验证过才显示
+const lastCheckText = computed(() => {
+  const t = cur.value?.lastCheck;
+  if (!t) return "";
+  const d = new Date(t * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getMonth() + 1}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+});
 
 </script>
 
@@ -106,16 +150,43 @@ const runningSelf = computed(() => !!cur.value?.running);
 
       <div class="dinfo">
         <div><span>账号 ID</span><b class="mono">{{ store.maskAll ? cur.maskedId : cur.fullId }}</b></div>
-        <div><span>等级</span><b>{{ cur.level || "—" }}</b></div>
-        <div>
-          <span>凭证</span>
-          <b class="credline">
-            {{ expired ? "已过期" : "正常，启动时自动刷新" }}
-            <button v-if="expired" class="btn sm danger" @click="store.refreshCred(cur.id)">刷新凭证</button>
-          </b>
-        </div>
-        <div><span>状态</span><b>{{ runningSelf ? "已运行 " + fmtRun(cur.runSeconds) : "空闲" }}</b></div>
+        <div><span>渠道</span><b>{{ channelLabel(cur.channel) }}</b></div>
+        <div><span>添加时间</span><b class="mono">{{ cur.created || "—" }}</b></div>
+        <div><span>最后登录</span><b class="mono">{{ cur.lastLogin || "—" }}</b></div>
       </div>
+
+      <!-- 其余信息默认收起来：日常只看"这个号是什么、什么时候加的、上次什么时候登的"，
+           排查凭证过期时才展开 -->
+      <button class="dmore" :aria-expanded="detailOpen" @click="detailOpen = !detailOpen">
+        {{ detailOpen ? "收起详细信息" : "更多信息" }}
+        <ChevronDown class="chev" :class="{ open: detailOpen }" />
+      </button>
+
+      <template v-if="detailOpen">
+        <div class="dinfo">
+          <div><span>等级</span><b>{{ cur.level || "—" }}</b></div>
+          <div><span>登录方式</span><b>{{ loginLabel(cur) }}</b></div>
+          <div>
+            <span>凭证</span>
+            <b class="credline">
+              {{ expired ? "已过期" : "正常，启动时自动刷新" }}
+              <button v-if="expired" class="btn sm danger" @click="store.refreshCred(cur.id)">刷新凭证</button>
+            </b>
+          </div>
+          <div v-if="cur.tokenSaLabel"><span>凭证等级</span><b>{{ cur.tokenSaLabel }}</b></div>
+          <div v-if="cur.tokenAt"><span>签发时间</span><b class="mono">{{ cur.tokenAt }}</b></div>
+          <div v-if="lastCheckText"><span>上次验证</span><b class="mono">{{ lastCheckText }}</b></div>
+          <div><span>状态</span><b>{{ runningSelf ? "已运行 " + fmtRun(cur.runSeconds) : "空闲" }}</b></div>
+        </div>
+
+        <!-- 登录环境：排查"这个号的凭证为什么更容易过期"时看这一段 -->
+        <p class="dseclabel tight">登录环境</p>
+        <div class="dinfo second">
+          <div><span>平台身份</span><b class="mono">{{ cur.gameId || "—" }}</b></div>
+          <div><span>mpay</span><b class="mono" :title="cur.mpayPath || '这个渠道不走官方登录窗'">{{ mpayLabel }}</b></div>
+        </div>
+        <p v-if="cur.lastError" class="derr">{{ cur.lastError }}</p>
+      </template>
 
       <div class="dacts">
         <button v-if="runningSelf" class="btn" @click="store.stop(cur.id)"><Square />停止运行</button>
@@ -407,16 +478,60 @@ const runningSelf = computed(() => !!cur.value?.running);
   align-items: center;
   gap: 10px;
 }
+/* 「登录环境」那段紧跟在标签下面，不再重复画一条上边框 */
+.dinfo.second {
+  margin-top: 6px;
+  border-top: none;
+}
+.derr {
+  margin: 12px 0 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--bad) 24%, transparent);
+  border-radius: 9px;
+  background: var(--badbg);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--bad);
+}
 .dacts {
   display: flex;
   gap: 10px;
   margin-top: 22px;
+}
+/* 「更多信息」展开按钮：贴着详情列表底部，轻量一点 */
+.dmore {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--faint);
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.dmore:hover {
+  color: var(--tx);
+}
+.dmore .chev {
+  width: 14px;
+  height: 14px;
+  transition: transform 0.16s ease;
+}
+.dmore .chev.open {
+  transform: rotate(180deg);
 }
 .dseclabel {
   margin: 34px 0 0;
   font-size: 11.5px;
   letter-spacing: 0.04em;
   color: var(--faint);
+}
+/* 展开区里的分组标签不用那么大间隔 */
+.dseclabel.tight {
+  margin-top: 22px;
 }
 .dnone {
   margin: 10px 0 0;

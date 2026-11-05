@@ -67,13 +67,19 @@ type Hooks struct {
 	Duplicate    func(id, region string) (string, error)
 	Settings     func() map[string]any
 	SaveSettings func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int) error
-	Cleanup      func(accounts, cache, logs bool) ([]string, error)
-	OpenLogs     func() error
-	PickPath     func() (string, error)
-	PickFolder   func() (string, error)
-	ScanStart    func() (map[string]any, error)
-	ScanStop     func()
-	ScanNow      func() map[string]any
+	// SaveMpayDebug 保存官方登录窗的调试参数（用哪份 DLL / 哪个 game id / 是否跳过清理）。
+	SaveMpayDebug func(dll, game string, skipLogout bool, dataPath string) error
+	// MpayChannelStart 打开官方登录窗并强制用游戏身份（ma75），让渠道服 App 也能扫码。
+	MpayChannelStart func() error
+	// ChannelScanInfo 给界面用的「渠道服扫码」说明（支持哪些渠道、各自注意什么）。
+	ChannelScanInfo func() map[string]any
+	Cleanup         func(accounts, cache, logs bool) ([]string, error)
+	OpenLogs        func() error
+	PickPath        func() (string, error)
+	PickFolder      func() (string, error)
+	ScanStart       func() (map[string]any, error)
+	ScanStop        func()
+	ScanNow         func() map[string]any
 	// 渠道网页登录（B站 / 4399 / vivo 共用一套，key 区分）
 	ChannelLoginStart  func(key, targetUserID string) error
 	ChannelLoginStatus func(key string) map[string]any
@@ -141,11 +147,12 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("/api/state", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{
-			"login":    s.getState(),
-			"game":     safeStatus(s.hooks.Status),
-			"accounts": safeAccounts(s.hooks.Accounts),
-			"settings": safeSettings(s.hooks.Settings),
-			"scan":     safeScan(s.hooks.ScanNow),
+			"login":       s.getState(),
+			"game":        safeStatus(s.hooks.Status),
+			"accounts":    safeAccounts(s.hooks.Accounts),
+			"settings":    safeSettings(s.hooks.Settings),
+			"scan":        safeScan(s.hooks.ScanNow),
+			"channelScan": safeMap(s.hooks.ChannelScanInfo),
 
 			"authHint":    safeMap(s.hooks.AuthHint),
 			"launchAlert": safeMap(s.hooks.LaunchAlert),
@@ -342,6 +349,19 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, map[string]any{"ok": true})
 	})
 
+	// 渠道服游戏内扫码：强制用游戏身份开窗，扫完存成渠道账号
+	mux.HandleFunc("/api/mpay-login/channel-start", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, map[string]any{"ok": false, "message": "只支持 POST"})
+			return
+		}
+		if err := s.hooks.MpayChannelStart(); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
+	})
+
 	mux.HandleFunc("/api/mpay-login/status", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, s.hooks.MpayLoginStatus())
 	})
@@ -418,6 +438,29 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		if err := s.hooks.SaveSettings(body.SkyExe, body.DeviceID, body.MirrorDir, body.CloseLauncher, body.MultiQualityMode, body.MultiQualityFps, body.MouseArbiter, body.MouseArbiterMin); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "settings": s.hooks.Settings()})
+	})
+
+	// 官方登录窗的调试参数（设置页「开发者调试」）
+	mux.HandleFunc("/api/mpay/debug", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, map[string]any{"ok": false, "message": "只支持 POST"})
+			return
+		}
+		var body struct {
+			DLL        string `json:"dll"`
+			Game       string `json:"game"`
+			SkipLogout bool   `json:"skipLogout"`
+			DataPath   string `json:"dataPath"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": "请求格式有误"})
+			return
+		}
+		if err := s.hooks.SaveMpayDebug(body.DLL, body.Game, body.SkipLogout, body.DataPath); err != nil {
 			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
 			return
 		}

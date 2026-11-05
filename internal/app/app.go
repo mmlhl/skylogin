@@ -68,12 +68,34 @@ type Account struct {
 	LastCheck    int64  `json:"last_check,omitempty"`    // 上次验证凭证的时间
 	LastError    string `json:"last_error,omitempty"`    // 上次失败原因（给用户看）
 	RefreshToken string `json:"refresh_token,omitempty"` // 4399 专用：callback URL 里的长效续期凭证
+	// UnisdkData 是渠道服扫码时 DLL 给的整包登录凭证（原文）。
+	//
+	// 华为那种 sdk_info 里带 accessToken 的渠道用不到它；vivo 这类
+	// 只给整包的渠道就靠它登录（见 channelpackage.go）。
+	UnisdkData string `json:"unisdk_data,omitempty"`
+	// RowKey 是"同一个玩家、不同来源"要各占一行时的行键。
+	//
+	// 典型场景：同一个 vivo 号，先用网页登录加过（channel=vivo），后来又用
+	// 渠道服扫码加了一次。两行 PlayerID 一样，靠 RowKey 区分才不会互相覆盖、
+	// 也不会出现"点一个另一个跟着亮"。空 = 用 PlayerID 当键（老行为）。
+	RowKey string `json:"row_key,omitempty"`
 
 	// 自动登录用。密码用 Windows DPAPI 加密后存，只有当前用户能解。
 	// 用户不开启"记住登录"时这里为空。
 	SavedUser string `json:"saved_user,omitempty"`
 	SavedPass string `json:"saved_pass,omitempty"` // DPAPI 加密后的 base64
 
+	// ── 登录环境与时间（为了回答"凭证到底能活多久"）──────────────
+	//
+	// 每次登录/启动都把这些记下来：以后同一个号过几天失效了，翻记录就能知道
+	// 它当时是哪份 mpay.dll、哪个 game id 登出来的，不用再靠回忆。
+	MpayPath    string `json:"mpay_path,omitempty"`    // 登录窗实际加载的 mpay.dll 完整路径
+	MpayVersion string `json:"mpay_version,omitempty"` // 上面那份 DLL 的版本号（x.y.z）
+	GameID      string `json:"game_id,omitempty"`      // 登录用的平台身份（ma75 / a50 …）
+	CreatedAt   int64  `json:"created_at,omitempty"`   // 第一次添加到本机的时间
+	LastLogin   int64  `json:"last_login,omitempty"`   // 最后一次成功启动（签出票据）的时间
+	TokenSa     int    `json:"token_sa,omitempty"`     // 当前 token 的等级：-9 账号级 / 3 会话级 / -4 大神
+	TokenAt     int64  `json:"token_at,omitempty"`     // 当前 token 的签发时间（JWT 里的 lt）
 }
 
 // dataDirFn 便于测试时替换成临时目录。
@@ -152,6 +174,11 @@ func RunUI(title string) error {
 		SaveSettings: func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int) error {
 			return applySettings(skyExe, deviceID, mirrorDir, closeLauncher, multiQuality, multiFps, mouseArbiter, arbiterMin)
 		},
+		MpayChannelStart: StartChannelScanLogin,
+		ChannelScanInfo:  ChannelScanInfo,
+		SaveMpayDebug: func(dll, game string, skipLogout bool, dataPath string) error {
+			return SaveMpayDebug(MpayDebugConfig{DLL: dll, Game: game, SkipLogout: skipLogout, DataPath: dataPath})
+		},
 		Cleanup: func(accounts, cache, logs bool) ([]string, error) {
 			return cleanupData(cleanupOptions{Accounts: accounts, Cache: cache, Logs: logs})
 		},
@@ -200,6 +227,9 @@ func RunUI(title string) error {
 	// 上次关掉登录器后还在跑的游戏客户端：按窗口标题把路由认回来，
 	// 状态显示 / 监控墙 / 取票应答才能继续工作
 	go recoverRunningClients()
+	// 会话级凭证滚动续期：每次启动把"好久没滚过"的 token 滚一遍，
+	// 扫码号就不用因为过期重新扫码了（见 rolltoken.go）
+	go rollStaleTokens()
 
 	// 鼠标仲裁：多开时防止后台客户端自认持有鼠标（进大厅后抢焦点、
 	// 持续把光标拉回窗口中心）。客户端 <2 个时空转。
@@ -253,12 +283,58 @@ func gameStatus() string {
 	return "未启动"
 }
 
-// buildPayload 组装发往网易的登录包（SAUTH + uni_sauth + confirm 表单）。
-func buildPayload(acc Account, dev *device.ClientProfile) (*netsec.LoginPayload, map[string]any, error) {
+// sauthParts 是"发 uni_sauth 之前"的全部材料。
+//
+// 抽出来是为了让探针能拿同一份 SAUTH 去试不同口子（比如把 sessionid 换成
+// refresh_token 看能不能续期），而不必复制一遍拼装逻辑。
+type sauthParts struct {
+	SAUTH   map[string]any
+	UID     string
+	Session string
+	Token   string
+	Channel netsec.ChannelInfo
+}
+
+// buildSauth 拼出 uni_sauth 的请求体。
+func buildSauth(acc Account, dev *device.ClientProfile) (sauthParts, error) {
 	ch := netsec.HuaweiChannelInfo()
 	if channel.Known(acc.Channel) {
 		ch = channel.InfoOf(acc.Channel)
 	}
+	p := sauthParts{
+		UID:     acc.PlayerID,
+		Session: acc.GameAuthSign,
+		Token:   acc.GameAuthSign,
+	}
+
+	var pkg *channelPackage
+	if acc.UnisdkData != "" {
+		parsed, perr := parseChannelPackage(acc.UnisdkData)
+		if perr == nil {
+			pkg = parsed
+			// 整包里的渠道名 / 版本 / uid / session 优先，别拿默认值盖掉
+			if pkg.Channel != "" {
+				ch = netsec.ChannelInfo{
+					Login:          pkg.Channel,
+					SDKVersion:     pkg.SDKVersion,
+					GetAccessToken: "1",
+					Realname:       pkg.Realname,
+				}
+			}
+			if pkg.UID != "" {
+				p.UID = pkg.UID
+			}
+			if pkg.Session != "" {
+				p.Session = pkg.Session
+				p.Token = pkg.Session
+			}
+			if pkg.Access != "" {
+				p.Token = pkg.Access
+			}
+			logf("使用渠道整包登录：channel=%s uid=%s", pkg.Channel, pkg.UID)
+		}
+	}
+
 	custom := map[string]any{
 		"anonymous":          "",
 		"get_access_token":   ch.GetAccessToken,
@@ -270,18 +346,45 @@ func buildPayload(acc Account, dev *device.ClientProfile) (*netsec.LoginPayload,
 		"source_app_channel": ch.Login,
 		"sdk_version":        ch.SDKVersion,
 	}
-	sauth := netsec.NewSAUTH(acc.PlayerID, acc.GameAuthSign, profile.ShortGameID, custom, dev)
-	resp, err := netsec.PostSigned(sauth, profile.ShortGameID)
+	// 整包里 DLL 拼好的字段全部照抄，只保留我们自己生成的那几个随机值
+	if pkg != nil {
+		for k, v := range pkg.Fields {
+			custom[k] = v
+		}
+		custom["login_channel"] = ch.Login
+		custom["app_channel"] = ch.Login
+		if _, ok := pkg.Fields["source_app_channel"]; !ok {
+			custom["source_app_channel"] = ch.Login
+		}
+	}
+
+	// 4399 的 confirm token 是 access_token；SAUTH 的 session（GameAuthSign）
+	// 是 state，两个值不同。其它渠道两者同值，不受影响。
+	if acc.Channel == "m4399" && acc.AccessToken != "" && pkg == nil {
+		p.Token = acc.AccessToken
+	}
+
+	p.Channel = ch
+	p.SAUTH = netsec.NewSAUTH(p.UID, p.Session, profile.ShortGameID, custom, dev)
+	return p, nil
+}
+
+// buildPayload 组装发往网易的登录包（SAUTH + uni_sauth + confirm 表单）。
+//
+// 三种账号来源在这里汇合：
+//   - 网易账号 / 华为账号：uid + 一个 session（华为 ST 或 gameAuthSign）
+//   - B站/4399/vivo 网页登录：uid + 渠道 secret，按 channel.InfoOf 拼字段
+//   - 渠道服扫码（vivo 这类）：DLL 给了整包，字段直接盖上去
+func buildPayload(acc Account, dev *device.ClientProfile) (*netsec.LoginPayload, map[string]any, error) {
+	parts, err := buildSauth(acc, dev)
 	if err != nil {
 		return nil, nil, err
 	}
-	// 4399 的 confirm token 是 access_token；SAUTH 的 session（GameAuthSign）
-	// 是 state，两个值不同。其它渠道两者同值，不受影响。
-	payloadToken := acc.GameAuthSign
-	if acc.Channel == "m4399" && acc.AccessToken != "" {
-		payloadToken = acc.AccessToken
+	resp, err := netsec.PostSigned(parts.SAUTH, profile.ShortGameID)
+	if err != nil {
+		return nil, nil, err
 	}
-	payload, err := netsec.NewLoginPayloadChan(resp, acc.GameAuthSign, payloadToken, acc.PlayerID, acc.PlayerLevel, acc.Ts, dev, ch)
+	payload, err := netsec.NewLoginPayloadChan(resp, parts.Session, parts.Token, parts.UID, acc.PlayerLevel, acc.Ts, dev, parts.Channel)
 	if err != nil {
 		return nil, resp, err
 	}

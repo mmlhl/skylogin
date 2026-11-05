@@ -6,7 +6,7 @@
  */
 
 /** 渠道：华为渠道 / 网易官方 / B站渠道 */
-export type Channel = "huawei" | "netease" | "bilibili" | "m4399" | "vivo";
+export type Channel = "huawei" | "netease" | "bilibili" | "m4399" | "vivo" | "uc_platform";
 
 /** 左栏里的一个账号（由 Go 侧的 accountView 组装） */
 export interface AccountView {
@@ -39,6 +39,31 @@ export interface AccountView {
   lastError?: string;
   /** 登录来源：scan / sms / mpaydll / channel */
   source?: string;
+  /** 登录方式原文：qrcode / password / sms / channelscan */
+  loginMethod?: string;
+  /** 上次验证凭证的时间（unix 秒） */
+  lastCheck?: number;
+
+  // ── 详情页用的登录环境 / 时间信息（对应 Go 侧 Account 的同名字段）──
+  /** 登录窗实际加载的 mpay.dll 完整路径（只有官方登录窗的账号才有） */
+  mpayPath?: string;
+  /** 那份 mpay.dll 的版本号 */
+  mpayVersion?: string;
+  /** 登录用的平台身份（ma75 / a50 …） */
+  gameId?: string;
+  /** 第一次添加到本机的时间（unix 秒） */
+  createdAt?: number;
+  /** 上面时间的展示串（"2026-11-05 21:30"） */
+  created?: string;
+  /** 最后一次成功启动的时间 */
+  lastLogin?: number;
+  lastLoginText?: string;
+  /** 当前凭证等级：-9 账号级 / 3 会话级 / -4 大神 */
+  tokenSa?: number;
+  tokenSaLabel?: string;
+  /** 当前凭证的签发时间 */
+  tokenAt?: number;
+  tokenAtText?: string;
 
   /** 本机行标识：只有「同账号的第二个区」这类副本才有，主记录为空 */
   /** 副本键（"PlayerID-2" 样式）；空 = 原始行 */
@@ -111,6 +136,17 @@ export interface Settings {
   appBuildTime: string;
   /** 下载渠道（独立模块 release 注入） */
   release: { github: string; pan: string };
+  /** 官方登录窗的调试参数（设置页「开发者调试」） */
+  mpayDebug: {
+    /** game = 游戏目录的 4.20；platform = 平台目录的 4.21 */
+    dll: string;
+    /** a50 = 平台上下文（二维码只认网易大神）；ma75 = 游戏上下文（光遇手游可扫） */
+    game: string;
+    /** 打开窗口前不清旧登录态 */
+    skipLogout: boolean;
+    /** 自定义数据目录（空 = 用默认） */
+    dataPath: string;
+  };
   /** 公告已读序号 / 被忽略的更新构建号（存后端，localStorage 端口随机记不住） */
   releaseAnnSeen: number;
   updateDismissed: number;

@@ -71,6 +71,18 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
         copyKey: a.copyKey,
         qualityMode: a.qualityMode,
         qualityFps: a.qualityFps,
+        // 详情页：登录环境与时间（Go 侧已经在 accountView 里格式化成串了）
+        mpayPath: a.mpayPath,
+        mpayVersion: a.mpayVersion,
+        gameId: a.gameId,
+        loginMethod: a.loginMethod,
+        source: a.source,
+        created: a.created,
+        lastLogin: a.lastLoginText,
+        tokenSaLabel: a.tokenSaLabel,
+        tokenAt: a.tokenAtText,
+        lastCheck: a.lastCheck,
+        lastError: a.lastError,
       };
     });
     // 墙按钮 / API 改了打码状态时，列表跟随（每秒轮询对齐一次）

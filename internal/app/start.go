@@ -71,9 +71,19 @@ func launchGame() (string, error) {
 		logf("%s账号 %s：凭证就绪", channel.LabelOf(acc.Channel), acc.Username)
 	} else if acc.Channel != "netease" {
 		// 华为账号才需要刷新 ST / 生成登录包；网易账号走 token 现签票
-		if refreshed, rerr := refreshFn(acc); rerr == nil {
+		if acc.UnisdkData != "" {
+			// 渠道服扫码（vivo 这类）存的是整包凭证，没有独立的刷新接口：
+			// 直接拿它组登录包，真失效了 buildPayload 会报错，界面提示重扫。
+			logf("渠道服扫码账号：使用保存的整包凭证")
+		} else if refreshed, rerr := refreshFn(acc); rerr == nil {
 			acc = refreshed
 			logf("凭证已刷新")
+		} else if acc.Source == "channelscan" {
+			// 渠道服扫码的号只有 accessToken 一把钥匙，它过期了就只能重扫，
+			// 不能像 ST 那样"先拿旧的凑合"——旧的 ts 只有 10 分钟，必失败。
+			logf("%s：渠道凭证已失效（%v），需要重新扫码", displayName(acc), rerr)
+			expireChannelCredential(&acc, "渠道凭证已失效", "huawei_expired", "需要重新扫码", "请重新扫码添加")
+			return "", rerr
 		} else {
 			logf("凭证刷新失败，继续使用本地缓存: %v", rerr)
 		}
@@ -145,18 +155,20 @@ func launchGame() (string, error) {
 		// 拿票成功说明凭证有效，把之前可能的 expired 标记清掉
 		setAccountCredState(acc.UserID, "ok", "")
 		clearAuthHint()
+		// 会话级凭证顺手滚一次：把 lt 推到现在，长期不用重扫（见 rolltoken.go）
+		go rollAccountToken(acc.UserID)
 	} else {
 		logf("正在取一次性票据…")
 		ticket, _, ticketErr = newTicketSource().Login(payload.Body)
 		if ticketErr != nil {
 			logf("取票失败: %v（仍会启动游戏，但可能需要手动登录）", ticketErr)
 		} else {
-			channel = profile.HuaweiChannel
+			channel = opChannel(acc)
 			logf("已拿到票据（channel=%s）", channel)
 		}
 	}
 	if channel == "" {
-		channel = profile.HuaweiChannel
+		channel = opChannel(acc)
 	}
 
 	// 宿主窗口常驻：已经有客户端在跑时不能重建，否则会抢掉它的取票窗口。
@@ -168,6 +180,8 @@ func launchGame() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// 票据发出去 = 这个号真的登了一次，记下时间（详情页要显示"最后登录"）
+	markAccountLaunched(accountKey(acc), "")
 	if ticketErr != nil {
 		return "已启动光遇，但票据获取失败，可能需要手动登录", nil
 	}
@@ -392,6 +406,9 @@ func launchMany(ids []string, ovMode string, ovFps int) (string, error) {
 		go func(acc Account, path string) {
 			defer wg.Done()
 			_, err := launchAt(acc, dev, "", "", path, ovMode, ovFps)
+			if err == nil {
+				markAccountLaunched(accountKey(acc), "")
+			}
 			out <- launchResult{name: displayName(acc), err: err}
 		}(acc, installs[i])
 	}
@@ -472,6 +489,15 @@ func mintTicket(acc Account, dev *device.ClientProfile) (string, string, error) 
 		// 先验证 token 活性：失效的 token 也能签出废票，等游戏里报
 		// "网络错误"才知道就太晚了。验证失败当场拦下并推刷新提示。
 		if verr := validateNetEaseToken(acc); verr != nil {
+			// 凭证过期了，但服务端可能还"记住"着这个号（扫码换票时带 sid 写进去的）。
+			// 只要它是记住的那一个，就能免扫直接拿票——覆盖"扫码号过期要重扫"的痛点。
+			if t, rerr := rememberedTicket(acc); rerr == nil {
+				logf("%s：凭证已失效，但服务端还记得这个号，用记住的授权直接发票", displayName(acc))
+				setAccountCredState(acc.UserID, "ok", "")
+				return t, "netease", nil
+			} else {
+				logf("%s：免扫续期也没成功（%v）", displayName(acc), rerr)
+			}
 			setAccountCredState(acc.UserID, "expired", verr.Error())
 			setAuthHint("netease_expired", "网易账号凭证已过期",
 				fmt.Sprintf("%s 的凭证已失效，请刷新凭证", displayName(acc)),
@@ -529,7 +555,40 @@ func mintTicket(acc Account, dev *device.ClientProfile) (string, string, error) 
 	if err != nil {
 		return "", "", err
 	}
-	return t, profile.HuaweiChannel, nil
+	return t, opChannel(acc), nil
+}
+
+// opChannel 是回给游戏的 login_channel。
+//
+// 渠道服扫码的账号（vivo 这类）必须回**服务端认的渠道名**（nearme_vivo），
+// 不是账号文件里的 key（vivo）：票就是按前者签出来的，回错了游戏对不上。
+func opChannel(acc Account) string {
+	if v := opChannelOverride(); v != "" {
+		return v
+	}
+	if acc.UnisdkData != "" {
+		if pkg, err := parseChannelPackage(acc.UnisdkData); err == nil && pkg.Channel != "" {
+			return pkg.Channel
+		}
+	}
+	return profile.HuaweiChannel
+}
+
+// opChannelOverride 读 op14 渠道名的强制覆盖值（诊断用）。
+//
+// 放一个 op_channel.txt 到数据目录，里面写渠道名（huawei / netease / nearme_vivo…），
+// 下次启动就会用这个名回给游戏。用来验证"游戏不认票，到底是不是渠道名的问题"：
+// 应用宝（myapp）在 PC 客户端里没有对应实现，改成 huawei 看它认不认。
+func opChannelOverride() string {
+	b, err := os.ReadFile(filepath.Join(dataDir(), "op_channel.txt"))
+	if err != nil {
+		return ""
+	}
+	v := strings.TrimSpace(string(b))
+	if v == "" || strings.HasPrefix(v, "#") {
+		return ""
+	}
+	return v
 }
 
 // maxReplyPerClient 每个客户端最多应答几次。
