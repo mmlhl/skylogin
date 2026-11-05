@@ -26,6 +26,8 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"skylogin/internal/win"
 )
 
 // Options 是托管登录需要的输入。
@@ -46,6 +48,11 @@ type Options struct {
 	DataPath string
 	// SkipLogout 为 true 时不清理旧登录态，让 DLL 直接静默登录上次的账号。
 	SkipLogout bool
+	// QRCodeOnly 为 true 时登录窗直接显示二维码页，不显示邮箱/手机号表单。
+	//
+	// 用官方 DLL 的 mpay_option_disable_not_qrcode_login 选项实现：渠道服
+	// 扫码入口的用户本来也只能扫码，没必要让他再点一下切页签。
+	QRCodeOnly bool
 }
 
 // Result 是登录结果，由子进程写给主进程。
@@ -57,6 +64,54 @@ type Result struct {
 	Slots    []string `json:"slots,omitempty"`
 	Error    string   `json:"error"`
 	Finished int64    `json:"finished"`
+
+	// 渠道服扫码（slot7 是 huawei 这种）时带回来的东西：
+	// MPay 没有它的票，但华为的 openid + accessToken 能换出 gameAuthSign，
+	// 主进程据此存成一个渠道账号（见 app/channelaccount.go）。
+	Channel     string `json:"channel,omitempty"`
+	OpenID      string `json:"openId,omitempty"`
+	AccessToken string `json:"accessToken,omitempty"`
+	// UnisdkData 是 slot8 里 extra_unisdk_data 的原文。
+	//
+	// 不是每个渠道都像华为那样给 sdk_info.openid/accessToken：vivo 这类
+	// 渠道给的是**整包登录凭证**（SAUTH_JSON 里有 sessionid / access_token /
+	// udid / sdk_version 等）。存原文就能原样交给 uni_sauth，不用一个渠道
+	// 一个渠道地对字段。
+	UnisdkData string `json:"unisdkData,omitempty"`
+
+	// 这次登录用的环境：哪份 mpay.dll、什么版本、哪个 game id。
+	// 主进程会把它们写进账号记录——以后要查"哪个版本的凭证更容易过期"，
+	// 靠的就是这几个字段（见 app/store.go 的 accountView）。
+	DLLPath    string `json:"dllPath,omitempty"`
+	DLLVersion string `json:"dllVersion,omitempty"`
+	GameID     string `json:"gameId,omitempty"`
+}
+
+// 登录环境在 Run 里确定一次，emit 时统一补进结果，免得每个回调点都抄一遍。
+var (
+	loginEnvMu sync.Mutex
+	loginEnv   struct{ dll, ver, game string }
+)
+
+func setLoginEnv(dll, ver, game string) {
+	loginEnvMu.Lock()
+	loginEnv.dll, loginEnv.ver, loginEnv.game = dll, ver, game
+	loginEnvMu.Unlock()
+}
+
+func fillLoginEnv(res Result) Result {
+	loginEnvMu.Lock()
+	defer loginEnvMu.Unlock()
+	if res.DLLPath == "" {
+		res.DLLPath = loginEnv.dll
+	}
+	if res.DLLVersion == "" {
+		res.DLLVersion = loginEnv.ver
+	}
+	if res.GameID == "" {
+		res.GameID = loginEnv.game
+	}
+	return res
 }
 
 const (
@@ -191,10 +246,20 @@ func Login(opts Options) Result {
 	}
 	logf("宿主窗口: 0x%x（中心 %d,%d）", hwnd, cx, cy)
 
-	dll, err := syscall.LoadDLL(filepath.Join(opts.SkyDir, "mpay.dll"))
+	dllPath := filepath.Join(opts.SkyDir, "mpay.dll")
+	dll, err := syscall.LoadDLL(dllPath)
 	if err != nil {
 		return fail("加载 mpay.dll 失败: " + err.Error())
 	}
+	// 把实际加载的路径和版本打进日志：诊断"窗口行为不一样"时先看这条。
+	// 同时记进结果里写回账号（排查"凭证能活多久"要看是哪份 DLL 登出来的）。
+	verText := ""
+	logf("加载 mpay.dll: %s", dllPath)
+	if a, b, c, ok := win.FileVersion(dllPath); ok {
+		verText = fmt.Sprintf("%d.%d.%d", a, b, c)
+		logf("mpay.dll 版本: %s", verText)
+	}
+	setLoginEnv(dllPath, verText, opts.GameID)
 	dllHandle = dll
 
 	create, err := dll.FindProc("?Create_Interface@CMpay_Interface@Mpay@@SAPEAV12@XZ")
@@ -210,6 +275,12 @@ func Login(opts Options) Result {
 	setParentWindow(dll, hwnd)
 	setDataPath(dll, opts.DataPath)
 	setSkin(dll, inst, opts.SkinZip)
+	if opts.QRCodeOnly {
+		setQRCodeOnly(dll)
+		// 扫码窗里会浮一个「年龄提示」小气泡（skin 里的 age_tips.xml），
+		// 尺寸 60x76 还跟着窗口走，正好挡在二维码上方。官方留了开关。
+		setOptionInt(dll, "mpay_option_show_welcome_tip", 0)
+	}
 
 	buildCallbacks()
 
@@ -274,6 +345,7 @@ func Login(opts Options) Result {
 
 		if time.Since(lastProbe) > 400*time.Millisecond {
 			lastProbe = time.Now()
+			hideTipWindows()
 			alive := findWindowByClass("MPAY_LOGIN") != 0
 			if alive {
 				appeared = true
@@ -297,6 +369,7 @@ func emit(res Result) {
 	if res.Finished == 0 {
 		res.Finished = time.Now().Unix()
 	}
+	res = fillLoginEnv(res)
 	sendOnce.Do(func() {
 		decided <- res
 	})
@@ -364,6 +437,26 @@ func setSkin(dll *syscall.DLL, inst uintptr, skin string) {
 	logf("SetResPath -> %d (%s)", r, skin)
 }
 
+// setQRCodeOnly 让登录窗直接停在二维码页。
+//
+// mpay.dll 的登录窗有两页：邮箱/手机号表单、二维码。默认停在哪一页由
+// DLL 自己决定（还受上次登录方式影响），用户经常要多点一下右下角的小
+// 二维码按钮才切过去。mpay_option_disable_not_qrcode_login 是官方给的
+// "只留扫码登录"开关，设上以后窗口一出来就是码。
+//
+// 值按 DLL 的整数型选项传（SetOption 收的是指针）。
+func setQRCodeOnly(dll *syscall.DLL) {
+	p, err := dll.FindProc("?SetOption@CMpay_Interface@Mpay@@SAXPEBDPEBX@Z")
+	if err != nil {
+		logf("这个 mpay.dll 没有 SetOption，无法强制二维码页")
+		return
+	}
+	key, _ := syscall.BytePtrFromString("mpay_option_disable_not_qrcode_login")
+	val := 1
+	p.Call(uintptr(unsafe.Pointer(key)), uintptr(unsafe.Pointer(&val)))
+	logf("已设置只用扫码登录（mpay_option_disable_not_qrcode_login=1）")
+}
+
 func createHostWindow(cx, cy int) uintptr {
 	wndProc := syscall.NewCallback(func(hwnd, m, wp, lp uintptr) uintptr {
 		r, _, _ := procDefWindowProcW.Call(hwnd, m, wp, lp)
@@ -415,6 +508,59 @@ func buildCallbacks() {
 	vtable[slotLogout] = syscall.NewCallback(onLogoutFinish)
 	vtable[slotTicket] = syscall.NewCallback(onTicketResult)
 	cbObject[0] = uintptr(unsafe.Pointer(&vtable[0]))
+}
+
+// buildCallbacksLogged 和 buildCallbacks 一样，但把**没用到的那几十个槽位**
+// 全换成"记一笔再返回"的回调，用来查某个接口到底走哪个槽位。
+//
+// 背景：UILess* 那几个接口调用后没有任何表现，很可能它们是通过我们当成
+// 空函数的某个槽位回调的。这个版本会把每个被触发的槽位编号写进日志。
+func buildCallbacksLogged() {
+	for i := range vtable {
+		idx := i
+		vtable[i] = syscall.NewCallback(func(a1, a2, a3 uintptr) uintptr {
+			logf("回调槽位 %d 被触发  a1=%s  a2=%s  a3=%s",
+				idx, argText(a1), argText(a2), argText(a3))
+			return 0
+		})
+	}
+	// 已知的三个槽位仍然走真正的处理逻辑（它们自己也会打日志）
+	vtable[slotLogin] = syscall.NewCallback(onLoginFinish)
+	vtable[slotLogout] = syscall.NewCallback(onLogoutFinish)
+	vtable[slotTicket] = syscall.NewCallback(onTicketResult)
+	cbObject[0] = uintptr(unsafe.Pointer(&vtable[0]))
+}
+
+// argText 把一个回调参数尽量解释成人能看懂的东西。
+//
+// 小整数直接打数值；像指针的地址先试读成字符串（前 4 个字节都可打印才算），
+// 读不出来就打地址，避免把随机内存当字符串读崩。
+func argText(v uintptr) string {
+	if v < 0x10000 {
+		return fmt.Sprintf("%d", v)
+	}
+	if !looksLikeString(v) {
+		return fmt.Sprintf("0x%x", v)
+	}
+	s := goString(v)
+	if len(s) > 200 {
+		s = s[:200] + "…"
+	}
+	return fmt.Sprintf("%q", s)
+}
+
+// looksLikeString 粗判一个地址指向的是不是可打印文本（只看前 4 字节）。
+func looksLikeString(p uintptr) bool {
+	for i := 0; i < 4; i++ {
+		c := *(*byte)(unsafe.Pointer(p + uintptr(i)))
+		if c == 0 {
+			return i > 0
+		}
+		if c < 32 || c > 126 {
+			return false
+		}
+	}
+	return true
 }
 
 // onLogoutFinish 对应官方 ApiCallBack 的"退出登录完成"回调（槽位 2）。
@@ -506,6 +652,26 @@ func onLoginFinish(this, code, info uintptr) uintptr {
 	loginOK = true
 	mu.Unlock()
 
+	// 渠道服扫的码：拿回来的是渠道账号（slot7=huawei 这种），MPay 没有它的票。
+	// 但回调里带着华为的 openid + accessToken，交给主进程换 gameAuthSign 存成渠道账号。
+	if ch := slotAt(got, 7); ch != "" && ch != "netease" {
+		openid, access := channelSdkInfo(got)
+		unisdk := unisdkDataOf(got)
+		logf("扫码的是渠道服（%s）：openid %d 字符，accessToken %d 字符，登录包 %d 字符",
+			ch, len(openid), len(access), len(unisdk))
+		dumpChannelSlots(got)
+		// 华为走 sdk_info（openid + accessToken）；vivo 这类只给整包
+		// （extra_unisdk_data），两者有一个可用就算拿到凭证。
+		if access == "" && unisdk == "" {
+			emit(Result{OK: false, DeviceID: slotAt(got, 1), Account: accountOf(got), Slots: got,
+				Error: fmt.Sprintf("扫的是渠道服账号（%s），但回调里没有可用的凭证", ch)})
+			return 0
+		}
+		emit(Result{OK: true, DeviceID: slotAt(got, 1), Account: accountOf(got), Slots: got,
+			Channel: ch, OpenID: openid, AccessToken: access, UnisdkData: unisdk})
+		return 0
+	}
+
 	// 登录成功后向 DLL 要一张票，后面的 login/ticket 换 token 走现成链路
 	ticketProc, err := dllHandle.FindProc("?GetUserTicket@CMpay_Interface@Mpay@@QEAAXXZ")
 	if err != nil {
@@ -546,6 +712,68 @@ func slotAt(s []string, i int) string {
 		return s[i]
 	}
 	return ""
+}
+
+// channelSdkInfo 从回调槽位里抠出渠道的 openid / accessToken。
+//
+// 结构（2026-11-05 华为实测）：
+//
+//	slot8 = {"extra_unisdk_data": "<JSON 字符串>"}
+//	  extra_unisdk_data = {"extra_data": "<JSON 字符串>", "SAUTH_STR": "...", ...}
+//	    extra_data = {"playerLevel":"7","sdk_info":{"openid":"...","accessToken":"..."}}
+func channelSdkInfo(slots []string) (openid, access string) {
+	var outer, inner, extra map[string]any
+	if json.Unmarshal([]byte(slotAt(slots, 8)), &outer) != nil {
+		return "", ""
+	}
+	s, _ := outer["extra_unisdk_data"].(string)
+	if json.Unmarshal([]byte(s), &inner) != nil {
+		return "", ""
+	}
+	// extra_data 有时是字符串、有时直接是对象，两种都认
+	switch v := inner["extra_data"].(type) {
+	case string:
+		if json.Unmarshal([]byte(v), &extra) != nil {
+			return "", ""
+		}
+	case map[string]any:
+		extra = v
+	default:
+		return "", ""
+	}
+	sdk, _ := extra["sdk_info"].(map[string]any)
+	openid, _ = sdk["openid"].(string)
+	access, _ = sdk["accessToken"].(string)
+	if openid == "" {
+		openid, _ = sdk["openId"].(string)
+	}
+	return openid, access
+}
+
+// unisdkDataOf 从 slot8 里取出 extra_unisdk_data 原文（渠道整包登录凭证）。
+//
+//	vivo 实测：{"extra_unisdk_data": "{\"SAUTH_STR\": \"…\", \"SAUTH_JSON\": \"…\", …}", …}
+//
+// 华为也是这个结构，只是里面多了 sdk_info。
+func unisdkDataOf(slots []string) string {
+	var outer map[string]any
+	if json.Unmarshal([]byte(slotAt(slots, 8)), &outer) != nil {
+		return ""
+	}
+	s, _ := outer["extra_unisdk_data"].(string)
+	return s
+}
+
+// dumpChannelSlots 把渠道服登录的回调槽位原样写到数据目录，供分析用（仅诊断）。
+func dumpChannelSlots(slots []string) {
+	path := filepath.Join(os.Getenv("APPDATA"), "SkyLogin", "channel_login_slots.json")
+	b, err := json.MarshalIndent(map[string]any{"slots": slots}, "", "  ")
+	if err != nil {
+		return
+	}
+	if err := os.WriteFile(path, b, 0o600); err == nil {
+		logf("渠道服回调已写入 %s（分析用）", path)
+	}
 }
 
 // accountOf 尽量从回调里找出登录用的账号名（邮箱/手机号）用于展示。
@@ -777,6 +1005,57 @@ func hideMpayWindows() {
 		procGetClassNameW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), 128)
 		if len(syscall.UTF16ToString(buf)) >= 5 && syscall.UTF16ToString(buf)[:5] == "MPAY_" {
 			procShowWindow.Call(hwnd, 0) // SW_HIDE
+		}
+		return 1
+	})
+	procEnumWindows.Call(enumProc, 0)
+}
+
+// setOptionInt 设置整数型选项（DLL 的 SetOption 对数字收的是指针）。
+func setOptionInt(dll *syscall.DLL, key string, val int) {
+	p, err := dll.FindProc("?SetOption@CMpay_Interface@Mpay@@SAXPEBDPEBX@Z")
+	if err != nil {
+		return
+	}
+	k, _ := syscall.BytePtrFromString(key)
+	v := val
+	p.Call(uintptr(unsafe.Pointer(k)), uintptr(unsafe.Pointer(&v)))
+	logf("已设置 %s=%d", key, val)
+}
+
+// hideTipWindows 把登录窗旁边那个「年龄提示」小气泡藏掉。
+//
+// skin 里它叫 age_tips.xml，是个 60x76 的独立窗口，会浮在二维码上方挡视线。
+// DLL 有个 mpay_option_show_welcome_tip 选项，但实测设了没反应（DLL 日志里
+// 连 setOption 都没记），所以改成直接把它藏起来：只认类名或标题里带 age/tip
+// 的窗口，别的一概不动，避免误伤其它弹窗。
+var tipClassesLogged sync.Map
+
+func hideTipWindows() {
+	pid, _, _ := procGetCurrentProcessId.Call()
+	enumProc := syscall.NewCallback(func(hwnd, _ uintptr) uintptr {
+		var wpid uint32
+		procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&wpid)))
+		if uintptr(wpid) != pid {
+			return 1
+		}
+		buf := make([]uint16, 128)
+		procGetClassNameW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), 128)
+		class := syscall.UTF16ToString(buf)
+		// 只处理 MPAY_ 开头的自建窗
+		if len(class) < 5 || class[:5] != "MPAY_" {
+			return 1
+		}
+		lower := strings.ToLower(class)
+		// 第一次见到就记一笔，方便以后核对类名
+		if _, seen := tipClassesLogged.LoadOrStore(class, true); !seen {
+			logf("发现 mpay 窗口: class=%s", class)
+		}
+		if strings.Contains(lower, "age") || strings.Contains(lower, "tip") {
+			if vis, _, _ := procIsWindowVisible.Call(hwnd); vis != 0 {
+				procShowWindow.Call(hwnd, 0) // SW_HIDE
+				logf("已隐藏提示窗: %s", class)
+			}
 		}
 		return 1
 	})
