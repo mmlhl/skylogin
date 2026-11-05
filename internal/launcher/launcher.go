@@ -34,6 +34,14 @@ type TicketResult struct {
 
 // ExchangeTicket 用二维码 code 换一张可兑换的票。
 func ExchangeTicket(code, deviceID string) (*TicketResult, error) {
+	return ExchangeTicketWithSid(code, deviceID, "")
+}
+
+// ExchangeTicketWithSid 同上，但可以带平台会话（sid）。
+//
+// 带 sid 是为了让服务端把"这次扫码的账号"写进它的记住列表——平台自己扫码
+// 就是带着会话调的（2026-11-05 抓包对比：参数一模一样，唯一差别是 sid）。
+func ExchangeTicketWithSid(code, deviceID, sid string) (*TicketResult, error) {
 	code = strings.TrimSpace(code)
 	if code == "" {
 		return nil, fmt.Errorf("code 为空")
@@ -53,6 +61,10 @@ func ExchangeTicket(code, deviceID string) (*TicketResult, error) {
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
 	req.Header.Set("Accept", "application/json")
+	if sid != "" {
+		setPlatformHeaders(req)
+		req.Header.Set("sid", sid)
+	}
 
 	resp, err := c.Do(req)
 	if err != nil {

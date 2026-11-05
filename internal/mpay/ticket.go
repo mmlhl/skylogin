@@ -129,6 +129,25 @@ func (c *Client) GetUserInfo(token, userID, deviceID, longGameID, shortGameID st
 	return user, nil
 }
 
+// RememberLoginForm 组一个 is_remember_account=1 的 login/ticket 表单。
+//
+// 诊断用：想验证"登录时顺便让服务端记住这个账号"（平台third_party_account
+// 返回的那个）能不能靠这一个参数完成。
+func RememberLoginForm(ticket, deviceID, longGameID, shortGameID string) url.Values {
+	form := baseForm(deviceID, longGameID, shortGameID, "a50_sdk_cn", "c4.20.0", "0.0.0.0")
+	form.Set("is_remember_account", "1")
+	form.Set("opt_fields", "nickname,avatar,realname_status,mobile_bind_status,mask_related_mobile,related_login_status")
+	form.Set("ticket", ticket)
+	form.Set("transid", newTransID())
+	form.Set("uni_transaction_id", newTransID())
+	return form
+}
+
+// PostRawForm 发一个表单 POST，返回解析后的 JSON（诊断用，不做业务校验）。
+func (c *Client) PostRawForm(path string, form url.Values) (map[string]any, error) {
+	return c.postForm(path, nil, form)
+}
+
 // DisplayNameOf 从用户资料里挑一个能给人看的账号名。
 //
 // 优先 display_username（网易自己给的就是脱敏后的手机号/邮箱），

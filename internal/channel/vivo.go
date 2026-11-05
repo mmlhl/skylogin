@@ -275,6 +275,136 @@ func VivoLoginScript(target string) string {
     setTimeout(go, 1500);
   }
 
+  // ── 抓登录接口（诊断）──────────────────────────────────
+  // 想把"账号密码登录"做成 Go 侧直接调接口（像华为那样），先得知道
+  // passport 那边收什么。这里挂 XHR/fetch 钩子，把登录相关的请求记下来：
+  // **只记字段名和长度**，不记密码/验证码原文。
+  function maskBody(raw) {
+    if (!raw) return "";
+    var out = [];
+    var re = /(?:^|&)([^=&]+)=([^&]*)/g;
+    var m;
+    while ((m = re.exec(raw)) !== null) {
+      out.push(m[1] + "(" + m[2].length + ")");
+    }
+    if (!out.length) {
+      try {
+        var j = JSON.parse(raw);
+        for (var k in j) {
+          var v = j[k];
+          out.push(k + "(" + (typeof v === "string" ? v.length : String(v).length) + ")");
+        }
+      } catch (e) {
+        out.push("raw(" + raw.length + ")");
+      }
+    }
+    return out.join(",");
+  }
+  function noteLoginRequest(method, url, body, status, respText) {
+    try {
+      var u = String(url || "");
+      if (!new RegExp("login|passport|oauth|token|account|sms|captcha", "i").test(u)) return;
+      var path = u.split("?")[0];
+      var respKeys = "";
+      try {
+        var j = JSON.parse(respText || "{}");
+        respKeys = Object.keys(j).join(",");
+      } catch (e) {
+        respKeys = "raw(" + String(respText || "").length + ")";
+      }
+      logLine("REQ " + method + " " + path + " body[" + maskBody(String(body || "")) + "] status=" + status + " resp[" + respKeys + "]");
+    } catch (e) {}
+  }
+  (function hookLoginCalls() {
+    try {
+      var xopen = XMLHttpRequest.prototype.open;
+      var xsend = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function (m, u) {
+        this.__skyM = m;
+        this.__skyU = u;
+        return xopen.apply(this, arguments);
+      };
+      XMLHttpRequest.prototype.send = function (body) {
+        var self = this;
+        try {
+          self.addEventListener("load", function () {
+            if (location.hostname === "joint.vivo.com.cn") return;
+            noteLoginRequest(self.__skyM, self.__skyU, body, self.status, self.responseText);
+          });
+        } catch (e) {}
+        return xsend.apply(this, arguments);
+      };
+    } catch (e) {}
+    try {
+      var ofetch = window.fetch;
+      if (ofetch) {
+        window.fetch = function (input, init) {
+          var url = typeof input === "string" ? input : (input && input.url) || "";
+          var method = (init && init.method) || "GET";
+          var body = (init && init.body) || "";
+          return ofetch.apply(this, arguments).then(function (r) {
+            try {
+              if (location.hostname !== "joint.vivo.com.cn") {
+                r.clone().text().then(function (t) {
+                  noteLoginRequest(method, url, body, r.status, t);
+                }).catch(function () {});
+              }
+            } catch (e) {}
+            return r;
+          });
+        };
+      }
+    } catch (e) {}
+  })();
+
+  // ── 自动勾选「记住登录」─────────────────────────────────
+  // vivo 通行证页面上那个勾选框决定 Cookie 是持久的还是会话级的：
+  // 不勾只有会话级 Cookie，浏览器一关就没了，下次启动必然要重新登录。
+  // 用户不一定会勾，所以这里自动勾上，并把结果写进日志（能验证勾到没有）。
+  var rememberTicked = false;
+  function tickRemember() {
+    if (rememberTicked) return;
+    var want = new RegExp("记住|自动登录|免登录|下次自动");
+    var avoid = new RegExp("同意|协议|隐私|条款");
+    var nodes;
+    try {
+      nodes = document.querySelectorAll('input[type="checkbox"],[role="checkbox"],.el-checkbox,.van-checkbox,.vivo-checkbox,.agree-checkbox,.checkbox');
+    } catch (e) { return; }
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      var label = "";
+      try {
+        var lab = el.closest ? el.closest("label") : null;
+        if (lab) label = lab.innerText || "";
+        if (!label) {
+          var par = el.parentElement;
+          for (var d = 0; par && d < 3; d++, par = par.parentElement) {
+            var txt = (par.innerText || "").trim();
+            if (txt && txt.length <= 24) { label = txt; break; }
+          }
+        }
+      } catch (e) {}
+      if (!label) continue;
+      if (!want.test(label) || avoid.test(label)) continue;
+      var isChecked = false;
+      if (typeof el.checked === "boolean") isChecked = el.checked;
+      else if (el.className) isChecked = new RegExp("checked|active").test(String(el.className));
+      if (isChecked) {
+        rememberTicked = true;
+        logLine("记住登录：页面上已经勾好了");
+        return;
+      }
+      try { el.click(); } catch (e) {}
+      rememberTicked = true;
+      logLine("记住登录：已自动勾选（" + String(label).replace(new RegExp("\\s+", "g"), "").slice(0, 12) + "）");
+      return;
+    }
+  }
+  var rememberTimers = [0, 800, 2000, 4000, 8000, 15000, 25000];
+  for (var rt = 0; rt < rememberTimers.length; rt++) {
+    setTimeout(tickRemember, rememberTimers[rt]);
+  }
+
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", maybeCapture);
   } else {

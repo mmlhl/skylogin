@@ -109,11 +109,23 @@ func (c *Client) Confirm(uuid, gameID string, payload map[string]string) (map[st
 
 // Query 轮询二维码状态。
 func (c *Client) Query(uuid, gameID string) (map[string]any, error) {
+	return c.QueryExtra(uuid, gameID, nil)
+}
+
+// QueryExtra 在标准 query 参数之外再带一批额外参数。
+//
+// 诊断用：官方 DLL 走渠道服扫码时，回来的是一个完整的"渠道登录包"
+// （extra_unisdk_data / SAUTH_STR），而我们轮询 query 只拿到一个 code。
+// 差别很可能就在客户端多带了哪些参数上——用这个方法一组一组试。
+func (c *Client) QueryExtra(uuid, gameID string, extra map[string]string) (map[string]any, error) {
 	q := url.Values{}
 	q.Set("uuid", uuid)
 	q.Set("game_id", gameID)
 	q.Set("process_id", fmt.Sprint(os.Getpid()))
 	q.Set("cv", c.cv)
+	for k, v := range extra {
+		q.Set(k, v)
+	}
 	return c.get("/mpay/api/qrcode/query", q)
 }
 
@@ -176,12 +188,18 @@ func truncate(s string, n int) string {
 
 // CreateLoginHosted 用"发烧平台托管 MPay"的参数申请二维码。
 func (c *Client) CreateLoginHosted(deviceID, gameID, dstJFGame, appChannel, appCv string) (string, map[string]any, error) {
+	return c.CreateLoginHostedFull(deviceID, gameID, dstJFGame, appChannel, appCv, "2")
+}
+
+// CreateLoginHostedFull 同上，但 is_remember 可指定（诊断用：1 会不会让服务端
+// 把"扫码登录的这个账号"写进加载湾的记住列表）。
+func (c *Client) CreateLoginHostedFull(deviceID, gameID, dstJFGame, appChannel, appCv, isRemember string) (string, map[string]any, error) {
 	q := url.Values{}
 	q.Set("app_channel", appChannel)
 	q.Set("qrcode_channel_type", "2")
 	q.Set("dst_jf_game_id", dstJFGame)
 	q.Set("cv", appCv)
-	q.Set("is_remember", "2")
+	q.Set("is_remember", isRemember)
 	q.Set("device_id", deviceID)
 	q.Set("game_id", gameID)
 	data, err := c.get("/mpay/api/qrcode/create_login", q)

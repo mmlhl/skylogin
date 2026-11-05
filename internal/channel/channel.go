@@ -18,12 +18,15 @@ const (
 	KeyBili  = "bilibili"
 	KeyM4399 = "m4399"
 	KeyVivo  = "vivo"
+	// KeyUC 是九游（UC）。它目前只有「游戏内扫码」这条接入方式——
+	// 扫完拿到的是整包，直接能用；没有网页登录，所以下面没有专门的登录脚本。
+	KeyUC = "uc_platform"
 )
 
 // Known 判断是不是本工具管理的渠道服账号。
 func Known(key string) bool {
 	switch key {
-	case KeyBili, KeyM4399, KeyVivo:
+	case KeyBili, KeyM4399, KeyVivo, KeyUC:
 		return true
 	}
 	return false
@@ -38,6 +41,8 @@ func LabelOf(key string) string {
 		return "4399"
 	case KeyVivo:
 		return "vivo"
+	case KeyUC:
+		return "九游"
 	}
 	return key
 }
@@ -72,6 +77,8 @@ func InfoOf(key string) netsec.ChannelInfo {
 		return m4399Info
 	case KeyVivo:
 		return vivoInfo
+	case KeyUC:
+		return ucInfo
 	}
 	return netsec.HuaweiChannelInfo()
 }
@@ -88,6 +95,14 @@ var (
 	m4399Info = netsec.ChannelInfo{
 		Login:          "4399com",
 		SDKVersion:     "3.16.0",
+		GetAccessToken: "1",
+		Realname:       `{"realname_type": 0, "age": 22}`,
+	}
+	// ucInfo 只是占位：九游账号一律走"整包"直连，这些字段实际不会被用到。
+	// 真要接九游网页登录，得先实测它的 login_channel / sdk_version。
+	ucInfo = netsec.ChannelInfo{
+		Login:          "uc_platform",
+		SDKVersion:     "4.0.0",
 		GetAccessToken: "1",
 		Realname:       `{"realname_type": 0, "age": 22}`,
 	}
