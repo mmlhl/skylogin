@@ -230,6 +230,7 @@ func RunUI(title string) error {
 	// 会话级凭证滚动续期：每次启动把"好久没滚过"的 token 滚一遍，
 	// 扫码号就不用因为过期重新扫码了（见 rolltoken.go）
 	go rollStaleTokens()
+	startCredCheck()
 
 	// 鼠标仲裁：多开时防止后台客户端自认持有鼠标（进大厅后抢焦点、
 	// 持续把光标拉回窗口中心）。客户端 <2 个时空转。
