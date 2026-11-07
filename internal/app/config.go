@@ -9,9 +9,9 @@ import (
 
 // Config 是用户的本地设置。
 type Config struct {
-	SkyExe         string `json:"sky_exe"`                    // 手动指定光遇主程序路径
-	MpayDeviceID   string `json:"mpay_device_id"`             // 本机在 MPay 登记的设备 id
-	MpayDeviceKey  string `json:"mpay_device_key,omitempty"`  // 登记时服务器给的 key
+	SkyExe        string `json:"sky_exe"`                   // 手动指定光遇主程序路径
+	MpayDeviceID  string `json:"mpay_device_id"`            // 本机在 MPay 登记的设备 id
+	MpayDeviceKey string `json:"mpay_device_key,omitempty"` // 登记时服务器给的 key
 
 	// 官方登录窗的调试参数（设置页「开发者调试」里改，普通用户不用管）。
 	// 以前这些是 %APPDATA%\SkyLogin 下的 .on 开关文件，测试时来回建删很容易搞混，
@@ -20,8 +20,8 @@ type Config struct {
 	MpayDebugGame       string `json:"mpay_debug_game,omitempty"`        // a50 | ma75
 	MpayDebugSkipLogout bool   `json:"mpay_debug_skip_logout,omitempty"` // 打开窗口前不清旧登录态
 	MpayDebugDataPath   string `json:"mpay_debug_data_path,omitempty"`   // 自定义数据目录
-	DeviceUniqueID string `json:"device_unique_id,omitempty"` // 登记用的唯一串（随机模式下保存）
-	DeviceIDMode   string `json:"device_id_mode,omitempty"`   // fingerprint | random | custom
+	DeviceUniqueID      string `json:"device_unique_id,omitempty"`       // 登记用的唯一串（随机模式下保存）
+	DeviceIDMode        string `json:"device_id_mode,omitempty"`         // fingerprint | random | custom
 
 	// 按本机指纹申请过的那一个设备号，单独留一份底账。
 	// 用户中途切到「手动/重新申请」再切回「按本机」时，直接恢复这个号，

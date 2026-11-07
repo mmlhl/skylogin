@@ -41,9 +41,10 @@ __pycache__/
 # ── 前端（web/） ─────────────────────────────────────
 # 依赖目录：体积大、可由 npm ci 还原，绝对不入库
 /web/node_modules/
-# Vite / 构建缓存
+# Vite / TS 的构建缓存，都是中间产物
 /web/.vite/
 /web/node_modules/.vite/
+*.tsbuildinfo
 # 本地环境文件（可能含个人配置）
 /web/.env.local
 /web/.env.*.local
@@ -51,8 +52,14 @@ __pycache__/
 /web/npm-debug.log*
 /web/yarn-error.log*
 /web/coverage/
-# 注意：/web/dist/ 是**要提交**的——Go 用 go:embed 把它打进 exe，
-# 不提交的话新克隆的仓库直接 go build 会失败。它由 `npm run build` 生成。
+# vite 若被直接在 web/ 目录下跑，产物会落到这里，属中间产物，不入库
+/web/dist/
+
+# 注意：最终产物 internal/web/dist/ 是**要提交**的——Go 用 go:embed
+# 把它打进 exe（见 internal/web/server.go 的 //go:embed dist），
+# 不提交的话新克隆的仓库直接 go build 会报
+# "pattern dist: no matching files found"。
+# 它由 `cd web && npm run build` 生成，vite.config.ts 的 outDir 指向这里。
 
 # 替换正在运行的 exe 时留下的旧文件/备份
 *.exe.old*
