@@ -1,0 +1,83 @@
+package app
+
+// 登录入口清单的护栏测试。
+//
+// 这份清单现在是界面的唯一来源：少一项，界面上就少一个入口，用户会直接发现
+// "怎么没法加 B 站账号了"。所以把该有的项钉死在测试里。
+
+import (
+	"testing"
+
+	"skylogin/internal/channel"
+)
+
+func findEntry(entries []loginEntry, id string) (loginEntry, bool) {
+	for _, e := range entries {
+		if e.ID == id {
+			return e, true
+		}
+	}
+	return loginEntry{}, false
+}
+
+func TestLoginEntriesCoverAllAddOptions(t *testing.T) {
+	entries := LoginEntries()
+
+	// 添加账号时该看到的六个入口（id 就是渠道 Key，网页渠道三个 + 华为 + 扫码 + 网易）
+	for _, id := range []string{channel.KeyBili, channel.KeyM4399, channel.KeyVivo, "huawei", "netease-channel", "netease"} {
+		e, ok := findEntry(entries, id)
+		if !ok {
+			t.Fatalf("入口 %s 缺失", id)
+		}
+		if e.OnlyRefresh {
+			t.Fatalf("入口 %s 不该标成只在刷新时出现", id)
+		}
+		if len(e.Methods) == 0 {
+			t.Fatalf("入口 %s 没有声明任何登录方式", id)
+		}
+		if e.Label == "" || e.Initial == "" {
+			t.Fatalf("入口 %s 缺少显示名或图标字", id)
+		}
+	}
+}
+
+func TestNeteaseIsGrouped(t *testing.T) {
+	e, ok := findEntry(LoginEntries(), "netease")
+	if !ok {
+		t.Fatal("网易账号入口缺失")
+	}
+	if !e.Group {
+		t.Fatal("网易账号应当是二级分组")
+	}
+	if len(e.Methods) < 2 {
+		t.Fatalf("网易账号应当有扫码与账号密码两种方式，实际 %d 种", len(e.Methods))
+	}
+}
+
+func TestUCEntryOffersPassword(t *testing.T) {
+	entries := LoginEntries()
+	e, ok := findEntry(entries, "uc_platform")
+	if !ok {
+		t.Fatal("九游入口缺失")
+	}
+	// 九游现在有纯 Go 协议的「手机号 + 密码」，应该在「添加账号」里直接可选
+	if e.OnlyRefresh {
+		t.Fatal("九游已有账号密码登录，应当出现在添加账号列表里")
+	}
+	var hasPassword bool
+	for _, m := range e.Methods {
+		if m.Kind == "password" {
+			hasPassword = true
+		}
+	}
+	if !hasPassword {
+		t.Fatal("九游必须声明 password 方式（手机号 + 密码）")
+	}
+}
+
+func TestLoginMethodsWrapperShape(t *testing.T) {
+	m := LoginChannels()
+	if _, ok := m["entries"]; !ok {
+		t.Fatal("LoginChannels 必须返回 entries 字段")
+	}
+}

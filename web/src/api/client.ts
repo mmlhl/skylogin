@@ -142,12 +142,26 @@ export const api = {
   /**
    * 渠道网页登录（B站 / 4399 / vivo 共用一套流程，key 区分渠道）。
    * 打开官方登录页子进程，捕获凭证后在线验证并存账号。
+   *
+   * key 不再由前端枚举：它是后端登录入口清单里的 action 字段
+   * （后端少一个渠道，前端就不会传这个 key）。
    */
-  startChannelLogin: (key: "bilibili" | "m4399" | "vivo", targetUserID = "") =>
+  startChannelLogin: (key: string, targetUserID = "") =>
     request(`/api/${key}/login/start`, { method: "POST", body: JSON.stringify({ targetUserId: targetUserID }) }),
 
   /** 渠道网页登录进度（waiting / done / failed） */
-  channelLoginStatus: (key: "bilibili" | "m4399" | "vivo") => request(`/api/${key}/login/status`),
+  channelLoginStatus: (key: string) => request(`/api/${key}/login/status`),
+
+  /**
+   * 渠道「协议登录」（九游账号密码）：不开窗，Go 侧直接算凭证。
+   * 立即返回，进度走 channelLoginStatus；需要用户输入时 status 里带 ask。
+   */
+  startChannelPasswordLogin: (key: string) =>
+    request("/api/channel/login/start", { method: "POST", body: JSON.stringify({ channel: key }) }),
+
+  /** 提交上一步 ask 的答案（表单各字段或选项的 value） */
+  answerChannelAsk: (key: string, values: Record<string, string>) =>
+    request("/api/channel/login/answer", { method: "POST", body: JSON.stringify({ channel: key, values }) }),
 
   /** 保存设置（只传要改的字段） */
   saveSettings: (payload: {

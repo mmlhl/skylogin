@@ -24,6 +24,7 @@ import (
 	"skylogin/internal/netsec"
 	"skylogin/internal/profile"
 	"skylogin/internal/secretfile"
+	"skylogin/internal/ucsdk"
 )
 
 // channelSpec 一个渠道网页登录在主进程侧的全部差异点。
@@ -152,15 +153,21 @@ func trackerOf(key string) *loginTracker {
 }
 
 // ChannelLoginStatus 给界面查询某个渠道的登录进度。
+//
+// ask 非空表示流程停在“等用户输入”那一步，界面据此弹表单或选项。
 func ChannelLoginStatus(key string) map[string]any {
 	s := trackerOf(key).snapshot()
-	return map[string]any{
+	out := map[string]any{
 		"running": s.Running,
 		"phase":   s.Phase,
 		"message": s.Message,
 		"account": s.Account,
 		"uid":     s.UID,
 	}
+	if ask := PendingChannelAsk(key); ask != nil {
+		out["ask"] = ask
+	}
+	return out
 }
 
 // StartChannelWebLogin 起一个子进程打开渠道官方登录页（可见窗口）。
@@ -343,16 +350,40 @@ func channelSAUTH(key, uid, secret string) error {
 	if err != nil {
 		return fmt.Errorf("设备标识不可用")
 	}
-	custom := map[string]any{
-		"login_channel":      channel.InfoOf(key).Login,
-		"app_channel":        channel.InfoOf(key).Login,
-		"source_app_channel": channel.InfoOf(key).Login,
-		"sdk_version":        channel.InfoOf(key).SDKVersion,
+	// 未登记的渠道直接报错，不要静默当成华为去验（否则报错文案会误导排查）
+	info, ok := channel.InfoOf(key)
+	if !ok {
+		return fmt.Errorf("未登记的渠道: %s", key)
 	}
-	if _, err := netsec.PostSigned(netsec.NewSAUTH(uid, secret, profile.ShortGameID, custom, dev), profile.ShortGameID); err != nil {
+	custom := map[string]any{
+		"login_channel":      info.Login,
+		"app_channel":        info.Login,
+		"source_app_channel": info.Login,
+		"sdk_version":        info.SDKVersion,
+		// 下面两个是渠道差异，不能沿用 NewSAUTH 里的华为默认值：
+		// 九游的 get_access_token 必须是 "1"（华为是 "0"），realname 也带 age。
+		// 少这两项时 uni_sauth 会回 439「登录状态失效」，很容易误判成 sid 过期。
+		"get_access_token": info.GetAccessToken,
+		"realname":         info.Realname,
+	}
+	resp, err := netsec.PostSigned(netsec.NewSAUTH(uid, secret, profile.ShortGameID, custom, dev), profile.ShortGameID)
+	if err != nil {
 		return fmt.Errorf("渠道身份验证失败（%s）", err.Error())
 	}
+	// 业务失败也是 HTTP 200，必须看响应内容：
+	// 否则失效凭证会被当成「验证通过」存下来，等启动时才炸（用户看到的就是这种）。
+	if _, err := netsec.DecodeUnisdkUserName(resp); err != nil {
+		return fmt.Errorf("渠道身份验证失败：%s", err.Error())
+	}
 	return nil
+}
+
+// VerifyChannelCredential 把渠道凭证拿去跑一遍 uni_sauth，只返回成败。
+//
+// 供探针与诊断使用：能验证“这个 sid 到底能不能换到光遇登录态”，
+// 跟 sid 本身好不好用（那个看 getUserSimpleInfo）是两回事。
+func VerifyChannelCredential(key, uid, secret string) error {
+	return channelSAUTH(key, uid, secret)
 }
 
 // finalizeBili B站：auto.login 验证 access_key 活性（顺带续期 30 天、拿昵称）。
@@ -448,6 +479,8 @@ func ensureChannelCredential(acc *Account) error {
 		return nil
 	case channel.KeyM4399:
 		return ensureM4399Credential(acc)
+	case channel.KeyUC:
+		return ensureUCCredential(acc)
 	case channel.KeyVivo:
 		// openToken 没有独立校验接口；uni_sauth（buildPayload 里）就是验证，
 		// 失败时在那边翻译成"重新登录"提示
@@ -493,6 +526,62 @@ func ensureM4399Credential(acc *Account) error {
 
 	expireChannelCredential(acc, "4399登录已失效", "m4399_expired", "4399登录已过期", "请重新登录该账号")
 	return fmt.Errorf("4399登录已失效，请重新登录该账号")
+}
+
+// ucRefreshInterval 是两次续期之间的最小间隔。
+//
+// sid 寿命 24 小时，这里留一半余量：一天里正常只会续一到两次。
+// 不必每次启动都续——九游是「以旧换新」，多换一次就多一次丢票的机会。
+const ucRefreshInterval = 12 * time.Hour
+
+// ensureUCCredential 九游的凭证保活：用 refreshToken 把 sid 滚着往前推。
+//
+// 两个必须记住的机制（都是实测出来的）：
+//
+//  1. ucid.user.refreshLogin 是**以旧换新**：成功一次，旧 sid 当场作废。
+//     所以续完必须立刻落盘，中途任何一步失败都等于白丢一张票。
+//  2. sid 一旦真的失效就救不回来（拿假 sid 试永远回 code=11），
+//     所以只能趁它还有效的时候滚动续，间隔不能超过 24 小时。
+//
+// 注意只有手机号登录的账号带 refreshToken；扫码留下的整包账号没有，
+// 那条路走不到这里。
+func ensureUCCredential(acc *Account) error {
+	if acc.RefreshToken == "" || acc.GameAuthSign == "" {
+		return nil
+	}
+	// 刚续过就别再换——每次换票都有成本，也没必要
+	if time.Since(time.Unix(acc.LastCheck, 0)) < ucRefreshInterval {
+		return nil
+	}
+
+	c := ucsdk.New(ucsdk.SkyGame())
+	s, err := c.RefreshLogin(acc.RefreshToken, acc.GameAuthSign)
+	if err != nil {
+		logf("九游账号 %s 续期失败: %v", displayName(*acc), err)
+		// 续不动不一定是过期（也可能是接口临时抽风），
+		// 所以再用 uni_sauth 确认一次，还能过就照常启动。
+		if verr := VerifyChannelCredential(channel.KeyUC, acc.UserID, acc.GameAuthSign); verr != nil {
+			expireChannelCredential(acc, "九游登录已失效", "uc_expired", "九游登录已过期", "请重新登录该账号")
+			return fmt.Errorf("九游登录已失效，请重新登录该账号")
+		}
+		logf("九游账号 %s：续期没成，但原 sid 仍可用，继续启动", displayName(*acc))
+		return nil
+	}
+
+	// 换票已经成功，旧 sid 作废了，下面的落盘一步都不能跳过
+	acc.GameAuthSign = s.SID
+	if s.RefreshToken != "" {
+		acc.RefreshToken = s.RefreshToken
+	}
+	acc.CredState = "ok"
+	acc.LastCheck = time.Now().Unix()
+	acc.UpdatedAt = time.Now().Unix()
+	if err := saveAccount(*acc); err != nil {
+		logf("九游账号 %s 续期落盘失败: %v", displayName(*acc), err)
+		return fmt.Errorf("九游账号续期后保存失败: %w", err)
+	}
+	logf("九游账号 %s：sid 已续期，有效期 %d 小时", displayName(*acc), s.Timeout/3600)
+	return nil
 }
 
 // expireChannelCredential 标记过期并给界面推提示。

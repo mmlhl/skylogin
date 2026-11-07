@@ -73,32 +73,39 @@ type Hooks struct {
 	MpayChannelStart func() error
 	// ChannelScanInfo 给界面用的「渠道服扫码」说明（支持哪些渠道、各自注意什么）。
 	ChannelScanInfo func() map[string]any
-	Cleanup         func(accounts, cache, logs bool) ([]string, error)
-	OpenLogs        func() error
-	PickPath        func() (string, error)
-	PickFolder      func() (string, error)
-	ScanStart       func() (map[string]any, error)
-	ScanStop        func()
-	ScanNow         func() map[string]any
+	// LoginMethods 给界面用的「添加账号」入口清单（渠道 × 登录方式）。
+	// 界面不再硬编码渠道，后端少一项界面就少一行。
+	LoginMethods func() map[string]any
+	Cleanup      func(accounts, cache, logs bool) ([]string, error)
+	OpenLogs     func() error
+	PickPath     func() (string, error)
+	PickFolder   func() (string, error)
+	ScanStart    func() (map[string]any, error)
+	ScanStop     func()
+	ScanNow      func() map[string]any
 	// 渠道网页登录（B站 / 4399 / vivo 共用一套，key 区分）
 	ChannelLoginStart  func(key, targetUserID string) error
 	ChannelLoginStatus func(key string) map[string]any
-	AuthHint           func() map[string]any
-	LaunchAlert        func() map[string]any
-	Version            func() string
-	Reregister         func(mode string) (string, error)
-	SetDeviceID        func(id string) error
-	SMSSend            func(mobile string) error
-	SMSLogin           func(mobile, code, targetUserID string) error
-	WebLoginStart      func(targetUserID string) error
-	WebLoginStatus     func() map[string]any
-	MpayLoginStart     func(targetUserID string) error
-	MpayLoginStatus    func() map[string]any
-	MpayLoginCancel    func()
-	SaveRailWidth      func(width int) error
-	SaveShell          func(shell int) error
-	LoadShell          func() int
-	MouseState         func() map[string]any // 诊断：多开时鼠标占用与仲裁状态
+	// 渠道协议登录（九游账号密码）：不开窗，Go 侧直接算凭证，
+	// 进度复用 ChannelLoginStatus（其中 ask 非空时要弹表单）。
+	ChannelPasswordStart func(key string) error
+	ChannelAnswer        func(key string, vals map[string]string) error
+	AuthHint             func() map[string]any
+	LaunchAlert          func() map[string]any
+	Version              func() string
+	Reregister           func(mode string) (string, error)
+	SetDeviceID          func(id string) error
+	SMSSend              func(mobile string) error
+	SMSLogin             func(mobile, code, targetUserID string) error
+	WebLoginStart        func(targetUserID string) error
+	WebLoginStatus       func() map[string]any
+	MpayLoginStart       func(targetUserID string) error
+	MpayLoginStatus      func() map[string]any
+	MpayLoginCancel      func()
+	SaveRailWidth        func(width int) error
+	SaveShell            func(shell int) error
+	LoadShell            func() int
+	MouseState           func() map[string]any // 诊断：多开时鼠标占用与仲裁状态
 }
 
 // Server 是对外的本地 Web 服务。
@@ -147,12 +154,13 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("/api/state", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{
-			"login":       s.getState(),
-			"game":        safeStatus(s.hooks.Status),
-			"accounts":    safeAccounts(s.hooks.Accounts),
-			"settings":    safeSettings(s.hooks.Settings),
-			"scan":        safeScan(s.hooks.ScanNow),
-			"channelScan": safeMap(s.hooks.ChannelScanInfo),
+			"login":         s.getState(),
+			"game":          safeStatus(s.hooks.Status),
+			"accounts":      safeAccounts(s.hooks.Accounts),
+			"settings":      safeSettings(s.hooks.Settings),
+			"scan":          safeScan(s.hooks.ScanNow),
+			"channelScan":   safeMap(s.hooks.ChannelScanInfo),
+			"loginChannels": safeMap(s.hooks.LoginMethods),
 
 			"authHint":    safeMap(s.hooks.AuthHint),
 			"launchAlert": safeMap(s.hooks.LaunchAlert),
@@ -593,10 +601,40 @@ func (s *Server) Handler() http.Handler {
 			}
 			writeJSON(w, map[string]any{"ok": true})
 		})
+	}
+	// 进度查询对所有渠道开放：协议登录（九游账号密码）也查同一份状态
+	for _, ck := range []string{channel.KeyBili, channel.KeyM4399, channel.KeyVivo, channel.KeyUC} {
+		key := ck
 		mux.HandleFunc("/api/"+key+"/login/status", func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, s.hooks.ChannelLoginStatus(key))
 		})
 	}
+
+	// 渠道协议登录（九游账号密码）：不开窗，直接走 Go 协议。
+	// 进度、表单都复用上面那套 status（ask 非空 = 等用户输入）。
+	mux.HandleFunc("/api/channel/login/start", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Channel string `json:"channel"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&body)
+		if err := s.hooks.ChannelPasswordStart(body.Channel); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
+	})
+	mux.HandleFunc("/api/channel/login/answer", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Channel string            `json:"channel"`
+			Values  map[string]string `json:"values"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<13)).Decode(&body)
+		if err := s.hooks.ChannelAnswer(body.Channel, body.Values); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
+	})
 
 	mux.HandleFunc("/api/scan/start", func(w http.ResponseWriter, r *http.Request) {
 		st, err := s.hooks.ScanStart()

@@ -41,18 +41,19 @@ func TestVivoPassportURL(t *testing.T) {
 
 // 渠道身份参数：渠道名必须与账号文件 / uni_sauth 用的取值一致。
 func TestInfoOf(t *testing.T) {
-	if InfoOf(KeyBili).Login != "bilibili_sdk" {
-		t.Fatalf("B站渠道名错误: %q", InfoOf(KeyBili).Login)
+	if info, ok := InfoOf(KeyBili); !ok || info.Login != "bilibili_sdk" {
+		t.Fatalf("B站渠道名错误: %q", info.Login)
 	}
-	if InfoOf(KeyM4399).Login != "4399com" {
-		t.Fatalf("4399 渠道名错误: %q", InfoOf(KeyM4399).Login)
+	if info, ok := InfoOf(KeyM4399); !ok || info.Login != "4399com" {
+		t.Fatalf("4399 渠道名错误: %q", info.Login)
 	}
-	if InfoOf(KeyVivo).Login != "nearme_vivo" {
-		t.Fatalf("vivo 渠道名错误: %q", InfoOf(KeyVivo).Login)
+	if info, ok := InfoOf(KeyVivo); !ok || info.Login != "nearme_vivo" {
+		t.Fatalf("vivo 渠道名错误: %q", info.Login)
 	}
-	// 不认识的渠道回落华为默认值
-	if InfoOf("whatever").Login != "huawei" {
-		t.Fatalf("未知渠道应回落华为: %q", InfoOf("whatever").Login)
+	// 不认识的渠道必须明确报错：静默回落华为会让新渠道的 Key 拼错时
+	// 表现为“华为身份验证失败”，排查方向全错
+	if info, ok := InfoOf("whatever"); ok {
+		t.Fatalf("未知渠道不应返回参数，实际拿到 %+v", info)
 	}
 }
 

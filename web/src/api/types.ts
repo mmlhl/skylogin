@@ -176,6 +176,33 @@ export interface AuthHint {
   account?: string;
 }
 
+/** 一种登录方式，由后端声明，前端只负责渲染 */
+export interface LoginMethodView {
+  /** web | qr | sms | password | channelscan | package */
+  kind: string;
+  label: string;
+  hint: string;
+}
+
+/**
+ * 「添加账号」列表里的一项。
+ *
+ * 前端不认识任何具体渠道：后端返回几项就渲染几行，
+ * group 为 true 的点了进二级菜单（目前只有「网易账号」）。
+ */
+export interface LoginEntryView {
+  id: string;
+  /** 调用接口时用的标识：bilibili / m4399 / vivo / huawei / netease */
+  action: string;
+  label: string;
+  hint: string;
+  initial: string;
+  group: boolean;
+  /** 只在刷新凭证时出现，不进「添加账号」列表 */
+  onlyRefresh?: boolean;
+  methods: LoginMethodView[];
+}
+
 /** `/api/state` 的完整返回 */
 export interface AppState {
   accounts: AccountView[];
@@ -184,6 +211,10 @@ export interface AppState {
   scan: ScanState;
   settings: Settings;
   authHint: AuthHint;
+  /** 渠道服扫码的说明（渠道清单在 Go 侧维护） */
+  channelScan?: { help?: string; channels?: unknown[] };
+  /** 添加账号的入口清单（Go 是唯一真相来源） */
+  loginChannels?: { entries: LoginEntryView[] };
   /** 启动事件弹窗（如客户端闪退）；id 递增，前端按 id 去重展示 */
   launchAlert: { id: number; title: string; message: string } | null;
   version: string;

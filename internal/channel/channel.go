@@ -18,7 +18,8 @@ const (
 	KeyBili  = "bilibili"
 	KeyM4399 = "m4399"
 	KeyVivo  = "vivo"
-	// KeyUC 是九游（UC）。它目前只有「游戏内扫码」这条接入方式——
+	// KeyUC 是九游（UC）。支持两条路：「手机号 + 密码」纯 Go 协议直连（不开窗），
+	// 以及「游戏内扫码」整包导入。
 	// 扫完拿到的是整包，直接能用；没有网页登录，所以下面没有专门的登录脚本。
 	KeyUC = "uc_platform"
 )
@@ -68,19 +69,22 @@ func LoginWindowOf(key string) LoginWindow {
 	return LoginWindow{Title: "渠道登录", Width: 460, Height: 720, Script: func(string) string { return "" }}
 }
 
-// InfoOf 渠道的 uni_sauth 身份参数。不认识的渠道回落华为默认值。
-func InfoOf(key string) netsec.ChannelInfo {
+// InfoOf 渠道的 uni_sauth 身份参数。渠道未登记时返回零值与 false。
+//
+// 以前不认识的渠道会静默回退成华为，新渠道 Key 拼错时表现为
+// “华为身份验证失败”，排查方向完全不对。现在改为调用方自己决定怎么处理。
+func InfoOf(key string) (netsec.ChannelInfo, bool) {
 	switch key {
 	case KeyBili:
-		return biliInfo
+		return biliInfo, true
 	case KeyM4399:
-		return m4399Info
+		return m4399Info, true
 	case KeyVivo:
-		return vivoInfo
+		return vivoInfo, true
 	case KeyUC:
-		return ucInfo
+		return ucInfo, true
 	}
-	return netsec.HuaweiChannelInfo()
+	return netsec.ChannelInfo{}, false
 }
 
 // 三个渠道的身份参数。渠道名与 sdk 版本是渠道服服务端点名的取值，
@@ -98,11 +102,13 @@ var (
 		GetAccessToken: "1",
 		Realname:       `{"realname_type": 0, "age": 22}`,
 	}
-	// ucInfo 只是占位：九游账号一律走"整包"直连，这些字段实际不会被用到。
-	// 真要接九游网页登录，得先实测它的 login_channel / sdk_version。
+	// ucInfo 是九游渠道参数，已按实机抓包核定（2026-11-07）：
+	// sdk_version 必须是 9.7.12.0（早期猜的 4.0.0 会让 uni_sauth 报错，
+	// 而报错文案不会提到 sdk_version，很难排查回去）；
+	// get_access_token 是 "1"（与华为相反）。
 	ucInfo = netsec.ChannelInfo{
 		Login:          "uc_platform",
-		SDKVersion:     "4.0.0",
+		SDKVersion:     "9.7.12.0",
 		GetAccessToken: "1",
 		Realname:       `{"realname_type": 0, "age": 22}`,
 	}

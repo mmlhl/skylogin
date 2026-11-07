@@ -2,129 +2,118 @@
 /**
  * 登录入口选择（shellkit 设计语言）。
  *
- * mode:
- *   add      —— 添加账号：顶层是 B站/4399/vivo/华为/网易；
- *              点「网易账号」进入第二级，再选 扫码/手机号/账号密码
- *   channel  —— 给华为账号刷新凭证时只看华为的入口
- *   netease  —— 给网易账号刷新凭证时只看网易的三种入口
- *   bilibili / m4399 / vivo —— 对应渠道账号的刷新入口
+ * 这个组件不再认识任何具体渠道——列表完全由后端 `/api/state` 的
+ * `loginChannels.entries` 驱动：
  *
- * 各入口最终路由（App.vue 的 onPick）：
- *   华为扫码 → HuaweiDialog；网易扫码 → ScanDialog；
- *   手机号 → SMSLoginDialog；账号密码 → mpay.dll 官方登录窗；
- *   B站/4399/vivo → 渠道网页登录子进程
+ *   后端多一项 → 这里多一行
+ *   后端少一项 → 这里自动消失
+ *
+ * 每一项可能带多个登录方式（methods）。只有一个方式的，点了直接走；
+ * 标了 group 的（目前只有「网易账号」）点了进二级菜单。
+ *
+ * mode:
+ *   add      —— 添加账号，显示全部入口
+ *   其它值   —— 给某个渠道刷新凭证，只显示该渠道的方式（action 与 mode 相同）
  */
 import { computed, ref, watch } from "vue";
 import { ChevronLeft, X } from "lucide-vue-next";
-import type { Channel } from "../api/types";
+import type { LoginEntryView } from "../api/types";
 
-/** 一个可选入口 */
-interface Entry {
-  key: string;
-  name: string;
+/** 渲染用的扁平项 */
+interface Item {
+  id: string;
+  action: string;
+  label: string;
   hint: string;
   initial: string;
-  /** qrcode 扫码 / sms 手机号验证码 / mpay 网易官方登录窗（账号密码等）/ 渠道网页登录；group 是二级菜单入口 */
-  kind: "qrcode" | "sms" | "mpay" | "channelscan" | "biliweb" | "m4399web" | "vivoweb" | "group";
-  channel: Channel;
+  kind: string;
 }
-
-/** 网易的入口（添加时的第二级 / 刷新时的直接列表）。
- *  手机号登录不再单独列出：官方登录窗里自带手机号登录（2026-10-26 起我们自己的
- *  短信接口被网易卡住，官方窗口是唯一稳定的路） */
-const NETEASE_ENTRIES: Entry[] = [
-  { key: "netease-qr", name: "扫码登录", hint: "用光遇手游 / 网易大神扫官方窗里的二维码", initial: "码", kind: "channelscan", channel: "netease" },
-  { key: "netease-pwd", name: "账号密码登录", hint: "网易官方登录窗：账号密码 / 手机号", initial: "密", kind: "mpay", channel: "netease" },
-];
-
-/** 添加账号的顶层入口 */
-const ADD_TOP: Entry[] = [
-  { key: "bili", name: "B站账号", hint: "在弹出的窗口里登录 B站账号", initial: "B", kind: "biliweb", channel: "bilibili" },
-  { key: "m4399", name: "4399账号", hint: "在弹出的窗口里登录 4399 账号", initial: "4", kind: "m4399web", channel: "m4399" },
-  { key: "vivo", name: "vivo账号", hint: "在弹出的窗口里登录 vivo 账号", initial: "V", kind: "vivoweb", channel: "vivo" },
-  { key: "huawei", name: "华为账号", hint: "用华为手机扫码", initial: "华", kind: "qrcode", channel: "huawei" },
-  // 渠道服扫码单独放到顶层：它开的是官方登录窗、窗口里直接就是二维码，
-  // 埋到「网易账号 → 第二级」里等于让用户多点两下（2026-11-05 反馈）。
-  { key: "netease-channel", name: "渠道服扫码", hint: "打开游戏到「加好友」界面扫码，支持华为 / vivo / B站 / 4399 / 九游", initial: "渠", kind: "channelscan", channel: "netease" },
-  { key: "netease-group", name: "网易账号", hint: "扫码 / 账号密码（含手机号）", initial: "网", kind: "group", channel: "netease" },
-];
-
-/** 九游只有"游戏内扫码"一种方式，单独一组 */
-const UC_ENTRIES: Entry[] = [
-  {
-    key: "uc-channel",
-    name: "游戏内扫码",
-    hint: "打开游戏到「加好友」界面扫一次，凭证会写回这个账号",
-    initial: "扫",
-    kind: "channelscan",
-    channel: "uc_platform",
-  },
-];
 
 const props = defineProps<{
   show: boolean;
-  mode: "channel" | "netease" | "bilibili" | "m4399" | "vivo" | "uc_platform" | "add";
-  /** 「渠道服扫码」的说明文字（后端给，渠道清单在 Go 侧维护） */
-  scanHelp?: string;
-}>();
-const emit = defineEmits<{
-  (e: "update:show", v: boolean): void;
-  (e: "pick", entry: Entry): void;
+  mode: string;
+  entries: LoginEntryView[];
 }>();
 
-/** 「添加账号」里网易是否已展开到第二级（弹窗内部状态，不惊动父层） */
-const neteaseOpen = ref(false);
+const emit = defineEmits<{
+  (e: "update:show", v: boolean): void;
+  (e: "pick", v: { action: string; kind: string }): void;
+}>();
+
+/** 展开中的二级分组 id（弹窗内部状态，不惊动父层） */
+const groupId = ref<string | null>(null);
 watch(
   () => props.show,
   (v) => {
-    if (!v) neteaseOpen.value = false;
+    if (!v) groupId.value = null;
   }
 );
 
-const FILTER: Record<string, Entry["channel"]> = {
-  channel: "huawei",
-  netease: "netease",
-  bilibili: "bilibili",
-  m4399: "m4399",
-  vivo: "vivo",
-  uc_platform: "uc_platform",
-};
+/** 把一个入口的某个方式转成可点项 */
+function toItem(entry: LoginEntryView, m: { kind: string; label: string; hint: string }): Item {
+  return {
+    id: `${entry.id}:${m.kind}`,
+    action: entry.action,
+    label: m.label,
+    hint: m.hint,
+    initial: entry.initial,
+    kind: m.kind,
+  };
+}
 
-const list = computed(() => {
-  if (props.mode === "uc_platform") return UC_ENTRIES;
-  if (props.mode === "add") return neteaseOpen.value ? NETEASE_ENTRIES : ADD_TOP;
-  return NETEASE_ENTRIES.concat(ADD_TOP).filter((e) => e.channel === FILTER[props.mode] && e.kind !== "group");
-});
-const TITLE: Record<string, string> = {
-  channel: "刷新凭证 · 华为",
-  netease: "刷新凭证 · 网易",
-  bilibili: "刷新凭证 · B站",
-  m4399: "刷新凭证 · 4399",
-  vivo: "刷新凭证 · vivo",
-  uc_platform: "刷新凭证 · 九游",
-  add: "添加账号",
-};
-const title = computed(() => (props.mode === "add" && neteaseOpen.value ? "添加账号 · 网易" : TITLE[props.mode]));
-const tip = computed(() => {
-  if (props.mode === "netease") return "三种方式最终都会保存同样的登录凭证，之后启动不用再输";
-  if (props.mode === "bilibili") return "重新登录同一个 B站账号，凭证会更新到这个账号上";
-  if (props.mode === "m4399") return "重新登录同一个 4399 账号，凭证会更新到这个账号上";
-  if (props.mode === "vivo") return "重新登录同一个小号，凭证会更新到这个账号上";
-  if (props.mode === "uc_platform") return "九游账号只能靠游戏内扫码：打开游戏到「加好友」界面扫一次";
-  if (props.mode === "add") {
-    return neteaseOpen.value
-      ? "三种方式最终都会保存同样的登录凭证，之后启动不用再输"
-      : props.scanHelp || "渠道服扫码：打开游戏到「加好友」界面点扫码，用对应渠道的 App 扫窗口里的二维码";
+const items = computed<Item[]>(() => {
+  const entries = props.entries ?? [];
+  if (props.mode !== "add") {
+    // 刷新凭证：只看这个渠道的登录方式，分组直接摊平
+    const out: Item[] = [];
+    for (const e of entries) {
+      if (e.action !== props.mode) continue;
+      for (const m of e.methods) out.push(toItem(e, m));
+    }
+    return out;
   }
-  return "用华为手机重新扫码，凭证会更新到这个账号上";
+  if (groupId.value) {
+    const g = entries.find((e) => e.id === groupId.value);
+    return g ? g.methods.map((m) => toItem(g, m)) : [];
+  }
+  return entries
+    .filter((e) => !e.onlyRefresh)
+    .map((e) => ({
+      id: e.id,
+      action: e.action,
+      label: e.label,
+      hint: e.hint,
+      initial: e.initial,
+      kind: e.group ? "group" : (e.methods[0]?.kind ?? ""),
+    }));
 });
 
-function onPick(e: Entry) {
-  if (e.kind === "group") {
-    neteaseOpen.value = true;
+/** 二级菜单时显示的父项（用于标题） */
+const groupEntry = computed(() => props.entries.find((e) => e.id === groupId.value) || null);
+
+const title = computed(() => {
+  if (props.mode === "add") {
+    return groupEntry.value ? `添加账号 · ${groupEntry.value.label.replace("账号", "")}` : "添加账号";
+  }
+  const e = props.entries.find((x) => x.action === props.mode);
+  return e ? `刷新凭证 · ${e.label.replace("账号", "")}` : "刷新凭证";
+});
+
+const tip = computed(() => {
+  if (props.mode === "add" && !groupId.value) {
+    const scan = props.entries.find((e) => e.id === "netease-channel");
+    return scan?.hint || "";
+  }
+  const first = items.value[0];
+  return first ? first.hint : "";
+});
+
+function onPick(item: Item) {
+  if (item.kind === "group") {
+    groupId.value = item.id;
     return;
   }
-  emit("pick", e);
+  emit("pick", { action: item.action, kind: item.kind });
 }
 
 function close() {
@@ -136,16 +125,16 @@ function close() {
   <div v-if="props.show" class="mask" @click.self="close">
     <div class="modal">
       <div class="mhead">
-        <button v-if="neteaseOpen" class="mback" title="返回" @click="neteaseOpen = false"><ChevronLeft /></button>
+        <button v-if="groupId" class="mback" title="返回" @click="groupId = null"><ChevronLeft /></button>
         <b>{{ title }}</b>
         <button class="mclose" @click="close"><X /></button>
       </div>
 
       <div class="list">
-        <button v-for="e in list" :key="e.key" class="entry" @click="onPick(e)">
+        <button v-for="e in items" :key="e.id" class="entry" @click="onPick(e)">
           <span class="icon">{{ e.initial }}</span>
           <span class="text">
-            <b>{{ e.name }}</b>
+            <b>{{ e.label }}</b>
             <small>{{ e.hint }}</small>
           </span>
         </button>

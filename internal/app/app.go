@@ -176,6 +176,7 @@ func RunUI(title string) error {
 		},
 		MpayChannelStart: StartChannelScanLogin,
 		ChannelScanInfo:  ChannelScanInfo,
+		LoginMethods:     LoginChannels,
 		SaveMpayDebug: func(dll, game string, skipLogout bool, dataPath string) error {
 			return SaveMpayDebug(MpayDebugConfig{DLL: dll, Game: game, SkipLogout: skipLogout, DataPath: dataPath})
 		},
@@ -202,12 +203,15 @@ func RunUI(title string) error {
 		ScanNow:            func() map[string]any { return scanToMap(currentScan()) },
 		ChannelLoginStart:  StartChannelWebLogin,
 		ChannelLoginStatus: ChannelLoginStatus,
-		AuthHint:           authHintView,
-		LaunchAlert:        launchAlertView,
-		Version:            func() string { return Version },
-		SaveRailWidth:      saveRailWidth,
-		SaveShell:          saveShell,
-		LoadShell:          loadShellIndex,
+		// 协议登录（九游账号密码）：不开窗，直接算凭证
+		ChannelPasswordStart: StartChannelPasswordLogin,
+		ChannelAnswer:        AnswerChannelAsk,
+		AuthHint:             authHintView,
+		LaunchAlert:          launchAlertView,
+		Version:              func() string { return Version },
+		SaveRailWidth:        saveRailWidth,
+		SaveShell:            saveShell,
+		LoadShell:            loadShellIndex,
 		PickPath: func() (string, error) {
 			return win.PickExeFile("选择光遇主程序 sky.exe")
 		},
@@ -299,8 +303,9 @@ type sauthParts struct {
 // buildSauth 拼出 uni_sauth 的请求体。
 func buildSauth(acc Account, dev *device.ClientProfile) (sauthParts, error) {
 	ch := netsec.HuaweiChannelInfo()
-	if channel.Known(acc.Channel) {
-		ch = channel.InfoOf(acc.Channel)
+	// 已登记的渠道服用自己的身份参数；未知渠道仍按华为（存量账号的 Channel 为空）
+	if info, ok := channel.InfoOf(acc.Channel); ok {
+		ch = info
 	}
 	p := sauthParts{
 		UID:     acc.PlayerID,
