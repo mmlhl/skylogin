@@ -88,7 +88,7 @@ type Hooks struct {
 	ChannelLoginStatus func(key string) map[string]any
 	// 渠道协议登录（九游账号密码）：不开窗，Go 侧直接算凭证，
 	// 进度复用 ChannelLoginStatus（其中 ask 非空时要弹表单）。
-	ChannelPasswordStart func(key string) error
+	ChannelPasswordStart func(key, method string) error
 	ChannelAnswer        func(key string, vals map[string]string) error
 	AuthHint             func() map[string]any
 	LaunchAlert          func() map[string]any
@@ -615,9 +615,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/channel/login/start", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Channel string `json:"channel"`
+			// Method 是登录方式：password / sms。空表示账号密码。
+			Method string `json:"method"`
 		}
 		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&body)
-		if err := s.hooks.ChannelPasswordStart(body.Channel); err != nil {
+		if err := s.hooks.ChannelPasswordStart(body.Channel, body.Method); err != nil {
 			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
 			return
 		}
@@ -855,3 +857,4 @@ func staticHandler() http.Handler {
 		files.ServeHTTP(w, r2)
 	})
 }
+

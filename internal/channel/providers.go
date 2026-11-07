@@ -105,6 +105,7 @@ func init() {
 		label: LabelOf(KeyUC),
 		methods: []Method{
 			ucPassword{},
+			ucSMS{},
 			packageMethod{
 				label: "游戏内扫码",
 				hint:  "打开游戏到「加好友」界面扫一次，凭证会写回这个账号",

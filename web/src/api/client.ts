@@ -153,11 +153,12 @@ export const api = {
   channelLoginStatus: (key: string) => request(`/api/${key}/login/status`),
 
   /**
-   * 渠道「协议登录」（九游账号密码）：不开窗，Go 侧直接算凭证。
+   * 渠道「协议登录」（九游密码 / 验证码）：不开窗，Go 侧直接算凭证。
+   * method 传 password 或 sms（空即账号密码）。
    * 立即返回，进度走 channelLoginStatus；需要用户输入时 status 里带 ask。
    */
-  startChannelPasswordLogin: (key: string) =>
-    request("/api/channel/login/start", { method: "POST", body: JSON.stringify({ channel: key }) }),
+  startProtocolLogin: (key: string, method = "password") =>
+    request("/api/channel/login/start", { method: "POST", body: JSON.stringify({ channel: key, method }) }),
 
   /** 提交上一步 ask 的答案（表单各字段或选项的 value） */
   answerChannelAsk: (key: string, values: Record<string, string>) =>
@@ -249,6 +250,8 @@ export const api = {
   smsLogin: (mobile: string, code: string, targetUserId = "") =>
     request("/api/sms/login", { method: "POST", body: JSON.stringify({ mobile, code, targetUserId }) }),
 };
+
+
 
 
 

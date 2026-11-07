@@ -70,8 +70,10 @@ const showScan = ref(false);
 const showHuawei = ref(false);
 const showSettings = ref(false);
 const showMpayLogin = ref(false);
-/** 渠道协议登录（九游账号密码）：kind 是渠道 key，空表示关着 */
+/** 渠道协议登录（九游密码 / 验证码）：kind 是渠道 key，空表示关着 */
 const askKind = ref("");
+/** 具体是哪种方式：password / sms */
+const askMethod = ref("password");
 
 /** 刷新凭证时的目标账号（空表示新增账号） */
 const refreshTarget = ref<{ accountId: string; name: string } | null>(null);
@@ -118,6 +120,7 @@ async function onPick(entry: { action: string; kind: string }) {
       // 前端只负责把后端要的表单渲染出来
       if (entry.action === "uc_platform") {
         askKind.value = "uc_platform";
+        askMethod.value = "password";
         return;
       }
       // 官方 mpay.dll 弹窗登录：打不开也把进度窗口打开，里面会显示原因
@@ -126,6 +129,13 @@ async function onPick(entry: { action: string; kind: string }) {
       return;
     }
     case "sms":
+      // 九游的验证码登录同样走协议直连，复用同一个问答弹窗；
+      // 其余渠道的短信登录还是官方那套独立窗口。
+      if (entry.action === "uc_platform") {
+        askKind.value = "uc_platform";
+        askMethod.value = "sms";
+        return;
+      }
       showSMS.value = true;
       return;
     case "qr":
@@ -189,6 +199,7 @@ onUnmounted(() => {
         <ChannelAskDialog
           :show="!!askKind"
           :kind="askKind"
+          :method="askMethod"
           @update:show="(v: boolean) => !v && (askKind = '')"
         />
         <MpayLoginDialog v-model:show="showMpayLogin" />
@@ -200,3 +211,4 @@ onUnmounted(() => {
     </n-message-provider>
   </n-config-provider>
 </template>
+

@@ -13,24 +13,27 @@ import (
 	"skylogin/internal/channel"
 )
 
-// StartChannelPasswordLogin 用「账号密码」方式登录某个渠道（不开窗）。
+// StartChannelMethodLogin 用指定方式登录某个渠道（不开窗）。
 //
-// 立即返回，进度由 /api/<key>/login/status 轮询；需要用户输入时
-// status 里会带 ask，前端提交到 /api/<key>/login/answer。
-func StartChannelPasswordLogin(key string) error {
+// method 为空时按「账号密码」处理，兼容只认 password 的旧调用。
+func StartChannelMethodLogin(key, method string) error {
 	pv, ok := channel.Lookup(key)
 	if !ok {
 		return fmt.Errorf("不支持的渠道: %s", key)
 	}
+	want := channel.Kind(method)
+	if want == "" {
+		want = channel.KindPassword
+	}
 	var m channel.Method
 	for _, x := range pv.Methods() {
-		if x.Kind() == channel.KindPassword {
+		if x.Kind() == want {
 			m = x
 			break
 		}
 	}
 	if m == nil {
-		return fmt.Errorf("%s 不支持账号密码登录", pv.Label())
+		return fmt.Errorf("%s 不支持「%s」这种方式", pv.Label(), method)
 	}
 
 	tr := trackerOf(key)
@@ -40,6 +43,11 @@ func StartChannelPasswordLogin(key string) error {
 
 	go runChannelMethod(key, tr, m)
 	return nil
+}
+
+// StartChannelPasswordLogin 只走账号密码，保留给旧调用点。
+func StartChannelPasswordLogin(key string) error {
+	return StartChannelMethodLogin(key, string(channel.KindPassword))
 }
 
 // runChannelMethod 跑一次 Method.Login，成功后校验并落库。

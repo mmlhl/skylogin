@@ -204,7 +204,7 @@ func RunUI(title string) error {
 		ChannelLoginStart:  StartChannelWebLogin,
 		ChannelLoginStatus: ChannelLoginStatus,
 		// 协议登录（九游账号密码）：不开窗，直接算凭证
-		ChannelPasswordStart: StartChannelPasswordLogin,
+		ChannelPasswordStart: StartChannelMethodLogin,
 		ChannelAnswer:        AnswerChannelAsk,
 		AuthHint:             authHintView,
 		LaunchAlert:          launchAlertView,

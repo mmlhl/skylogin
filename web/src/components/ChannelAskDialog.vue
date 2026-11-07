@@ -30,7 +30,7 @@ interface Ask {
   options: AskOption[];
 }
 
-const props = defineProps<{ show: boolean; kind: string; title?: string }>();
+const props = defineProps<{ show: boolean; kind: string; method?: string; title?: string }>();
 const emit = defineEmits<{ (e: "update:show", v: boolean): void; (e: "done"): void }>();
 
 const message = ref("");
@@ -85,7 +85,7 @@ async function start() {
   ask.value = null;
   values.value = {};
   try {
-    await api.startChannelPasswordLogin(props.kind);
+    await api.startProtocolLogin(props.kind, props.method || "password");
     void poll();
     timer = window.setInterval(poll, 1200);
   } catch (e: any) {
@@ -306,3 +306,5 @@ input:focus {
   cursor: default;
 }
 </style>
+
+
