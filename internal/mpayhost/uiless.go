@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -37,6 +38,10 @@ const (
 	ActionSetUser UILessAction = "setuser" // SetUserInfoLoginByUrs
 	ActionToken   UILessAction = "token"   // UILessTokenLogin
 	ActionTicket  UILessAction = "ticket"  // TicketLogin
+	// ActionList 调 GetAccountList：问 DLL "你记住的账号有哪些"。
+	// 平台客户端那个"记住上次的账号，是否登录"就是这个列表，用它可以直接
+	// 看到某个号（尤其是渠道服扫进来的号）有没有被记住。
+	ActionList UILessAction = "list"
 )
 
 // UILessOptions 是诊断需要的输入。
@@ -50,7 +55,11 @@ type UILessOptions struct {
 	Device  string       // 设备号：非空时先 SetDeviceInfo，再调接口
 	Ch      string       // app_channel：空 = a50_sdk_cn
 	FakeURL bool         // true 时把服务地址指到本地假服务器（看 DLL 发什么）
-	WaitSec int          // 调完之后等回调的时间
+	// Platform 非空且登录成功时，顺手调 SetUserPlatform（ad / ios / hm）。
+	// 目的：把"这个账号玩的是哪个手机平台"直接写进 DLL 的记录，
+	// 免得游戏登录后再弹一次 iOS/安卓选择框。
+	Platform string
+	WaitSec  int // 调完之后等回调的时间
 }
 
 // 这些必须是包级变量：DLL 会长期持有字符串地址，GC 不能回收
@@ -113,6 +122,8 @@ func ProbeUILess(o UILessOptions) Result {
 	setParentWindow(dll, hwnd)
 	setDataPath(dll, o.DataPath)
 	setSkin(dll, inst, o.SkinZip)
+	// list 模式下账号列表走的是"指针参数"，认不出内容时得看原始字节
+	dumpArgs = o.Action == ActionList
 	buildCallbacksLogged()
 
 	game, _ := syscall.BytePtrFromString(o.GameID)
@@ -179,6 +190,8 @@ func ProbeUILess(o UILessOptions) Result {
 		callUILessTokenLogin(dll, inst, o.UID, o.Token)
 	case ActionTicket:
 		callTicketLogin(dll, inst, o.Ticket)
+	case ActionList:
+		callGetAccountList(dll, inst)
 	default:
 		return fail("未知动作: " + string(o.Action))
 	}
@@ -186,7 +199,16 @@ func ProbeUILess(o UILessOptions) Result {
 	// 泵消息，等回调（登录成功/失败）
 	logf("等待回调 %d 秒…", o.WaitSec)
 	if res, ok := waitResult(o.WaitSec); ok {
+		if o.Platform != "" && res.OK {
+			callSetUserPlatform(dll, inst, o.Platform)
+		}
 		return res
+	}
+
+	// list 只是"读一下列表"，本来就不该有登录结果，等到这里就收工
+	if o.Action == ActionList {
+		logf("list 模式结束（账号列表见上面被触发的回调槽位）")
+		return Result{OK: false, Error: "list 模式只读列表，没有登录结果", Finished: time.Now().Unix()}
 	}
 
 	// 还没结果：主动要一张票看看
@@ -269,8 +291,62 @@ func callTicketLogin(dll *syscall.DLL, inst uintptr, ticket string) {
 		return
 	}
 	t, _ := syscall.BytePtrFromString(ticket)
-	logf("调用 TicketLogin(%d 字符)", len(ticket))
-	proc.Call(inst, uintptr(unsafe.Pointer(t)), 1)
+	// 第二个参数语义不明（官方两处调用都传 1）；排查 login_type=unknown 时
+	// 允许用环境变量改成 0 试一次。
+	second := uintptr(1)
+	if os.Getenv("SKYLOGIN_TICKET_BOOL0") == "1" {
+		second = 0
+	}
+	logf("调用 TicketLogin(%d 字符, bool=%d)", len(ticket), second)
+	proc.Call(inst, uintptr(unsafe.Pointer(t)), second)
+}
+
+// callGetAccountList 调 GetAccountList()：让 DLL 把它记住的账号列表回调出来。
+//
+// 这个接口没有参数也没有返回值，结果全走 ApiCallBack 的某个槽位，
+// 所以调用方要用 buildCallbacksLogged 那套"每个槽位都记一笔"的回调表。
+func callGetAccountList(dll *syscall.DLL, inst uintptr) {
+	proc, err := dll.FindProc("?GetAccountList@CMpay_Interface@Mpay@@QEAAXXZ")
+	if err != nil {
+		logf("没有 GetAccountList: %v", err)
+		return
+	}
+	logf("调用 GetAccountList()（读 DLL 记住的账号）")
+	proc.Call(inst)
+}
+
+// callSetUserPlatform 调 SetUserPlatform(platform)：把"这个账号玩哪个平台"记进 DLL。
+//
+// 只接受 ad / ios / hm（DLL 里的报错原文：only support 'ad', 'ios', 'hm'）。
+// 它改的是**当前用户**的记录，所以必须已经登录成功再调；成功了游戏那边
+// 就不会再弹"你玩的是 iOS 还是安卓"。
+func callSetUserPlatform(dll *syscall.DLL, inst uintptr, platform string) {
+	proc, err := dll.FindProc("?SetUserPlatform@CMpay_Interface@Mpay@@QEAA_NPEBD@Z")
+	if err != nil {
+		logf("这个 mpay.dll 没有 SetUserPlatform: %v", err)
+		return
+	}
+	p, _ := syscall.BytePtrFromString(platform)
+	r, _, _ := proc.Call(inst, uintptr(unsafe.Pointer(p)))
+	logf("SetUserPlatform(%s) -> %d", platform, r)
+}
+
+// setPlatformWanted 返回"要不要替用户固定平台、固定成哪个"。
+//
+// 两个开关，环境变量优先（命令行启动时用），否则读文件——
+// 用户平时是双击 exe，环境变量带不进去，只有文件这条路走得通。
+// 文件：%APPDATA%\SkyLogin\set_platform.txt，内容写 ad / ios / hm。
+func setPlatformWanted() string {
+	if v := strings.TrimSpace(os.Getenv("SKYLOGIN_SET_PLATFORM")); v != "" {
+		return v
+	}
+	p := filepath.Join(os.Getenv("APPDATA"), "SkyLogin", "set_platform.txt")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return ""
+	}
+	line := strings.TrimSpace(strings.SplitN(string(b), "\n", 2)[0])
+	return line
 }
 
 // LoadSlotsFile 读 channel_login_slots.json 里的 slots 数组。

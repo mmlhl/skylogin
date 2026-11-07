@@ -534,19 +534,115 @@ func buildCallbacksLogged() {
 // argText 把一个回调参数尽量解释成人能看懂的东西。
 //
 // 小整数直接打数值；像指针的地址先试读成字符串（前 4 个字节都可打印才算），
-// 读不出来就打地址，避免把随机内存当字符串读崩。
+// 读不出来再按 UTF-16 试一次（DLL 内部大量用宽字符），都不行就打地址 +
+// 一小段十六进制，避免把随机内存当字符串读崩。
 func argText(v uintptr) string {
 	if v < 0x10000 {
 		return fmt.Sprintf("%d", v)
 	}
-	if !looksLikeString(v) {
+	var parts []string
+	if s, ok := readJSONAt(v); ok {
+		return s
+	}
+	if dumpArgs {
+		parts = append(parts, "hex:"+hexPeek(v, 128))
+	}
+	if looksLikeString(v) {
+		s := goString(v)
+		if len(s) > 200 {
+			s = s[:200] + "…"
+		}
+		parts = append(parts, fmt.Sprintf("ascii:%q", s))
+	} else if s := lookStringUTF16(v, 200); s != "" {
+		parts = append(parts, "u16:"+fmt.Sprintf("%q", s))
+	}
+	if len(parts) == 0 {
 		return fmt.Sprintf("0x%x", v)
 	}
-	s := goString(v)
-	if len(s) > 200 {
-		s = s[:200] + "…"
+	return fmt.Sprintf("0x%x ", v) + strings.Join(parts, " ")
+}
+
+// readJSONAt 判断地址开头是不是 JSON（'{' 或 '['），是就整段读到 NUL。
+//
+// 为什么单独做：DLL 的账号列表是带换行/缩进的 JSON，首字节不是可打印的
+// "连续 4 字节"，用 looksLikeString 那套会判成"不是字符串"，列表就被截成
+// 一小段十六进制了。
+func readJSONAt(p uintptr) (string, bool) {
+	if p < 0x10000 {
+		return "", false
 	}
-	return fmt.Sprintf("%q", s)
+	c0 := *(*byte)(unsafe.Pointer(p))
+	if c0 != '{' && c0 != '[' {
+		return "", false
+	}
+	var sb strings.Builder
+	for i := 0; i < 8192; i++ {
+		c := *(*byte)(unsafe.Pointer(p + uintptr(i)))
+		if c == 0 {
+			return sb.String(), true
+		}
+		if c < 9 || (c > 13 && c < 32) {
+			return "", false
+		}
+		sb.WriteByte(c)
+	}
+	return "", false
+}
+
+// dumpArgs 打开后，认不出来的指针参数会额外附一段十六进制（诊断用）。
+var dumpArgs bool
+
+// lookStringUTF16 把地址当成以 NUL 结尾的宽字符串读，不像文本就返回空串。
+//
+// 起点会试 p、p+1、p-1：DLL 有时把宽字符串塞在结构体里，指针落在首字节
+// 或末字节上，直接按 p 读会整体错位一个字节（读出来是一串怪字）。
+func lookStringUTF16(p uintptr, max int) string {
+	best := ""
+	for _, off := range []int{0, 1, -1} {
+		addr := p
+		if off > 0 {
+			addr = p + uintptr(off)
+		} else if off < 0 {
+			if p < 2 {
+				continue
+			}
+			addr = p - 1
+		}
+		if s := readUTF16(addr, max); len(s) > len(best) {
+			best = s
+		}
+	}
+	return best
+}
+
+// readUTF16 从 addr 起按宽字符读到 NUL 为止；遇到控制字符就判为"不是文本"。
+func readUTF16(addr uintptr, max int) string {
+	var sb strings.Builder
+	for i := 0; i < max; i++ {
+		c := *(*uint16)(unsafe.Pointer(addr + uintptr(i*2)))
+		if c == 0 {
+			return sb.String()
+		}
+		// 控制字符、代理区、以及明显不是文字的码位，直接判为"不是字符串"
+		if c < 32 || (c >= 0xD800 && c <= 0xDFFF) || c == 0xFFFF {
+			return ""
+		}
+		sb.WriteRune(rune(c))
+	}
+	return ""
+}
+
+// hexPeek 读一段内存做十六进制 + 可打印预览（长度受限，读崩的风险和读字符串一样）。
+func hexPeek(p uintptr, n int) string {
+	b := make([]byte, n)
+	for i := 0; i < n; i++ {
+		b[i] = *(*byte)(unsafe.Pointer(p + uintptr(i)))
+	}
+	var sb strings.Builder
+	for _, c := range b {
+		fmt.Fprintf(&sb, "%02x", c)
+	}
+	return sb.String()
 }
 
 // looksLikeString 粗判一个地址指向的是不是可打印文本（只看前 4 字节）。
@@ -652,6 +748,13 @@ func onLoginFinish(this, code, info uintptr) uintptr {
 	loginOK = true
 	mu.Unlock()
 
+	// 诊断/试验：登录成功这一刻把"这个账号玩哪个平台"写死。
+	// 官方客户端是登录完让用户点 iOS/安卓，选完 DLL 自己记下来；我们在这里
+	// 替用户点，之后游戏里就不该再弹那个选择框了。
+	if plat := setPlatformWanted(); plat != "" {
+		callSetUserPlatform(dllHandle, this, plat)
+	}
+
 	// 渠道服扫的码：拿回来的是渠道账号（slot7=huawei 这种），MPay 没有它的票。
 	// 但回调里带着华为的 openid + accessToken，交给主进程换 gameAuthSign 存成渠道账号。
 	if ch := slotAt(got, 7); ch != "" && ch != "netease" {
@@ -660,6 +763,12 @@ func onLoginFinish(this, code, info uintptr) uintptr {
 		logf("扫码的是渠道服（%s）：openid %d 字符，accessToken %d 字符，登录包 %d 字符",
 			ch, len(openid), len(access), len(unisdk))
 		dumpChannelSlots(got)
+		// 诊断：问一句 DLL 肯不肯自己给这个 unisdk 账号出票。
+		// 它要是肯，"记住账号"和"取票"就都不用我们操心了；不肯也只是一条日志。
+		if askChannelTicketEnabled() {
+			askChannelTicketFor(this, got, ch, openid, access, unisdk)
+			return 0
+		}
 		// 华为走 sdk_info（openid + accessToken）；vivo 这类只给整包
 		// （extra_unisdk_data），两者有一个可用就算拿到凭证。
 		if access == "" && unisdk == "" {
@@ -689,8 +798,66 @@ func onLoginFinish(this, code, info uintptr) uintptr {
 	return 0
 }
 
+// 渠道服取票诊断（环境变量 SKYLOGIN_ASK_CHANNEL_TICKET=1 打开）。
+//
+// 为什么要试：渠道服扫码时 MPay 已经回了 code=0（它认为这次登录成功了），
+// 但本地"记住的账号"列表里始终只有网易号。如果它其实也能给 unisdk 账号
+// 出票，说明"没记住"跟票据无关、是别的地方漏了；出不了票，那就是 MPay
+// 把渠道服登录当成"半程"，不落库也说得通。
+var (
+	awaitingChannelTicket bool
+	channelTicket         string
+)
+
+// askChannelTicketEnabled 读环境变量（子进程会继承，界面上不用加开关）。
+func askChannelTicketEnabled() bool {
+	return os.Getenv("SKYLOGIN_ASK_CHANNEL_TICKET") == "1"
+}
+
+// askChannelTicketFor 渠道服登录成功后也向 DLL 要一张票，记完日志再照常交付。
+//
+// 不能立刻把结果交出去：票是异步回调回来的，主进程一收到就会收工、
+// 关窗退出，所以先等 8 秒，让 onTicketResult 有机会把结论写进日志。
+func askChannelTicketFor(inst uintptr, got []string, ch, openid, access, unisdk string) {
+	mu.Lock()
+	awaitingChannelTicket = true
+	channelTicket = ""
+	mu.Unlock()
+
+	logf("[诊断] 渠道服 %s 登录成功，再向 DLL 要一张票（看它认不认 unisdk 账号）", ch)
+	if tp, err := dllHandle.FindProc("?GetUserTicket@CMpay_Interface@Mpay@@QEAAXXZ"); err != nil {
+		logf("[诊断] 这个 DLL 没有 GetUserTicket: %v", err)
+	} else {
+		tp.Call(inst)
+	}
+
+	go func() {
+		time.Sleep(8 * time.Second)
+		mu.Lock()
+		t := channelTicket
+		awaitingChannelTicket = false
+		mu.Unlock()
+		logf("[诊断] 渠道服取票结论：%d 字符", len(t))
+		emit(Result{OK: true, DeviceID: slotAt(got, 1), Account: accountOf(got), Slots: got,
+			Channel: ch, OpenID: openid, AccessToken: access, UnisdkData: unisdk})
+	}()
+}
+
 func onTicketResult(this, code, ticket, _ uintptr) uintptr {
 	t := goString(ticket)
+
+	// 渠道服取票诊断：这时候结果只记日志，不能当成"登录完成"抛出去，
+	// 否则主进程会拿着一张来路不明的票去换 token。
+	mu.Lock()
+	probing := awaitingChannelTicket
+	if probing {
+		channelTicket = t
+	}
+	mu.Unlock()
+	if probing {
+		logf("[诊断] DLL 对渠道服账号的回票: code=%d ticket=%d 字符", code, len(t))
+		return 0
+	}
 
 	mu.Lock()
 	got := append([]string(nil), slots...)

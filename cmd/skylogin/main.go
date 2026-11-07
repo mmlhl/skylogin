@@ -64,6 +64,10 @@ func main() {
 	qrProbeHosted := flag.Bool("qr-probe-hosted", false, "建托管码（a50 + dst_jf_game_id=ma75），而不是游戏码")
 	pkgProbe := flag.Bool("probe-channel-package", false, "验证 channel_login_slots.json 里的渠道整包还能不能换出登录态（开发用）")
 	refreshProbe := flag.Bool("probe-refresh", false, "验证渠道服账号能不能用 refresh_token 续期（开发用）")
+	recallProbe := flag.String("probe-recall", "", "验证加载湾的\"记住槽\"认不认识某个账号（参数是 account_id）")
+	accountsProbe := flag.Bool("probe-accounts", false, "打印本地账号清单（名字、键、渠道、uid）")
+	sauthProbe := flag.String("probe-sauth", "", "试网易账号走 uni_sauth 并声明 platform（参数是账号 key，默认 ad）")
+	sauthPlat := flag.String("probe-sauth-platform", "ad", "配合 --probe-sauth：声明成哪个平台（ad / ios / hm）")
 	myappProbe := flag.Bool("probe-myapp", false, "应用宝微信扫码探针（开发用）")
 	uilessMode := flag.String("probe-uiless", "", "诊断：直接调 mpay.dll 的无界面登录接口（setuser / token / ticket）")
 	uilessFile := flag.String("uiless-file", "", "setuser 用的槽位文件（默认 channel_login_slots.json）")
@@ -75,6 +79,7 @@ func main() {
 	uilessDevice := flag.String("uiless-device", "", "先 SetDeviceInfo 再调接口（换票要同一个设备号）")
 	uilessCh := flag.String("uiless-channel", "", "init 用的 app_channel（空 = a50_sdk_cn；试 myapp）")
 	uilessFake := flag.Bool("uiless-fake-api", false, "把服务地址指到本地假服务器，看 DLL 发什么")
+	uilessPlatform := flag.String("uiless-platform", "", "ticket 模式登录成功后，顺手调 SetUserPlatform（ad / ios / hm）")
 	loginTimeout := flag.Int("timeout", 0, "登录窗等待秒数（0 = 默认 5 分钟）")
 	flag.Parse()
 
@@ -97,12 +102,33 @@ func main() {
 		app.ProbeRefreshToken()
 		return
 	}
+	if *recallProbe != "" {
+		if err := app.ProbeRecall(*recallProbe); err != nil {
+			fmt.Fprintln(os.Stderr, "探针结果:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if *accountsProbe {
+		if err := app.ProbeAccounts(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	if *sauthProbe != "" {
+		if err := app.ProbeNeteaseUnisdk(*sauthProbe, *sauthPlat); err != nil {
+			fmt.Fprintln(os.Stderr, "探针结果:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *myappProbe {
 		app.ProbeMyApp()
 		return
 	}
 	if *uilessMode != "" {
-		runUILessProbe(*uilessMode, *uilessFile, *uilessUID, *uilessToken, *uilessAccount, *uilessAtk, *uilessOpenid, *uilessDevice, *uilessCh, *uilessFake, *skyDir, *skin, *game, *logPath)
+		runUILessProbe(*uilessMode, *uilessFile, *uilessUID, *uilessToken, *uilessAccount, *uilessAtk, *uilessOpenid, *uilessDevice, *uilessCh, *uilessFake, *uilessPlatform, *skyDir, *skin, *game, *logPath)
 		return
 	}
 
@@ -140,7 +166,7 @@ func main() {
 //
 // 目的：验证"能不能让 DLL 自己认账号"——成了就不用去解 mpay.db 的加密。
 // 结果写日志，进程跑完硬退出（和 mpaylogin 一样，避免 WebView2 线程卡住）。
-func runUILessProbe(mode, slotsFile, uid, token, account, atk, openid, device, channel string, fakeAPI bool, skyDir, skin, game, logPath string) {
+func runUILessProbe(mode, slotsFile, uid, token, account, atk, openid, device, channel string, fakeAPI bool, platform, skyDir, skin, game, logPath string) {
 	if skyDir == "" {
 		fmt.Fprintln(os.Stderr, "probe-uiless 需要 --sky")
 		os.Exit(2)
@@ -153,12 +179,13 @@ func runUILessProbe(mode, slotsFile, uid, token, account, atk, openid, device, c
 			Channel: "a50_sdk_cn",
 			LogPath: logPath,
 		},
-		Action:  mpayhost.UILessAction(mode),
-		UID:     uid,
-		Token:   token,
-		Device:  device,
-		Ch:      channel,
-		FakeURL: fakeAPI,
+		Action:   mpayhost.UILessAction(mode),
+		UID:      uid,
+		Token:    token,
+		Device:   device,
+		Ch:       channel,
+		FakeURL:  fakeAPI,
+		Platform: platform,
 	}
 	if slotsFile == "" {
 		slotsFile = filepath.Join(os.Getenv("APPDATA"), "SkyLogin", "channel_login_slots.json")
@@ -183,7 +210,13 @@ func runUILessProbe(mode, slotsFile, uid, token, account, atk, openid, device, c
 		fmt.Printf("已用外部 atk 签票（%d 字符）\n", len(tk))
 	}
 	if mode == string(mpayhost.ActionTicket) && o.Ticket == "" {
+		// 渠道服账号走整包签票；网易账号没有整包，得走 create_ticket 那条，
+		// 两种都试一遍，省得每次还得记住该用哪个参数。
 		tk, who, err := app.MintTicketForProbe(account)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "渠道整包签票没成，改试网易账号:", err)
+			tk, who, err = app.MintTicketForNetEase(account)
+		}
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "签票失败:", err)
 			os.Exit(2)

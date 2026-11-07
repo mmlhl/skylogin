@@ -58,6 +58,37 @@ func MintTicketForProbe(accountID string) (string, string, error) {
 	return ticket, displayName(acc), nil
 }
 
+// MintTicketForNetEase 给网易账号签一张票（诊断用）。
+//
+// 和渠道服那条不同：网易账号走的是 mintTicket（create_ticket / 记住槽），
+// 和启动游戏时签的票完全同源，拿去给 TicketLogin 才有可比性。
+func MintTicketForNetEase(accountID string) (string, string, error) {
+	list, err := loadAccounts()
+	if err != nil || len(list) == 0 {
+		return "", "", fmt.Errorf("还没有账号")
+	}
+	acc, found := findAccount(list, accountID)
+	if !found {
+		return "", "", fmt.Errorf("没找到账号（%s）", accountID)
+	}
+	if !canUseNetEase(acc) {
+		return "", "", fmt.Errorf("%s 不是能现签的网易账号", displayName(acc))
+	}
+	dev, derr := device.LoadOrCreateClient(filepath.Join(dataDir(), "sdk_device.json"))
+	if derr != nil {
+		return "", "", fmt.Errorf("设备标识不可用: %w", derr)
+	}
+	t, ch, terr := mintTicket(acc, dev)
+	if terr != nil {
+		return "", "", fmt.Errorf("签票失败: %w", terr)
+	}
+	if t == "" {
+		return "", "", fmt.Errorf("票是空的")
+	}
+	logf("诊断：已为 %s 签出票据（%d 字符，channel=%s）", displayName(acc), len(t), ch)
+	return t, displayName(acc), nil
+}
+
 // MintTicketWithCred 用指定凭证签票（诊断用，不落库、不改任何账号）。
 //
 // 场景：安卓端刚登录拿到的 atk 是最新的，而本地存的可能已经被顶掉
