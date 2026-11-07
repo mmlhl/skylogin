@@ -55,19 +55,48 @@ type Client struct {
 	Game    GameInfo
 	Verbose bool
 
-	fetchMu        sync.Mutex // 串行化「取会话公钥」，避免并发重复打服务端
-	mu             sync.Mutex
-	publicKey      string      // getSecurityKey 下发的原文，空表示还没取到
-	lastCode       int         // 上一次 call 的业务码，供需要分支的接口判断
-	clientOverride *ClientInfo // 非空时覆盖内置的 client 段
+	fetchMu   sync.Mutex // 串行化「取会话公钥」，避免并发重复打服务端
+	mu        sync.Mutex
+	publicKey string // getSecurityKey 下发的原文，空表示还没取到
+	lastCode  int    // 上一次 call 的业务码，供需要分支的接口判断
+
+	// 设备环境。dev 按账号固定，csid 每次会话新生成，其余两项由服务端下发。
+	dev       Device
+	csid      string
+	werewolf  string // getSecurityKey 响应里的 crcCode / device
+	si        string // si.apply 下发的风控 token
+	siClaimed bool   // 是否已经尝试过 si.apply（失败也不再重试，避免拖慢登录）
 }
 
 // New 创建客户端。game 由调用方按当前游戏与渠道填。
+//
+// 设备档案默认随机挑一台真机；要用某个账号已绑定的设备，
+// 调用方随后用 SetDevice 覆盖。
 func New(game GameInfo) *Client {
 	return &Client{
 		HTTP: &http.Client{Timeout: 20 * time.Second},
 		Game: game,
+		dev:  RandomDevice(),
+		csid: randomUUID(),
 	}
+}
+
+// SetDevice 绑定一台设备。传零值时回到随机设备。
+func (c *Client) SetDevice(d Device) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if d.Valid() {
+		c.dev = d
+	} else {
+		c.dev = RandomDevice()
+	}
+}
+
+// Device 返回本客户端当前使用的设备档案（调用方落盘用）。
+func (c *Client) Device() Device {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.dev
 }
 
 // state 是服务端统一的状态块。
@@ -164,12 +193,17 @@ const (
 // 信封版本 1、game.brandId 空串；业务请求则是版本 5、brandId "JY"。
 func (c *Client) callWith(pub *rsa.PublicKey, host, service string, data any, st stage) (json.RawMessage, error) {
 	envVersion, brandID := 5, "JY"
-	var client any = SkyBizClient()
+	dev, csid, werewolf, si := c.environ()
+	var client any = bizSegment(dev, csid, werewolf, si)
 	if st == stageBootstrap {
-		envVersion, brandID, client = 1, "", SkyClient()
+		envVersion, brandID, client = 1, "", bootstrapSegment(dev, csid, si)
 	}
 	game := c.Game
 	game.BrandID = brandID
+	// 游戏安装时间跟着设备档案走：换设备就等于换了一份安装记录
+	if dev.InstalledAt > 0 {
+		game.FirstInstallAt = dev.InstalledAt
+	}
 	body, err := json.Marshal(request{
 		ID:      time.Now().UnixMilli(),
 		Service: service,
@@ -314,7 +348,27 @@ func (c *Client) ensureKey() (*rsa.PublicKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("公钥不可用: %w", err)
 	}
+	c.applySIOnce()
 	return pub, nil
+}
+
+// applySIOnce 在拿到会话公钥之后补一次 si.apply，只试一次。
+//
+// 放在这里是因为它是「初始化链」的第二半：官方 SDK 也是先 getSecurityKey、
+// 再 si.apply，之后才开始发业务请求。失败就放弃，不重试也不影响登录——
+// 反正之前一直没带 si 也能登，不能因为补这个把登录拖挂。
+func (c *Client) applySIOnce() {
+	c.mu.Lock()
+	if c.siClaimed || c.si != "" {
+		c.mu.Unlock()
+		return
+	}
+	c.siClaimed = true
+	c.mu.Unlock()
+
+	if err := c.ApplySI(); err != nil && c.Verbose {
+		fmt.Printf("[ucsdk] si.apply 失败（继续，不带 si）: %v\n", err)
+	}
 }
 
 // SetPublicKey 注入一份公钥（例如从抓包或配置里拿到的）。
@@ -333,23 +387,48 @@ func (c *Client) Call(host, service string, data any) (json.RawMessage, error) {
 	return c.call(host, service, data)
 }
 
-// SetClient 改写请求里的 client 段。
-// 传 nil 表示回到内置的设备环境（抓包时的 OnePlus PJZ110）。
-func (c *Client) SetClient(v *ClientInfo) {
+// environ 一次性取出本次请求要用的设备环境。
+//
+// 分开加锁读四次会让并发请求拿到「半新半旧」的组合（比如新 csid 配旧设备），
+// 真机不会出现这种状态，所以这里一次取齐。
+func (c *Client) environ() (Device, string, string, string) {
 	c.mu.Lock()
-	c.clientOverride = v
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+	return c.dev, c.csid, c.werewolf, c.si
 }
 
-// client 返回本次请求使用的 client 段。
-func (c *Client) client() ClientInfo {
-	c.mu.Lock()
-	v := c.clientOverride
-	c.mu.Unlock()
-	if v != nil {
-		return *v
+// bootstrapSegment 是取公钥阶段的 client 段。
+//
+// 这一段的 ex 没有 werewolf 前缀，bssid / ssid / oaId 都是空的——
+// 那时服务端还没下发设备摘要，真机也不会提前报。
+func bootstrapSegment(d Device, csid, si string) ClientInfo {
+	return ClientInfo{
+		Ve:    appVersion,
+		Os:    "android",
+		Fr:    d.frame(),
+		Si:    si,
+		Ci:    "6447c470f7716382a74697d5d456baa0",
+		Ex:    d.fingerprint(csid, ""),
+		AppID: "17",
 	}
-	return SkyClient()
+}
+
+// bizSegment 是业务阶段的 client 段。
+//
+// 与引导阶段的差别：ex 带 werewolf 前缀、多了 mve/apiLevel/ssid、没有 ci。
+// 字段顺序由结构体定义保证，服务端对明文做哈希校验，顺序不能变。
+func bizSegment(d Device, csid, werewolf, si string) BizClientInfo {
+	return BizClientInfo{
+		Ex:       d.fingerprint(csid, werewolf),
+		Fr:       d.frame(),
+		Os:       "android",
+		Si:       si,
+		Ve:       appVersion,
+		Mve:      appVersion,
+		AppID:    "17",
+		APILevel: d.APILevel,
+		Ssid:     "<unknown ssid>",
+	}
 }
 
 // atoiSafe 把字符串转成整数，转不了就返回 0。
@@ -374,7 +453,10 @@ func (c *Client) FetchSecurityKey() (string, error) {
 	}
 	var d struct {
 		SecurityKey string `json:"securityKey"`
-		Device      string `json:"device"`
+		// 服务端按本次上报的设备指纹算出来的摘要。业务阶段要把它塞进
+		// ex 的 werewolf: 前缀里，所以拿到就得存下来。
+		Device  string `json:"device"`
+		CRCCode string `json:"crcCode"`
 	}
 	if c.Verbose {
 		fmt.Printf("[ucsdk] securityKey 响应明文: %s\n", string(raw))
@@ -385,7 +467,51 @@ func (c *Client) FetchSecurityKey() (string, error) {
 	if d.SecurityKey != "" {
 		c.SetPublicKey(d.SecurityKey)
 	}
+	// 两个字段都可能出现，实测 device 有值时 crcCode 为空，反之亦然
+	if w := d.Device; w != "" {
+		c.mu.Lock()
+		c.werewolf = w
+		c.mu.Unlock()
+	} else if d.CRCCode != "" {
+		c.mu.Lock()
+		c.werewolf = d.CRCCode
+		c.mu.Unlock()
+	}
 	return d.SecurityKey, nil
+}
+
+// ApplySI 申请一次风控 token（si.apply）。
+//
+// 官方 SDK 的初始化链是「getSecurityKey → si.apply」，之后每个业务请求的
+// client.si 都带这个 token。我们之前一直留空，服务端没强制所以能用；
+// 但空 si 是「非官方客户端」最直白的特征，能补就补上。
+//
+// 失败不算致命：拿不到就照旧不带，不影响登录本身。
+func (c *Client) ApplySI() error {
+	c.mu.Lock()
+	if c.si != "" {
+		c.mu.Unlock()
+		return nil
+	}
+	c.mu.Unlock()
+
+	raw, err := c.call(HostSDK, ServiceSiApply, struct{}{})
+	if err != nil {
+		return err
+	}
+	var d struct {
+		SI string `json:"si"`
+	}
+	if err := json.Unmarshal(raw, &d); err != nil {
+		return fmt.Errorf("si.apply 响应解析失败: %w", err)
+	}
+	if d.SI == "" {
+		return fmt.Errorf("si.apply 没返回 si")
+	}
+	c.mu.Lock()
+	c.si = d.SI
+	c.mu.Unlock()
+	return nil
 }
 
 func trim(s string, n int) string {

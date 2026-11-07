@@ -198,7 +198,7 @@ func TestRequestJSONShape(t *testing.T) {
 		Service: ServiceSendSms,
 		Data:    map[string]any{"mobile": "1"},
 		Game:    SkyGame(),
-		Client:  SkyClient(),
+		Client:  bootstrapSegment(RandomDevice(), randomUUID(), ""),
 	})
 	if err != nil {
 		t.Fatal(err)

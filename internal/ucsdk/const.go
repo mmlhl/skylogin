@@ -36,6 +36,8 @@ const (
 const (
 	// ServiceSecurityKey 取服务端 RSA 公钥（任何业务接口之前必须先调）。
 	ServiceSecurityKey = "system.getSecurityKey"
+	// ServiceSiApply 申请风控 token；返回的 si 要带在后续每个请求的 client 段里。
+	ServiceSiApply = "si.apply"
 	// ServiceSendSms 发送短信验证码。
 	ServiceSendSms = "unifiedAccount.sendSmsCode"
 	// ServiceLoginBySms 用验证码登录；账号多于一个时返回 214 + 账号列表。

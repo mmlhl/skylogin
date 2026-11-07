@@ -1,9 +1,9 @@
 package ucsdk
 
-// 内置的实测参数。
+// 内置的协议常量。
 //
-// 这些都是「服务端定、客户端无法协商」的值，只能从真机抓包得到。
-// 集中放一处，轮换时只改这里。
+// 这里只放「服务端定、客户端改不了」的值：两把公钥、游戏身份、请求里的
+// 固定字段名。设备环境的构造不在这里，见 device.go。
 
 // 九游的信封加密要用两把公钥，顺序不能弄反：
 //
@@ -46,22 +46,6 @@ type ClientInfo struct {
 	AppID string `json:"appId"`
 }
 
-// SkyClient 返回光遇九游包的 client 段（仅用于取公钥那一步）。
-//
-// si 是风控会话 token，会随会话变而且会过期。实测留空不影响取公钥与业务请求，
-// 所以这里留空；若将来真的被风控拦住，再考虑接 si.apply 动态取。
-func SkyClient() ClientInfo {
-	return ClientInfo{
-		Ve:    "9.8.12.0",
-		Os:    "android",
-		Fr:    "API Level-36 - OnePlus PJZ110-16",
-		Si:    "",
-		Ci:    "6447c470f7716382a74697d5d456baa0",
-		Ex:    skyFingerprint,
-		AppID: "17",
-	}
-}
-
 // BizClientInfo 是业务请求里的 client 段。
 //
 // 和 getSecurityKey 那条完全不是一套：
@@ -81,44 +65,6 @@ type BizClientInfo struct {
 	APILevel int    `json:"apiLevel"`
 	Ssid     string `json:"ssid"`
 }
-
-// SkyBizClient 返回光遇九游包业务请求的 client 段。
-func SkyBizClient() BizClientInfo {
-	return BizClientInfo{
-		Ex:       skyBizFingerprint,
-		Fr:       "API Level-36 - OnePlus PJZ110-16",
-		Os:       "android",
-		Si:       "",
-		Ve:       "9.8.12.0",
-		Mve:      "9.8.12.0",
-		AppID:    "17",
-		APILevel: 36,
-		Ssid:     "<unknown ssid>",
-	}
-}
-
-// skyBizFingerprint 是业务请求上报的设备指纹，带 werewolf: 前缀。
-//
-// 前缀后面那串每次会话都不同（疑似会话级摘要），这里是某次实测值。
-const skyBizFingerprint = "werewolf:c8d8bc68f2d9c99cc5505355ddc63bd0|orient:L|" +
-	"sola:527848B310B793E41E0616F38EE85059|csid:a7814273-c4e3-4393-87c7-84b189aca457|" +
-	"netType:-2|bssid:02:00:00:00:00:00|utdid:au9pNRh097QDAONuTga4IWu6|net_id:-1|imsi:|" +
-	"osId:cfae1414-a7c3-455f-9a84-31772646f4cf|resY:1440|resX:3008|ssid:<unknown ssid>|mac:|" +
-	"kaisa:3C3852CBBD0679364F806DBB912CC463|ackerman:528E9051B436D4B69DDEDE060A07CC88|" +
-	"imei:|mikasa:527848B310B793E41E0616F38EE85059|model:PJZ110|mobi:|net:wifi|" +
-	"uya:D0585CA2DDE614276EC2F6B7B69FDC0B3|" +
-	"oaId:13DE77E2083543938062A2C29A49EBC8C1def4d861ce501b55a66979d62f10fcf"
-
-// skyFingerprint 是 getSecurityKey 阶段上报的设备指纹串。
-//
-// 注意：它以 orient:L 开头，没有 werewolf 前缀——那是登录阶段才出现的。
-// 各段含义：mikasa/sola/ackerman/kaisa/uya 都是 MD5 值，其余是网络与屏幕参数。
-const skyFingerprint = "orient:L|sola:527848B310B793E41E0616F38EE85059|" +
-	"csid:dbc2dc5f-db92-4b75-8b91-d37627086f15|netType:-2|bssid:|utdid:au9dFUCsGgUDAHxJW8nb3dgF|net_id:-1|imsi:|" +
-	"osId:ef63be7a-4026-4dd9-b3fe-f64978ec2cd7|resY:1440|resX:3008|ssid:|mac:|" +
-	"kaisa:D394BE0BFC408B3B469C5AB79CCDD700|ackerman:4E8C22FCF8979613A28058AA5D25BC63|" +
-	"imei:|mikasa:527848B310B793E41E0616F38EE85059|model:PJZ110|mobi:|net:wifi|" +
-	"uya:1CE15E03389148CC6527EF3E7028658A|oaId:"
 
 // SkyGame 是光遇九游包的 game 段参数。
 //

@@ -12,6 +12,7 @@ import (
 
 	"skylogin/internal/app"
 	"skylogin/internal/channel"
+	"skylogin/internal/device"
 	"skylogin/internal/ucsdk"
 )
 
@@ -25,6 +26,12 @@ func main() {
 
 	c := ucsdk.New(ucsdk.SkyGame())
 	c.Verbose = true
+	if d, derr := device.LoadOrCreateUC(mobile); derr == nil && d != nil {
+		c.SetDevice(*d)
+	}
+	dev := c.Device()
+	fmt.Printf("本次设备: %s %s / Android %s (API %d) / %dx%d\n",
+		dev.Vendor, dev.Model, dev.OSRelease, dev.APILevel, dev.ScreenLong, dev.ScreenShort)
 
 	s, accounts, err := c.LoginByPassword(mobile, password, "86", "", "")
 
