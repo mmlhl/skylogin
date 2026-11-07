@@ -3,7 +3,7 @@ package app
 // 「添加账号」的登录入口清单。
 //
 // 以前这份清单硬编码在 web/src/components/ChannelPicker.vue 里：加一个渠道
-// 要同时改 Go 和 Vue，前端还得知道"B站是网页登录、九游只能扫码"。
+// 要同时改 Go 和 Vue，前端还得知道"B站是网页登录、九游只能扫码"（当时的情况）。
 // 现在 Go 是唯一来源，前端只负责渲染：
 //
 //	后端多一项 → 界面多一行
@@ -27,8 +27,7 @@ type loginMethod struct {
 // loginEntry 「添加账号」列表里的一项。
 //
 // Group 为 true 表示点进去还有二级（目前只有「网易账号」：扫码 / 账号密码）。
-// OnlyRefresh 为 true 表示只在"刷新已有账号凭证"时出现，不进添加列表——
-// 九游目前只有整包扫码一种方式，添加账号走"渠道服扫码"，不需要单独一行。
+// OnlyRefresh 为 true 表示只在"刷新已有账号凭证"时出现，不进添加列表。
 type loginEntry struct {
 	ID          string        `json:"id"`
 	Action      string        `json:"action"`  // 前端调接口时用的标识：bilibili / m4399 / vivo / huawei / netease

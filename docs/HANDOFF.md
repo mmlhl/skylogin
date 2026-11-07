@@ -121,6 +121,8 @@ web UI (Vue, dist 内嵌) ──/api/*──> 登录器 (Go, 管理员运行)
   自带上下文）→ op13 应答。票据预签 + 按 pid 路由（clients.go）
 - 渠道（B站/4399/vivo）：凭证保活（ensureChannelCredential）→ 预签；
   vivo 的 openToken 短命，取票失败时走 Cookie 静默续期重签
+- 九游（ensureUCCredential）：用 refreshToken 滚动续期，sid 只有 24 小时，
+  续一次换一张新票、旧票当场作废，所以续完必须立刻落盘
 - 取票请求带 ProcessID，路由按 pid 精确匹配；已回收路由的请求直接忽略
 - 票据一次性，`slot.ticket` 用掉即清；应答有 10 分钟窗口 + 次数上限
 
