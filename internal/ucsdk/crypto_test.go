@@ -198,7 +198,7 @@ func TestRequestJSONShape(t *testing.T) {
 		Service: ServiceSendSms,
 		Data:    map[string]any{"mobile": "1"},
 		Game:    SkyGame(),
-		Client:  bootstrapSegment(RandomDevice(), randomUUID(), ""),
+		Client:  bootstrapSegment(RandomDevice(), newCSID(), ""),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -222,3 +222,4 @@ func TestRequestJSONShape(t *testing.T) {
 
 // 保证 crypto/rand 被用到（生成测试密钥需要）
 var _ = rand.Read
+

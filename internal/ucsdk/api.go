@@ -77,7 +77,7 @@ func New(game GameInfo) *Client {
 		HTTP: &http.Client{Timeout: 20 * time.Second},
 		Game: game,
 		dev:  RandomDevice(),
-		csid: randomUUID(),
+		csid: newCSID(),
 	}
 }
 
@@ -405,10 +405,10 @@ func bootstrapSegment(d Device, csid, si string) ClientInfo {
 	return ClientInfo{
 		Ve:    appVersion,
 		Os:    "android",
-		Fr:    d.frame(),
+		Fr:    d.Frame(),
 		Si:    si,
 		Ci:    "6447c470f7716382a74697d5d456baa0",
-		Ex:    d.fingerprint(csid, ""),
+		Ex:    fingerprint(d, csid, ""),
 		AppID: "17",
 	}
 }
@@ -419,8 +419,8 @@ func bootstrapSegment(d Device, csid, si string) ClientInfo {
 // 字段顺序由结构体定义保证，服务端对明文做哈希校验，顺序不能变。
 func bizSegment(d Device, csid, werewolf, si string) BizClientInfo {
 	return BizClientInfo{
-		Ex:       d.fingerprint(csid, werewolf),
-		Fr:       d.frame(),
+		Ex:       fingerprint(d, csid, werewolf),
+		Fr:       d.Frame(),
 		Os:       "android",
 		Si:       si,
 		Ve:       appVersion,

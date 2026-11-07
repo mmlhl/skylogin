@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"skylogin/internal/phone"
 	"skylogin/internal/secretfile"
 )
 
@@ -87,15 +88,19 @@ func LoadOrCreateAndroid(path string) (*AndroidProfile, error) {
 			return &p, nil
 		}
 	}
-	brand := []string{"HUAWEI", "HONOR"}[randInt(2)]
+	// 机型从共享的手机库里挑一台华为系：品牌、型号、系统版本必须对得上。
+	// 以前这里是写死 brand + "SM-G9910"（三星型号），自相矛盾。
+	hw := phone.RandomFrom(func(d phone.Device) bool {
+		return d.Vendor == "HUAWEI" || d.Vendor == "HONOR"
+	})
 	p := &AndroidProfile{
 		DeviceID:       randomHex(32),
 		DeviceUUID:     newUUID(),
-		Brand:          brand,
+		Brand:          hw.Vendor,
 		RomVersion:     "V417IR release-keys",
-		AndroidVersion: "12",
-		Manufacturer:   brand,
-		PhoneType:      "SM-G9910",
+		AndroidVersion: hw.OSRelease,
+		Manufacturer:   hw.Vendor,
+		PhoneType:      hw.Model,
 		DeviceIDType:   4,
 	}
 	if err := writeJSON(path, p); err != nil {
