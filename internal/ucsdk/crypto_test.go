@@ -46,7 +46,7 @@ func TestSealOpenRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plain := []byte(`{"service":"unifiedAccount.sendSmsCode","data":{"mobile":"13800000000"}}`)
+	plain := []byte(`{"service":"unifiedAccount.sendSmsCode","data":{"mobile":"10000000000"}}`)
 
 	env, err := seal(plain, pub)
 	if err != nil {
@@ -222,4 +222,3 @@ func TestRequestJSONShape(t *testing.T) {
 
 // 保证 crypto/rand 被用到（生成测试密钥需要）
 var _ = rand.Read
-

@@ -9,9 +9,13 @@ package ucsdk
 //   - 五个摘要字段的算法（mikasa / sola / ackerman / kaisa / uya）
 //   - utdid：阿里体系里的设备标识，九游上报要用，其它渠道未必需要
 //
-// 这些算法来自 SDK 里的 DeviceHashParam，并用抓包反推验证过：
-// MD5("ffffffffffffffff") 正好等于抓包里的 mikasa 与 sola，
+// 五个摘要字段的算法见 SDK 的 DeviceHashParam：摘要的输入分别是
+// MAC / IMEI / android_id / csid / utdid。
+//
+// 其中四个能用真机抓包逐字验算，验算方式就写在下面的代码里：
+// MD5("ffffffffffffffff") 正好等于抓包里的 mikasa 与 sola（MAC/IMEI 读不到时的占位），
 // MD5(抓包的 csid) 等于 kaisa，MD5(抓包的 utdid) 等于 uya。
+// ackerman 的输入（真机的 android_id）拿不到，只能按同一规则派生，无法反推核对。
 
 import (
 	"crypto/md5"

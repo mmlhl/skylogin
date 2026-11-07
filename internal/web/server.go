@@ -857,4 +857,3 @@ func staticHandler() http.Handler {
 		files.ServeHTTP(w, r2)
 	})
 }
-

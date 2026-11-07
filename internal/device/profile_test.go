@@ -14,11 +14,11 @@ func TestLoadOrCreatePhoneStable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "phones.json")
 	phoneStorePathFn = func() string { return path }
 
-	a1, err := LoadOrCreatePhone("uc", "13800000000")
+	a1, err := LoadOrCreatePhone("uc", "acct-alpha")
 	if err != nil {
 		t.Fatal(err)
 	}
-	a2, err := LoadOrCreatePhone("uc", "13800000000")
+	a2, err := LoadOrCreatePhone("uc", "acct-alpha")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +26,7 @@ func TestLoadOrCreatePhoneStable(t *testing.T) {
 		t.Fatalf("同一账号分到两台设备: %+v vs %+v", a1, a2)
 	}
 
-	b, err := LoadOrCreatePhone("uc", "13900000000")
+	b, err := LoadOrCreatePhone("uc", "acct-beta")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestLoadOrCreatePhoneStable(t *testing.T) {
 	}
 
 	// 换个渠道，同一个 key 也应该是另一台（渠道之间不该串号）
-	c, err := LoadOrCreatePhone("huawei", "13800000000")
+	c, err := LoadOrCreatePhone("huawei", "acct-alpha")
 	if err != nil {
 		t.Fatal(err)
 	}
