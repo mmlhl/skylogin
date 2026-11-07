@@ -409,8 +409,16 @@ func pickAccount() (Account, error) {
 		return Account{}, errors.New("还没有已保存的账号，先添加一个华为账号")
 	}
 	if cur, err := currentID(); err == nil && cur != "" {
+		// 先按行键精确找：同一个玩家可能有两行（网页登录 / 整包扫码），
+		// 只靠 PlayerID 会永远命中列表里靠前的那一条，点另一条也会启动成前一条。
 		for _, a := range list {
-			if accountKey(a) == cur || a.PlayerID == cur {
+			if accountKey(a) == cur {
+				return a, nil
+			}
+		}
+		// 精确找不到才退回 PlayerID（兼容老版本 current.txt）
+		for _, a := range list {
+			if a.PlayerID == cur {
 				return a, nil
 			}
 		}

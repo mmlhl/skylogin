@@ -42,10 +42,15 @@ func (t *loginTracker) begin(msg string) bool {
 	return true
 }
 
-// set 写入终态（done / failed）。
+// set 写入状态文案。
+//
+// 注意保留 Running：登录流程中途会多次调它更新文案（比如「正在登录…」），
+// 如果这里重置成 false，界面就会误以为流程已结束。
+// 真正的收尾走 finish()。
 func (t *loginTracker) set(phase, msg, account, uid string) {
 	t.mu.Lock()
-	t.cur = loginProgress{Phase: phase, Message: msg, Account: account, UID: uid}
+	running := t.cur.Running
+	t.cur = loginProgress{Running: running, Phase: phase, Message: msg, Account: account, UID: uid}
 	t.mu.Unlock()
 }
 
