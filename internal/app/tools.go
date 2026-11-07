@@ -39,22 +39,36 @@ func init() {
 	if !ok {
 		return
 	}
-	if Version == "1.0.0" && info.Main.Version != "" && info.Main.Version != "(devel)" {
-		Version = info.Main.Version
+	Version, Build, BuildTime = applyBuildInfo(Version, Build, BuildTime, info)
+}
+
+// applyBuildInfo 用构建信息补齐版本号、构建号、构建时间。
+//
+// 关键：CI 注入的构建号必须原样保留。构建机在 git 仓库里构建时，Go 会把
+// vcs.revision 一起嵌进来；如果拿它无条件覆盖 Build，发布版就会变成
+// "dev-xxxx"，buildNumber() 解析失败的 0 会让更新检查把它当成开发版跳过——
+// 表现就是"装了新版，旧版打开却不提示更新"。
+func applyBuildInfo(version, build, buildTime string, info *debug.BuildInfo) (string, string, string) {
+	if info == nil {
+		return version, build, buildTime
+	}
+	if version == "1.0.0" && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		version = info.Main.Version
 	}
 	for _, s := range info.Settings {
 		switch s.Key {
 		case "vcs.revision":
-			if len(s.Value) >= 7 {
-				// 短哈希放进构建号位展示，版本号保持简短
-				Build = "dev-" + s.Value[:7]
+			// 只有本机构建（没注入构建号）才用提交哈希兜底展示
+			if build == "0" && len(s.Value) >= 7 {
+				build = "dev-" + s.Value[:7]
 			}
 		case "vcs.time":
-			if BuildTime == "" && s.Value != "" {
-				BuildTime = s.Value
+			if buildTime == "" && s.Value != "" {
+				buildTime = s.Value
 			}
 		}
 	}
+	return version, build, buildTime
 }
 
 // setReleaseState 记录公告已读序号 / 被忽略的更新构建号 / 待更新的构建号。
