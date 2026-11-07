@@ -19,8 +19,11 @@ import (
 // Client 是极简的 MPay 二维码客户端。
 type Client struct {
 	Base string
-	http *http.Client
-	cv   string
+	// AppChannel 是建码/扫码时上报的渠道名。空表示华为（历史默认值）。
+	// 其它渠道（如九游 uc_platform）必须显式指定，否则服务端会回「非法请求」。
+	AppChannel string
+	http       *http.Client
+	cv         string
 }
 
 func New() *Client {
@@ -29,6 +32,14 @@ func New() *Client {
 		http: &http.Client{Timeout: 25 * time.Second},
 		cv:   protocol.Get().MpayAppCv,
 	}
+}
+
+// channel 返回本次建码/扫码使用的渠道名。
+func (c *Client) channel() string {
+	if c.AppChannel != "" {
+		return c.AppChannel
+	}
+	return profile.HuaweiChannel
 }
 
 func (c *Client) get(path string, q url.Values) (map[string]any, error) {
@@ -52,7 +63,7 @@ func (c *Client) CreateLogin(gameID string) (string, map[string]any, error) {
 	q.Set("game_id", gameID)
 	q.Set("process_id", fmt.Sprint(os.Getpid()))
 	q.Set("cv", c.cv)
-	q.Set("app_channel", profile.HuaweiChannel)
+	q.Set("app_channel", c.channel())
 	q.Set("_cloud_extra_base64", "e30=")
 	data, err := c.get("/mpay/api/qrcode/create_login", q)
 	if err != nil {
@@ -69,9 +80,9 @@ func (c *Client) CreateLogin(gameID string) (string, map[string]any, error) {
 func (c *Client) Scan(uuid, gameID string) (map[string]any, error) {
 	q := url.Values{}
 	q.Set("uuid", uuid)
-	q.Set("login_channel", profile.HuaweiChannel)
-	q.Set("app_channel", profile.HuaweiChannel)
-	q.Set("pay_channel", profile.HuaweiChannel)
+	q.Set("login_channel", c.channel())
+	q.Set("app_channel", c.channel())
+	q.Set("pay_channel", c.channel())
 	q.Set("game_id", gameID)
 	q.Set("gv", profile.MpayGV)
 	q.Set("gvn", profile.MpayGvn)
@@ -217,9 +228,9 @@ func (c *Client) CreateLoginHostedFull(deviceID, gameID, dstJFGame, appChannel, 
 func (c *Client) ScanHosted(uuid, deviceID, gameID string) (string, map[string]any, error) {
 	q := url.Values{}
 	q.Set("uuid", uuid)
-	q.Set("login_channel", profile.HuaweiChannel)
-	q.Set("app_channel", profile.HuaweiChannel)
-	q.Set("pay_channel", profile.HuaweiChannel)
+	q.Set("login_channel", c.channel())
+	q.Set("app_channel", c.channel())
+	q.Set("pay_channel", c.channel())
 	q.Set("game_id", gameID)
 	q.Set("gv", profile.MpayGV)
 	q.Set("gvn", profile.MpayGvn)

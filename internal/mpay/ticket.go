@@ -200,7 +200,9 @@ func (c *Client) CreateTicket(token, userID, deviceID string) (string, map[strin
 // 签出来的票游戏都认（平台自己也是用 a50 票启动光遇的）。
 func (c *Client) CreateTicketFor(token, userID, deviceID, longGameID, shortGameID string) (string, map[string]any, error) {
 	cv := "c4.20.0"
-	form := baseForm(deviceID, longGameID, shortGameID, profile.HuaweiChannel, cv, "0.0.0.0")
+	// 换票用的 app_channel 跟随客户端的渠道配置，不再写死华为：
+	// 渠道服账号用别的渠道名去签会被服务端拒掉。
+	form := baseForm(deviceID, longGameID, shortGameID, c.channel(), cv, "0.0.0.0")
 	form.Set("bill_pid", shortGameID)
 	form.Set("is_outer_browser_open", "1")
 	form.Set("token", token)
