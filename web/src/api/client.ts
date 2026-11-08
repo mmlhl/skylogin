@@ -131,6 +131,19 @@ export const api = {
   setAccountRegion: (id: string, region: string) =>
     request(`/api/accounts/region${qs({ id, region })}`, { method: "POST" }),
 
+  /**
+   * 无头账号密码登录：不弹网易登录窗，直接在这里收账号密码，
+   * 由 mpay.dll 的无界面接口完成登录。
+   *
+   * 好处：① 凭证天然是游戏身份，选渠道能立刻生效；
+   *       ② 密码能用 Windows DPAPI 加密存下来，凭证过期后自动重登。
+   */
+  headlessLogin: (user: string, password: string, region = "", name = "") =>
+    request("/api/accounts/headless-login", {
+      method: "POST",
+      body: JSON.stringify({ user, password, region, name }),
+    }),
+
   /** 华为扫码：开始（Go 去华为申请二维码） */
   startHuaweiLogin: () => request("/api/login", { method: "POST" }),
 

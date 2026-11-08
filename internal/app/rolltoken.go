@@ -91,14 +91,24 @@ func tokenSaValue(token string) float64 {
 	return 0
 }
 
-// rollable 只有 sa=3 的普通会话凭证才滚。
+// rollable 判断这份凭证要不要滚。
 //
-// 不滚的两类：
-//   - sa=-9：账号级，本来就是永久的，滚一遍会被降级
-//   - sa=-4：大神扫码拿到的会话，不知道活多久；滚完会变成 sa=3，
-//     万一它其实比 3 活得久，滚动反而缩短了寿命（2026-11-05 存疑，先不碰）
+// 规则（2026-11-08 晚修订）：
+//
+//	sa=3  —— 普通会话凭证（扫码 / 网页 / 换票得来）：可滚，滚动只刷新 lt，稳定。
+//	sa=-4 —— 大神扫码 / 手机号那种会话：寿命未知。以前不敢碰，怕"本来能活更久、
+//	         滚一下就缩短了"。但现在实测 sa=3 的凭证**同样能按渠道签发、同样能启动
+//	         游戏**，滚成 3 等于把它纳入可续期轨道，比放着自然过期强。
+//	         所以现在允许滚；万一某天发现它其实很长寿，再改回来。
+//	sa=-9 —— 账号级，永久有效。滚一遍会被降级成会话级，绝对不碰。
 func rollable(token string) bool {
-	return tokenSaValue(token) == 3 && tokenLoginUnix(token) > 0
+	switch tokenSaValue(token) {
+	case 3:
+		return tokenLoginUnix(token) > 0
+	case -4:
+		return true
+	}
+	return false
 }
 
 // rollSessionToken 把一条会话 token 滚到"现在"，返回新 token。

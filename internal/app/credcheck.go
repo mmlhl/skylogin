@@ -23,6 +23,7 @@ package app
 //	  2. 攒出一份"什么时候失效"的记录，回答"到底能活多久"
 
 import (
+	"errors"
 	"path/filepath"
 	"time"
 
@@ -64,7 +65,7 @@ func checkAllCredentials() {
 		return
 	}
 
-	checked, bad := 0, 0
+	checked, bad, relogin := 0, 0, 0
 	for _, a := range list {
 		// 只看网易账号：渠道服账号有自己的保活链路（Cookie / accessToken 重签）
 		if a.Channel != "netease" || a.MpayToken == "" {
@@ -72,6 +73,19 @@ func checkAllCredentials() {
 		}
 		checked++
 		if _, _, terr := mintTicket(a, dev); terr != nil {
+			// 凭证坏了，先试着自己救：有保存的账号密码就无头重登一次。
+			// 一轮最多救 maxReloginPerRound 个，避免密码本身错了还反复打接口。
+			if relogin < maxReloginPerRound && hasSavedPassword(a) {
+				relogin++
+				if fresh, rerr := autoReloginAndVerify(a, dev); rerr == nil {
+					setAccountCredState(a.PlayerID, "ok", "")
+					logf("凭证查看：%s 已自动重登恢复", displayName(fresh))
+					time.Sleep(credCheckGap)
+					continue
+				} else {
+					logf("凭证查看：%s 自动重登没成功（%v）", displayName(a), rerr)
+				}
+			}
 			bad++
 			setAccountCredState(a.PlayerID, "expired", terr.Error())
 			logf("凭证查看：%s 不可用（%v）", displayName(a), terr)
@@ -82,6 +96,29 @@ func checkAllCredentials() {
 		time.Sleep(credCheckGap)
 	}
 	if checked > 0 {
-		logf("凭证查看完成：%d 个网易账号，%d 个不可用", checked, bad)
+		logf("凭证查看完成：%d 个网易账号，%d 个不可用（本轮自动重登 %d 次）", checked, bad, relogin)
 	}
+}
+
+// maxReloginPerRound 是一轮凭证查看里最多自动重登几个账号。
+const maxReloginPerRound = 2
+
+// autoReloginAndVerify 自动重登，并用新凭证真的签一次票确认可用。
+// 光看"登录成功"不够：服务端可能给出一个换不了票的凭证。
+func autoReloginAndVerify(acc Account, dev *device.ClientProfile) (Account, error) {
+	if _, err := autoRelogin(acc); err != nil {
+		return acc, err
+	}
+	list, err := loadAccounts()
+	if err != nil {
+		return acc, err
+	}
+	fresh, ok := findAccount(list, acc.PlayerID)
+	if !ok {
+		return acc, errors.New("重登后账号不见了")
+	}
+	if _, _, err := mintTicket(fresh, dev); err != nil {
+		return fresh, err
+	}
+	return fresh, nil
 }

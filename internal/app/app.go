@@ -173,6 +173,7 @@ func RunUI(title string) error {
 		Delete:          deleteAccount,
 		Duplicate:       duplicateAccount,
 		SetRegion:       setAccountRegion,
+		HeadlessLogin:   HeadlessLoginAccount,
 		SetMaskTitles:   setMaskTitlesOn,
 		GetBuild:        func() int { return buildNumber() },
 		SetReleaseState: setReleaseState,

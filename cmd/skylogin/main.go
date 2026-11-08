@@ -47,6 +47,7 @@ func main() {
 	loginURL := flag.String("url", "", "渠道登录页地址（主进程解析后传入）")
 	loginTarget := flag.String("target", "", "要刷新的账号 id（空 = 新登录）")
 	mpaylogin := flag.Bool("mpaylogin", false, "以官方 mpay.dll 登录子进程模式运行")
+	headlessLogin := flag.Bool("headless-login", false, "无头登录子进程：从 stdin 读请求 JSON，结果写 --out")
 	profile := flag.String("profile", "", "WebView2 数据目录（用于保存登录态）")
 	out := flag.String("out", "", "结果输出文件")
 	skyDir := flag.String("sky", "", "mpay.dll 所在目录")
@@ -130,6 +131,12 @@ func main() {
 	}
 	if *uilessMode != "" {
 		runUILessProbe(*uilessMode, *uilessFile, *uilessUID, *uilessToken, *uilessAccount, *uilessAtk, *uilessOpenid, *uilessDevice, *uilessCh, *uilessFake, *uilessPlatform, *skyDir, *skin, *game, *logPath)
+		return
+	}
+	// 无头登录子进程（主进程用 app.Headless* 调起）。放在提权之前：
+	// 它只加载 DLL 跑一次动作，不需要管理员，也不需要单实例。
+	if *headlessLogin {
+		runHeadlessLogin(*out, *skyDir, *skin, *game, *logPath)
 		return
 	}
 

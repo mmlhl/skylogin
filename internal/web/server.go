@@ -68,6 +68,9 @@ type Hooks struct {
 	Duplicate func(id, name, region string) (string, error)
 	// SetRegion 设置某条账号记录的所选渠道（仅网易官方账号）。
 	SetRegion func(id, region string) error
+	// HeadlessLogin 用账号密码无头添加/更新网易账号（不弹网易登录窗）。
+	// 返回给界面用的结果（id / name / existed / region）。
+	HeadlessLogin func(user, password, region, name string) (map[string]any, error)
 	Settings     func() map[string]any
 	SaveSettings func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int) error
 	// SaveMpayDebug 保存官方登录窗的调试参数（用哪份 DLL / 哪个 game id / 是否跳过清理）。
@@ -439,6 +442,35 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		writeJSON(w, map[string]any{"ok": true})
+	})
+
+	// 无头账号密码登录：自己收账号密码，调 mpay.dll 的无界面接口登录，
+	// 全程不弹网易窗口。成功后顺手保存密码（DPAPI），以后凭证过期能自动重登。
+	mux.HandleFunc("/api/accounts/headless-login", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, map[string]any{"ok": false, "message": "只支持 POST"})
+			return
+		}
+		var body struct {
+			User     string `json:"user"`
+			Password string `json:"password"`
+			Region   string `json:"region"`
+			Name     string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": "请求格式不对"})
+			return
+		}
+		if s.hooks.HeadlessLogin == nil {
+			writeJSON(w, map[string]any{"ok": false, "message": "当前版本不支持无头登录"})
+			return
+		}
+		res, err := s.hooks.HeadlessLogin(body.User, body.Password, body.Region, body.Name)
+		if err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "result": res})
 	})
 
 	mux.HandleFunc("/api/settings", func(w http.ResponseWriter, r *http.Request) {
