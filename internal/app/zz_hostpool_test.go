@@ -50,7 +50,7 @@ func TestZZHostPool(t *testing.T) {
 	if pool.CanHost == 0 {
 		t.Fatal("补齐平台凭证后仍然没有可用宿主")
 	}
-	if sel, sid, err := PickHostSlot(); err != nil {
+	if sel, sid, err := PickHostSlot(""); err != nil {
 		t.Fatalf("选宿主失败: %v", err)
 	} else {
 		t.Logf("选中的宿主：%s（槽里 %q，sid %d 字符）", sel.Name, sel.HostedID, len(sid))

@@ -45,6 +45,7 @@ type pendingTicket struct {
 var (
 	scanMu    sync.Mutex
 	scanGame  string // 当前扫码用的 game_id（查询时要一致）
+	scanHost  string // 本次扫码指定的宿主账号（空 = 自动挑）
 	scanState = ScanState{Status: "idle"}
 	scanStop  chan struct{}
 	pending   *pendingTicket
@@ -63,13 +64,17 @@ func setScan(st ScanState) {
 }
 
 // StartScanLogin 创建二维码并开始轮询，返回二维码状态。
-func StartScanLogin() (ScanState, error) {
+//
+// hostUserID 非空表示"用这个账号的槽位寄宿"（用户指定要顶掉哪个槽）。
+// 为空时由 PickHostSlot 自动挑：优先空槽，其次任意可用宿主。
+func StartScanLogin(hostUserID string) (ScanState, error) {
 	scanMu.Lock()
 	if scanStop != nil {
 		close(scanStop)
 	}
 	stop := make(chan struct{})
 	scanStop = stop
+	scanHost = hostUserID // 等扫码确认后换票时用
 	scanMu.Unlock()
 
 	devID, err := ensureA50DeviceID()
@@ -168,11 +173,43 @@ func waitScan(uuid string, c *mpay.Client, stop chan struct{}, devID string) {
 			// 关键一步：二维码只是凭据编号，游戏要的是 AAAA 票。
 			// 用发烧平台自己的换票接口把它换成票（不需要登录态）。
 			// 换票必须带**建码时用的同一个设备号**，否则服务器回 "登录已失效"
+			//
+			// 带 sid 是自动寄宿的唯一入口：服务端会把这次扫的号写进该 sid 的槽。
+			// sid 必须用**平台身份凭证（A50Token）**换——用游戏凭证换 sid 会
+			// 1000 sauth error（见 hostpool.go 的说明）。所以这里走寄宿池选宿主，
+			// 优先空槽，避免顶掉别人已经记住的号。
 			xdev := devID
 			rawCode := code // 诊断用：留着最初的 10 位 code
 			saved := false
 			alreadyAdded := false
-			if t, xerr := launcher.ExchangeTicketWithSid(code, xdev, platformSid()); xerr != nil {
+			scanMu.Lock()
+			wantHost := scanHost
+			scanMu.Unlock()
+			hostSlot, hostSid, herr := PickHostSlot(wantHost)
+			if herr != nil {
+				// 兜底：账号库里可能一个可用宿主都没有（比如平台凭证被同设备重登顶掉了）。
+				// 有存过密码的号就重登一次补平台凭证，再选一遍。
+				// 验证码登录的号没有密码，补不了——它本来也不该指望当宿主。
+				logf("扫码寄宿：当前没有可用宿主（%v），尝试用存过密码的账号补一份平台凭证", herr)
+				if ensureAnyHostCred() {
+					hostSlot, hostSid, herr = PickHostSlot(wantHost)
+				}
+			}
+			if herr != nil {
+				// 没有可用宿主：匿名换票，号能加进来但不会被记住，
+				// 之后凭证过期就只能重新扫。这条必须让用户看见。
+				logf("扫码寄宿：没有可用宿主（%v），本次按匿名换票，该号过期后需重扫", herr)
+				cur := currentScan()
+				cur.Message = "没有可寄宿的平台账号：本次扫码不写寄宿槽，凭证过期后需要重扫"
+				setScan(cur)
+				hostSid = ""
+			} else if hostSlot.HostedID != "" {
+				logf("扫码寄宿：寄宿到 %s 的槽位（该槽原来记着 %q，会被顶掉）",
+					hostSlot.Name, hostSlot.HostedName)
+			} else {
+				logf("扫码寄宿：寄宿到 %s 的空槽", hostSlot.Name)
+			}
+			if t, xerr := launcher.ExchangeTicketWithSid(code, xdev, hostSid); xerr != nil {
 				logf("换票失败（退回原始 code）: %v", xerr)
 			} else {
 				logf("换票成功: %s -> %s (channel=%s)", maskCode(code), maskTicket(t.Ticket), t.Channel)
@@ -182,12 +219,24 @@ func waitScan(uuid string, c *mpay.Client, stop chan struct{}, devID string) {
 				}
 				// 网易账号：把票换成用户信息存下来，再现签一张票给游戏。
 				// 存下来的 token 就是"持久化凭证"，下次启动不用再扫码。
-				if nt, existed, perr := persistNetEase(t.Ticket, xdev); perr != nil {
+				var scannedID string
+				if nt, sid2, existed, perr := persistNetEase(t.Ticket, xdev); perr != nil {
 					logf("保存网易账号失败（本次仍用换来的票）: %v", perr)
 				} else {
 					code = nt
+					scannedID = sid2
 					saved = true
 					alreadyAdded = existed
+				}
+				// 记下"这个号住进了哪个宿主的槽"，删除账号时才能解除绑定。
+				if herr == nil && hostSlot.AccountID != "" && scannedID != "" {
+					recordSlotBinding(hostSlot.AccountID, scannedID)
+					logf("扫码寄宿：已记录 %s 的槽 ← 被扫账号", hostSlot.Name)
+				}
+				// 槽内容已经变了：让寄宿池缓存失效，界面下次刷新才看得到真实占用。
+				// 网易账号的 PlayerID 与 UserID 相同，所以直接用宿主行键清缓存。
+				if herr == nil && hostSlot.AccountID != "" {
+					invalidateHostSlot(hostSlot.AccountID)
 				}
 			}
 			// 账号已经存下来了，就用账号里的凭证启动（正常路径）；
@@ -282,17 +331,17 @@ func scanToMap(st ScanState) map[string]any {
 // mobile/finish 会被服务端吃掉登录态——后面再用同一张票 login/ticket 就回
 // 1306 用户登录失效（2026-11-05 实测，扫码因此加不了账号）。
 // finish 那条账号级的口只对短信票有效，见 exchangeSMSLoginTicket。
-func persistNetEase(ticket, devID string) (string, bool, error) {
+func persistNetEase(ticket, devID string) (newTicket, userID string, existed bool, err error) {
 	c := mpay.New()
 	// 用 a50（发烧平台）上下文兑换：建码就是 a50 托管会话，上下文要一致。
 	// 换出来的 token 也是 a50 原生的，和密码 / 短信登录的账号行为完全一致。
 	out, err := loginTicketAuto(c, ticket, devID)
 	if err != nil {
-		return "", false, fmt.Errorf("兑换票据失败: %w", err)
+		return "", "", false, fmt.Errorf("兑换票据失败: %w", err)
 	}
 	user, _ := out["user"].(map[string]any)
 	if user == nil {
-		return "", false, fmt.Errorf("响应里没有 user")
+		return "", "", false, fmt.Errorf("响应里没有 user")
 	}
 	id := str(user["id"])
 	token := str(user["token"])
@@ -310,13 +359,13 @@ func persistNetEase(ticket, devID string) (string, bool, error) {
 		name = str(user["display_username"])
 	}
 	if id == "" || token == "" {
-		return "", false, fmt.Errorf("用户信息不完整: id=%q token=%q", id, token)
+		return "", "", false, fmt.Errorf("用户信息不完整: id=%q token=%q", id, token)
 	}
 	if name == "" {
 		name = id
 	}
 	// 是不是"已经在列表里"的号——决定提示语，别再假装添加了一个新账号
-	_, existed := findAccountByUserID(id)
+	_, existed = findAccountByUserID(id)
 	// 记下这次建码用的 game id：同一个号用 a50 码和 ma75 码换出来的凭证
 	// 等级不一样（sa:-9 / sa:3），以后查"多久过期"得靠它区分。
 	scanMu.Lock()
@@ -347,10 +396,10 @@ func persistNetEase(ticket, devID string) (string, bool, error) {
 	// 现签一张票给游戏（我们自己那张已经被 login/ticket 消耗掉了）
 	nt, _, terr := c.CreateTicket(token, id, devID)
 	if terr != nil {
-		return "", existed, fmt.Errorf("现签票据失败: %w", terr)
+		return "", id, existed, fmt.Errorf("现签票据失败: %w", terr)
 	}
 	logf("已为游戏现签票据: %s", maskTicket(nt))
-	return nt, existed, nil
+	return nt, id, existed, nil
 }
 
 // str 安全取字符串。

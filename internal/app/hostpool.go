@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"skylogin/internal/launcher"
+	"skylogin/internal/profile"
 )
 
 // HostSlot 是一个宿主账号的寄宿状态，给界面直接展示。
@@ -173,19 +174,29 @@ func HostPoolStatus() HostPool {
 	return pool
 }
 
-// PickHostSlot 挑一个宿主：优先空槽，其次任意可用宿主（会被顶掉）。
+// PickHostSlot 挑一个宿主。
+//
+// preferUserID 非空时优先用它（用户在界面上指定"要顶掉哪个槽"）；
+// 否则优先空槽，其次任意可用宿主（会被顶掉）。
 //
 // 返回的 sid 直接给扫码换票用（带 sid 换票 = 服务端把扫码号写进这个槽）。
-func PickHostSlot() (slot HostSlot, sid string, err error) {
+func PickHostSlot(preferUserID string) (slot HostSlot, sid string, err error) {
 	pool := HostPoolStatus()
 	var fallback HostSlot
 	for _, h := range pool.Hosts {
 		if !h.CanHost {
 			continue
 		}
-		if h.Available {
+		// 用户指定的宿主：只要它能用，就用它，哪怕槽里已经有别的号
+		if preferUserID != "" && (h.AccountID == preferUserID || h.Name == preferUserID) {
 			slot = h
 			break
+		}
+		if h.Available {
+			if slot.AccountID == "" {
+				slot = h
+			}
+			continue
 		}
 		if fallback.AccountID == "" {
 			fallback = h
@@ -217,4 +228,53 @@ func invalidateHostSlot(userID string) {
 	poolMu.Lock()
 	delete(hostCache, userID)
 	poolMu.Unlock()
+}
+
+// ensureHostCred 确保这个账号有一份**能用**的平台身份凭证（当宿主用）。
+//
+// 为什么需要：同设备重新登录会把旧 A50Token 顶掉（实测旧 token 报
+// 1000 sauth error，新登录的能正常换 sid）。账号库里的那份可能就是这样失效的，
+// 表现为"明明有平台凭证却当不了宿主"。
+//
+// 判断标准是"能不能真的换到 sid"，不是"字段非空"——字段非空但被顶号的情况很常见。
+// 只有确实换不出来、而且存过密码，才重新登录补一份。
+func ensureHostCred(acc Account) bool {
+	if acc.A50Token != "" {
+		if _, err := hostSid(acc); err == nil {
+			return true // 现有凭证还能用，别重登（重登会顶掉正在用的会话）
+		}
+	}
+	user, pass, perr := accountPassword(acc)
+	if perr != nil {
+		return false
+	}
+	hostRes, herr := HeadlessPasswordLogin(user, pass, profile.HostedGameID)
+	if herr != nil || !hostRes.Platform {
+		return false
+	}
+	if serr := saveHeadlessCred(acc.PlayerID, hostRes); serr != nil {
+		return false
+	}
+	logf("%s：已重新取得平台凭证，可以当寄宿宿主", displayName(acc))
+	invalidateHostSlot(acc.UserID)
+	return true
+}
+
+// ensureAnyHostCred 在寄宿池里一个可用宿主都没有时，挑一个有密码的网易账号补一份。
+//
+// 只在"扫码前发现没宿主"时调用，属于兜底：正常流程里登录时就已经存好两份了。
+func ensureAnyHostCred() bool {
+	list, err := loadAccounts()
+	if err != nil {
+		return false
+	}
+	for _, a := range list {
+		if a.Channel != "netease" || !hasSavedPassword(a) {
+			continue
+		}
+		if ensureHostCred(a) {
+			return true
+		}
+	}
+	return false
 }

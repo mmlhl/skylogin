@@ -25,10 +25,14 @@ var (
 
 // rememberedTicket 用"服务端记住的授权"给这个账号直接换一张票（不需要 token）。
 //
-// 能成立，是因为扫码换票时我们带了平台会话 sid，服务端把那个账号写进了
+// 能成立，是因为扫码换票时带了平台会话 sid，服务端把那个账号写进了
 // 这个 sid 对应的"记住槽"（2026-11-05 抓包对比 + 实测）。
 //
-// 槽是按 sid（平台用户）分的，所以在续期时要把所有能换 sid 的账号都试一遍——
+// 2026-11-09 修正：换 sid 必须用**平台身份凭证（A50Token）**。
+// 早先这里用的是 MpayToken（游戏身份），换 sid 会回 1000 sauth error，
+// 于是几乎永远命不中——这正是"扫码号过期后无法免扫出票"的真正原因。
+//
+// 槽是按 sid（平台用户）分的，所以要把所有能换 sid 的账号都试一遍——
 // 命中的那个槽里可能正好是这个号。全失败就当没发生过（调用方退回提示重扫）。
 func rememberedTicket(acc Account) (string, error) {
 	list, err := loadAccounts()
@@ -38,10 +42,11 @@ func rememberedTicket(acc Account) (string, error) {
 	var lastErr error
 	for i := range list {
 		src := list[i]
-		if src.Channel != "netease" || src.MpayToken == "" || src.UserID == "" {
+		// 只有平台身份凭证换得到加载湾会话；没有它的账号当不了宿主
+		if src.A50Token == "" || src.UserID == "" {
 			continue
 		}
-		sid, lerr := launcher.Login(src.UserID, src.MpayToken, src.DeviceID)
+		sid, lerr := hostSid(src)
 		if lerr != nil || sid == "" {
 			continue
 		}
