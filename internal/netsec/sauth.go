@@ -91,6 +91,15 @@ func OutboundIP() string {
 
 // PostSigned 请求 uni_sauth（带 X-Client-Sign）。
 func PostSigned(data map[string]any, shortGameID string) (map[string]any, error) {
+	return PostSignedWithKey(data, shortGameID, protocol.Get().LogKey)
+}
+
+// PostSignedWithKey 供跨应用授权实验显式选择签名密钥，避免把 ma75 密钥当作 a50 密钥。
+// 原有调用仍通过 PostSigned 使用协议配置；这里不猜测或自动寻找密钥。
+func PostSignedWithKey(data map[string]any, shortGameID, signingKey string) (map[string]any, error) {
+	if signingKey == "" {
+		return nil, fmt.Errorf("缺少当前应用的签名密钥")
+	}
 	endpoint := profile.UniSdkBaseURL + "/" + shortGameID + "/sdk/uni_sauth"
 	payload, err := json.Marshal(data)
 	if err != nil {
@@ -100,11 +109,11 @@ func PostSigned(data map[string]any, shortGameID string) (map[string]any, error)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("X-Client-Sign", HMACSign(http.MethodPost, endpoint, string(payload), protocol.Get().LogKey))
+	req.Header.Set("X-Client-Sign", HMACSign(http.MethodPost, endpoint, string(payload), signingKey))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "Dalvik/2.1.0 (Linux; U; Android 12; M2102K1AC Build/V417IR)")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := (&http.Client{Timeout: 25 * time.Second}).Do(req)
 	if err != nil {
 		return nil, err
 	}
