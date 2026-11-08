@@ -110,10 +110,10 @@ func regionBlockReason(acc Account) string {
 	}
 	_, short := ticketContextForToken(acc.MpayToken)
 	if short != profile.ShortGameID {
-		// 用户能看懂的说法：他不需要知道 a50/ma75，只需要知道“点哪”。
-		// 正常登录已经固定用游戏身份初始化（mpayDebugGameID），所以点一次
-		// 『刷新凭证』重登就能换成能选区的凭证——这条提示是真的可执行的。
-		return "这个号的登录凭证类型不支持选区，点『刷新凭证』重新登录一次即可；重登会自动换成支持选区的凭证"
+		// 用户能看懂的说法：他不需要知道 a50/ma75，只需要知道"会发生什么"。
+		// 现在启动时就会自动把平台凭证换成游戏凭证（两条路：有密码直接重登；
+		// 没密码就用平台凭证签票再兑换），正常情况下用户看不到这条提示。
+		return "这个号的凭证需要先转成游戏凭证才能选区，启动时会自动完成；若连续几次启动仍提示，点『刷新凭证』重登一次即可"
 	}
 	return ""
 }
@@ -244,17 +244,73 @@ func channelMint(acc Account) (ticket string, ch string, ok bool) {
 // 只有存过账号密码的号能做到（无头重登，不打扰用户）。修完再判一次，
 // 还是不行就返回 false，让调用方按原逻辑提示手动刷新。
 func refreshGameCred(acc Account) (Account, bool) {
-	if !hasSavedPassword(acc) {
+	// 路径一：存过账号密码 —— 无头重登，拿到的直接就是游戏身份凭证（最干净）
+	if hasSavedPassword(acc) {
+		if _, err := autoRelogin(acc); err != nil {
+			logf("%s：自动重登换凭证失败（%v）", displayName(acc), err)
+		} else if fresh, ok := findAccountByUserID(acc.UserID); ok && regionBlockReason(fresh) == "" {
+			logf("%s：原凭证不能选区，已自动重登换成游戏身份凭证", displayName(acc))
+			return fresh, true
+		}
+	}
+
+	// 路径二：没有密码，但手里已经是**平台身份**凭证 —— 不用重新登录，
+	// 拿它签一张票、再按游戏上下文兑换，换出来的就是游戏身份凭证。
+	// （2026-11-08 实测：平台票 + game_id=…-ma75 兑换 → g_i=ma75，ad/ios 都能声明渠道）
+	if isPlatformToken(acc.MpayToken) {
+		if fresh, ok := convertPlatformCred(acc); ok {
+			return fresh, true
+		}
+	}
+	return acc, false
+}
+
+// isPlatformToken 判断这份 token 是不是平台应用（a50）签发的。
+func isPlatformToken(token string) bool {
+	gi := tokenGI(token)
+	return gi != "" && strings.HasPrefix(profile.HostedGameID, gi)
+}
+
+// convertPlatformCred 用平台身份凭证换一份游戏身份凭证，并写回账号。
+//
+// 平台凭证不能直接声明渠道（uni_sauth 会回 501），但可以走官方那条换票链：
+//
+//	create_ticket(平台上下文) → login/ticket(游戏上下文) → g_i=游戏身份的 token
+//
+// 这正是官方平台启动游戏时的路径，也是"平台账号能进游戏"的原因。
+func convertPlatformCred(acc Account) (Account, bool) {
+	longID, shortID := ticketContextForToken(acc.MpayToken)
+	c := mpay.New()
+	ticket, _, err := c.CreateTicketFor(acc.MpayToken, acc.UserID, acc.DeviceID, longID, shortID)
+	if err != nil {
+		logf("%s：平台凭证签票失败（%v），只能重新登录", displayName(acc), err)
 		return acc, false
 	}
-	if _, err := autoRelogin(acc); err != nil {
-		logf("%s：自动换成游戏身份凭证失败（%v）", displayName(acc), err)
+	res, err := c.LoginTicket(ticket, acc.DeviceID, profile.LongGameID, profile.ShortGameID)
+	if err != nil {
+		logf("%s：平台票换游戏凭证失败（%v），只能重新登录", displayName(acc), err)
 		return acc, false
 	}
-	fresh, ok := findAccountByUserID(acc.UserID)
-	if !ok || regionBlockReason(fresh) != "" {
+	user, _ := res["user"].(map[string]any)
+	tok, _ := user["token"].(string)
+	if tok == "" || isPlatformToken(tok) {
+		logf("%s：换出来的还不是游戏身份凭证，放弃", displayName(acc))
 		return acc, false
 	}
-	logf("%s：原凭证不能选区，已自动重登换成游戏身份凭证", displayName(acc))
-	return fresh, true
+	// 原来的平台凭证留着：它能换 sid、当宿主，别丢
+	acc.A50Token = acc.MpayToken
+	if acc.A50DeviceID == "" {
+		acc.A50DeviceID = acc.DeviceID
+	}
+	acc.MpayToken = tok
+	acc.CredState = "ok"
+	acc.LastError = ""
+	acc.LastCheck = time.Now().Unix()
+	acc.UpdatedAt = time.Now().Unix()
+	if err := saveAccount(acc); err != nil {
+		logf("%s：换到游戏凭证但保存失败（%v）", displayName(acc), err)
+		return acc, false
+	}
+	logf("%s：用平台凭证换出游戏身份凭证（%d 字符），可以选区了", displayName(acc), len(tok))
+	return acc, true
 }
