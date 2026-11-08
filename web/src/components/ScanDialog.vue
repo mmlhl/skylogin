@@ -14,6 +14,8 @@ import { computed, ref, watch } from "vue";
 import { api } from "../api/client";
 import { state } from "../composables/useAppState";
 import ScanDialogShell from "./ScanDialogShell.vue";
+// 没有全局注册 Naive UI：模板里用到 n-select 就必须显式引入
+import { NSelect } from "naive-ui";
 
 const props = defineProps<{ show: boolean }>();
 const emit = defineEmits<{ (e: "update:show", v: boolean): void }>();
@@ -43,9 +45,50 @@ const step = computed(() => {
 
 const tip = computed(() => {
   if (scan.value.status === "scanned") return "已扫码，请在手机上确认";
-  if (countdown.value > 0) return `用光遇手游扫码，${countdown.value} 秒后失效`;
-  return "用光遇手游或网易大神扫一扫";
+  const base =
+    countdown.value > 0
+      ? `用光遇手游扫码，${countdown.value} 秒后失效`
+      : "用光遇手游或网易大神扫一扫";
+  return hostHint.value ? `${base}｜${hostHint.value}` : base;
 });
+
+/**
+ * 寄宿提示：这次扫码会把号写进哪个平台账号的槽。
+ *
+ * 只有平台身份凭证（a50）的号能当宿主，一个宿主只能带一个扫码号。
+ * 没有宿主时扫码照样能加号，但不会写槽，凭证过期后只能重扫——必须提前说清。
+ *
+ * 槽位全满时给出下拉，让用户选"顶掉哪一个"，而不是默默顶掉第一个。
+ */
+const hostHint = ref("");
+const hosts = ref<any[]>([]);
+const pickHost = ref("");
+async function loadHostHint() {
+  try {
+    const r: any = await api.hostPool();
+    if (r?.ok === false) return;
+    const pool = r?.pool;
+    if (!pool) return;
+    const list: any[] = pool.hosts ?? [];
+    hosts.value = list.filter((h) => h.canHost);
+    if (pool.note) {
+      hostHint.value = pool.note;
+      // 槽满时预选第一个占用者，用户可以直接确认或改选
+      const occupied = hosts.value.filter((h) => !h.available);
+      pickHost.value = occupied[0]?.accountId || "";
+      return;
+    }
+    const free = hosts.value.filter((h) => h.available);
+    if (free.length > 0) {
+      hostHint.value = `将寄宿到 ${free[0].name} 的空槽，过期后免扫`;
+    } else if (hosts.value.length > 0) {
+      hostHint.value = "宿主槽位已满，本次会顶掉一个已寄宿的号";
+      pickHost.value = hosts.value[0]?.accountId || "";
+    }
+  } catch {
+    // 只是提示，取不到不影响扫码
+  }
+}
 
 /**
  * 展示在二维码区的提示。
@@ -80,7 +123,8 @@ async function start() {
   ready.value = false;
   countdown.value = 0;
   try {
-    const r = await api.startScan();
+    // 槽满时把用户选的宿主带下去；没选就交给后端自动挑（优先空槽）
+    const r = await api.startScan(pickHost.value);
     if (r.ok === false) error.value = r.message || "申请二维码失败";
   } finally {
     starting.value = false;
@@ -92,7 +136,10 @@ async function start() {
 watch(
   () => props.show,
   (open) => {
-    if (open) void start();
+    if (open) {
+      void loadHostHint();
+      void start();
+    }
   }
 );
 
@@ -126,5 +173,29 @@ function close() {
     :done="done"
     @update:show="(v: boolean) => (v ? emit('update:show', true) : close())"
     @retry="start"
-  />
+  >
+    <!-- 槽位全满时让用户选顶掉哪一个：默认顶掉第一个会踩到别人的号 -->
+    <div v-if="hosts.length > 0 && hosts.every((h) => !h.available) && !done" class="hostpick">
+      <span class="hlabel">替换哪个槽位</span>
+      <n-select
+        v-model:value="pickHost"
+        size="small"
+        :options="hosts.map((h) => ({ label: `${h.name}（${h.hostedName || '空'}）`, value: h.accountId }))"
+      />
+    </div>
+  </ScanDialogShell>
 </template>
+
+<style scoped>
+.hostpick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.hlabel {
+  font-size: 12px;
+  opacity: 0.7;
+  white-space: nowrap;
+}
+</style>

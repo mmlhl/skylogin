@@ -74,6 +74,8 @@ export interface AccountView {
   regionLabel?: string;
   /** 非空 = 选了渠道但当前凭证用不了（原因是给用户看的） */
   regionBlocked?: string;
+  /** 这个号住在某个平台账号的寄宿槽里：渠道由扫码设备固定，不再显示选区 */
+  hosted?: boolean;
 
   /** 是否是当前选中的账号 */
   current: boolean;

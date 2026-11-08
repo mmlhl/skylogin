@@ -33,6 +33,8 @@ export interface Account {
   regionLabel?: string;
   /** 非空 = 选了渠道但当前凭证用不了，内容是原因（界面直接提示） */
   regionBlocked?: string;
+  /** 住在某个平台账号的寄宿槽里：渠道由扫码设备固定，不再显示选区 */
+  hosted?: boolean;
   /** 远程身份 id（同一账号的原始行与副本相同） */
   playerId: string;
   /** 这行账号自己的游戏画质档位（空 = 跟随游戏） */

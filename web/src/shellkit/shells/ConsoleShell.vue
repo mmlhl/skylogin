@@ -189,8 +189,12 @@ const lastCheckText = computed(() => {
       </template>
 
       <!-- 游戏区：只有网易官方账号能选。选了之后启动时按这个区声明平台，
-           游戏就不再弹选哪个区；未选则保持旧行为。 -->
-      <div v-if="cur.channel === 'netease'" class="dsection">
+           游戏就不再弹选哪个区；未选则保持旧行为。
+
+           被寄宿的号（hosted）不显示选择器：它的渠道在扫码那一刻就固定了，
+           槽位票直接继承，再让它选区只会误导——它没有平台凭证，
+           走不了"声明 + 确认"那条路。 -->
+      <div v-if="cur.channel === 'netease' && !cur.hosted" class="dsection">
         <p class="dseclabel tight">游戏区</p>
         <div class="regionpick">
           <button :class="{ on: !cur.region }" @click="store.setAccountRegion(cur.id, '')">先不选</button>
@@ -206,6 +210,10 @@ const lastCheckText = computed(() => {
                 : "启动时光遇会自己问选哪个区"
           }}
         </p>
+      </div>
+      <div v-else-if="cur.channel === 'netease' && cur.hosted" class="dsection">
+        <p class="dseclabel tight">游戏区</p>
+        <p class="regionnote">渠道由扫码时的手机决定，启动不再询问</p>
       </div>
 
       <div class="dacts">

@@ -67,6 +67,10 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
         runSeconds: a.running && begin ? Math.floor((now - begin) / 1000) : 0,
         current: a.current,
         region: a.region,
+        // 被寄宿的号：渠道由扫码设备固定，详情页不显示选区按钮。
+        // 这两个字段以前漏了透传，界面上就一直是"可选区"的样子。
+        hosted: a.hosted,
+        regionBlocked: a.regionBlocked,
         playerId: a.playerId,
         copyKey: a.copyKey,
         qualityMode: a.qualityMode,

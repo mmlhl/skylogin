@@ -206,8 +206,8 @@ func RunUI(title string) error {
 		MpayLoginStart:  StartMpayLogin,
 		MpayLoginStatus: MpayLoginStatus,
 		MpayLoginCancel: CancelMpayLogin,
-		ScanStart: func() (map[string]any, error) {
-			st, err := StartScanLogin()
+		ScanStart: func(hostUserID string) (map[string]any, error) {
+			st, err := StartScanLogin(hostUserID)
 			return scanToMap(st), err
 		},
 		ScanStop:           StopScanLogin,

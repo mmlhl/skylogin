@@ -288,6 +288,24 @@ func mergeCredMeta(a, old Account) Account {
 	if a.Region == "" && old.Region != "" {
 		a.Region = old.Region
 	}
+	// 账号密码与平台身份凭证不属于"这一次登录的结果"，扫码/短信这类入口
+	// 回写账号时不会带上它们。不在这里兜住，一次扫码刷新就会把保存过的密码
+	// 和 a50 凭证清掉，之后既不能自动重登，也不能再按渠道签发。
+	if a.SavedUser == "" {
+		a.SavedUser = old.SavedUser
+	}
+	if a.SavedPass == "" {
+		a.SavedPass = old.SavedPass
+	}
+	if a.A50Token == "" {
+		a.A50Token = old.A50Token
+	}
+	if a.A50DeviceID == "" {
+		a.A50DeviceID = old.A50DeviceID
+	}
+	if a.UnisdkData == "" {
+		a.UnisdkData = old.UnisdkData
+	}
 	// 环境和时间戳：这一行是"同一个号"的续写，旧值一律保留
 	if a.MpayPath == "" {
 		a.MpayPath = old.MpayPath
@@ -337,9 +355,15 @@ func deleteAccount(id string) error {
 	}
 	key := resolveAccountKey(list, id)
 	out := make([]Account, 0, len(list))
+	// 删之前先记下这个号的 UserID：槽位账本要按它解除寄宿关系。
+	var removedUserIDs []string
 	for _, a := range list {
 		if accountKey(a) != key {
 			out = append(out, a)
+			continue
+		}
+		if a.UserID != "" {
+			removedUserIDs = append(removedUserIDs, a.UserID)
 		}
 	}
 	if len(out) == len(list) {
@@ -347,6 +371,14 @@ func deleteAccount(id string) error {
 	}
 	if err := saveList(out); err != nil {
 		return err
+	}
+	// 解除它作为宿主/被寄宿的关系，并让寄宿池缓存失效。
+	// 服务端不会因为我们删了本地记录就清槽，但至少下次选宿主时会重新读真实状态。
+	for _, uid := range removedUserIDs {
+		if n := releaseSlotBindings(uid); n > 0 {
+			logf("删除账号：已解除 %d 条寄宿关系", n)
+		}
+		invalidateHostSlot(uid)
 	}
 	if cur, _ := currentID(); cur == key || cur == id {
 		_ = os.Remove(currentPath())
@@ -528,6 +560,10 @@ func accountView(a Account) map[string]any {
 		"qualityFps":  a.QualityFps,
 		"region":      a.Region,
 		"regionLabel": regionLabel(a.Region),
+		// hosted = 这个号住在某个平台账号的寄宿槽里。
+		// 这类号的渠道由扫码设备固定（槽位票继承），再给选区选择器只会误导：
+		// 选什么都没用，因为它没有平台凭证，走不了"声明 + 确认"那条路。
+		"hosted": isHosted(a.UserID),
 		// regionBlocked 非空 = 虽然选了渠道，但当前凭证用不了（界面要提示原因）
 		"regionBlocked": regionBlockReason(a),
 		"name":          displayName(a),

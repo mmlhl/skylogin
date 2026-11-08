@@ -72,7 +72,7 @@ type Hooks struct {
 	// 返回给界面用的结果（id / name / existed / region）。
 	HeadlessLogin func(user, password, region, name string) (map[string]any, error)
 	// HostPool 返回寄宿池状态：哪些账号能当宿主、槽里记着谁。
-	HostPool func() any
+	HostPool     func() any
 	Settings     func() map[string]any
 	SaveSettings func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int) error
 	// SaveMpayDebug 保存官方登录窗的调试参数（用哪份 DLL / 哪个 game id / 是否跳过清理）。
@@ -88,7 +88,7 @@ type Hooks struct {
 	OpenLogs     func() error
 	PickPath     func() (string, error)
 	PickFolder   func() (string, error)
-	ScanStart    func() (map[string]any, error)
+	ScanStart    func(hostUserID string) (map[string]any, error)
 	ScanStop     func()
 	ScanNow      func() map[string]any
 	// 渠道网页登录（B站 / 4399 / vivo 共用一套，key 区分）
@@ -698,7 +698,8 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	mux.HandleFunc("/api/scan/start", func(w http.ResponseWriter, r *http.Request) {
-		st, err := s.hooks.ScanStart()
+		host := r.URL.Query().Get("host")
+		st, err := s.hooks.ScanStart(host)
 		if err != nil {
 			writeJSON(w, map[string]any{"ok": false, "message": err.Error(), "scan": st})
 			return

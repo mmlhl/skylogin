@@ -158,7 +158,9 @@ export const api = {
   cancelHuaweiLogin: () => request("/api/login/cancel", { method: "POST" }),
 
   /** 网易扫码：开始（Go 去 MPay 申请二维码） */
-  startScan: () => request("/api/scan/start", { method: "POST" }),
+  /** 网易扫码：开始（Go 去 MPay 申请二维码）。host 非空表示指定寄宿到哪个平台账号的槽 */
+  startScan: (host = "") =>
+    request(`/api/scan/start${host ? `?host=${encodeURIComponent(host)}` : ""}`, { method: "POST" }),
 
   /** 网易扫码：停止 */
   stopScan: () => request("/api/scan/stop", { method: "POST" }),
