@@ -64,8 +64,16 @@ func TestZZHeadlessChain(t *testing.T) {
 	}
 	var accepted map[string]any
 	var acceptedSAUTH map[string]any
-	// 安卓是用户本次所选平台；若被拒，只用 pc 作一次对照以区别平台声明问题。
-	for _, platform := range []string{"ad", "pc"} {
+	// 平台声明由实验变量决定（ad/ios/hm），默认安卓。
+	// 只声明目标平台，不再顺带试 pc——避免用失败变体掩盖目标平台的真实结果。
+	wantPlatform := os.Getenv("HEADLESS_PLATFORM")
+	if wantPlatform == "" {
+		wantPlatform = "ad"
+	}
+	if wantPlatform != "ad" && wantPlatform != "ios" && wantPlatform != "hm" {
+		t.Fatal("阶段3：HEADLESS_PLATFORM 只能是 ad/ios/hm")
+	}
+	for _, platform := range []string{wantPlatform} {
 		custom := map[string]any{
 			"login_channel": "netease", "app_channel": "netease.allysdk3rd",
 			"source_app_channel": "netease.allysdk3rd", "platform": platform,
@@ -83,13 +91,13 @@ func TestZZHeadlessChain(t *testing.T) {
 		}
 		code := toStr(resp["code"])
 		t.Logf("阶段3：ma75 uni_sauth 声明平台=%s，code=%s，有授权包=%v", platform, code, resp["unisdk_login_json"] != nil)
-		if code == "200" && platform == "ad" {
+		if code == "200" {
 			accepted, acceptedSAUTH = resp, sauth
 			break
 		}
 	}
 	if accepted == nil {
-		t.Fatal("阶段3阻断：新鲜 ma75 凭证未获得安卓游戏授权；没有进入确认或写槽，更没有完成带渠道启动")
+		t.Fatalf("阶段3阻断：ma75 凭证未获得 %s 游戏授权；没有进入确认或换票", wantPlatform)
 	}
 	lp, err := netsec.NewLoginPayloadFromSAUTH(accepted, acceptedSAUTH, game[2], "0", strconv.FormatInt(time.Now().Unix(), 10), dev, netsec.NeteaseChannelInfo())
 	if err != nil {
@@ -129,6 +137,9 @@ func TestZZHeadlessChain(t *testing.T) {
 		if os.Getenv("HEADLESS_CONFIRM_DEVICE") == "1" {
 			name = "with-device-" + name
 		}
+		if wantPlatform != "ad" {
+			name = wantPlatform + "-" + name
+		}
 		if e := os.WriteFile(filepath.Join(dir, name), b, 0o600); e != nil {
 			t.Fatal("写入授权请求失败")
 		}
@@ -148,7 +159,7 @@ func TestZZHeadlessChain(t *testing.T) {
 		if err != nil || res == nil || res.Ticket == "" {
 			t.Fatal("阶段7：无寄宿换票失败")
 		}
-		private := map[string]any{"ticket": res.Ticket, "login_channel": res.Channel, "platform": "ad", "uid": game[0], "device_id": host[1]}
+		private := map[string]any{"ticket": res.Ticket, "login_channel": res.Channel, "platform": wantPlatform, "uid": game[0], "device_id": host[1]}
 		b, _ := json.MarshalIndent(private, "", "  ")
 		if err := os.WriteFile(filepath.Join(dir, "private-game-ticket.json"), b, 0o600); err != nil {
 			t.Fatal("保存无寄宿游戏票失败")
