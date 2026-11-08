@@ -72,6 +72,8 @@ export interface AccountView {
   region?: string;
   /** 区的中文名，直接显示（安卓区 / iOS 区 / 空） */
   regionLabel?: string;
+  /** 非空 = 选了渠道但当前凭证用不了（原因是给用户看的） */
+  regionBlocked?: string;
 
   /** 是否是当前选中的账号 */
   current: boolean;

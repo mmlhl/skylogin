@@ -19,10 +19,12 @@ package app
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"skylogin/internal/mpay"
+	"skylogin/internal/profile"
 )
 
 // SendSMS 发验证码。
@@ -35,11 +37,29 @@ func SendSMS(mobile string) error {
 	if derr != nil {
 		return derr
 	}
-	if _, err := mpay.New().SendSMS(mobile, dev); err != nil {
+	if _, err := smsClient().SendSMS(mobile, dev); err != nil {
 		return fmt.Errorf("发送验证码失败: %w", err)
 	}
 	logf("已向 %s 发送登录验证码", maskMobile(mobile))
 	return nil
+}
+
+// smsClient 返回短信登录用的客户端。
+//
+// **默认用游戏上下文（ma75）**：2026-11-08 实测，发码、验码、mobile/finish
+// 在 ma75 下全部可用，换出的是账号级凭证（sa=-99）且 g_i=ma75——这种凭证
+// 才能按渠道签发（见 channelplatform.go）。
+//
+// 之前默认走 a50（发烧平台上下文），换出的凭证 g_i=a50，走渠道签发会被
+// 501 拒。想看老行为时设 SKYLOGIN_SMS_GAME=a50。
+func smsClient() *mpay.Client {
+	c := mpay.New()
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("SKYLOGIN_SMS_GAME")), "a50") {
+		logf("[调试] 短信登录改用平台上下文（a50）")
+		return c
+	}
+	c.SMSGameID = profile.LongGameID
+	return c
 }
 
 // CompleteSMSLogin 校验验证码，换 token 并保存账号。
@@ -54,12 +74,12 @@ func CompleteSMSLogin(mobile, code, targetUserID string) error {
 	if derr != nil {
 		return derr
 	}
-	ticket, _, err := mpay.New().VerifySMS(mobile, code, dev)
+	ticket, _, err := smsClient().VerifySMS(mobile, code, dev)
 	if err != nil {
 		return fmt.Errorf("验证码校验失败: %w", err)
 	}
 	logf("验证码校验通过，拿到票据（%s）", maskTicket(ticket))
-	c := mpay.New()
+	c := smsClient()
 	// 票据换登录态：优先 mobile/finish（账号级 token，长期有效），
 	// 失败退回 login/ticket（会话级，老行为兜底）。见 exchangeSMSLoginTicket。
 	out, err := exchangeSMSLoginTicket(c, ticket, dev)

@@ -24,8 +24,14 @@ type Client struct {
 	// AppChannel 是建码/扫码时上报的渠道名。空表示华为（历史默认值）。
 	// 其它渠道（如九游 uc_platform）必须显式指定，否则服务端会回「非法请求」。
 	AppChannel string
-	http       *http.Client
-	cv         string
+	// SMSGameID 非空时，短信登录（发码/校验）用它当 game_id。
+	//
+	// 默认空 = 走发烧平台上下文（a50），换出来的凭证是**平台身份**，
+	// 不能用于 ma75 的渠道签发（uni_sauth 会回 501）。
+	// 设成光遇自己的长 id 可以验证“验证码登录能不能直接拿游戏身份”。
+	SMSGameID string
+	http      *http.Client
+	cv        string
 }
 
 func New() *Client {

@@ -44,8 +44,8 @@ func mpayDebug() MpayDebugConfig {
 	if d.DLL != "game" && d.DLL != "platform" {
 		d.DLL = "platform"
 	}
-	if d.Game != "ma75" {
-		d.Game = "a50"
+	if d.Game != "a50" {
+		d.Game = "ma75"
 	}
 	return d
 }
@@ -92,13 +92,17 @@ func mpayDebugDLLDir(skyDir, skinPath string) (string, string) {
 
 // mpayDebugGameID 按调试参数决定用哪个 game id 初始化登录窗。
 //
-//	a50  → 平台上下文，窗口里的二维码只能网易大神扫
-//	ma75 → 游戏上下文，二维码用光遇手游扫（DLL 自己走 exchange_token）
+//	ma75 → 游戏上下文（**默认**）：登录后拿到的凭证 g_i=ma75，才能按渠道签发；
+//	        窗口里的二维码也能用光遇手游扫。
+//	a50  → 平台上下文：拿到的凭证是平台身份，不能按渠道签发（uni_sauth 会回 501）。
+//
+// 2026-11-08 实测：验证码登录（SMS）改用 ma75 上下文后，凭证 g_i=ma75、
+// sa=-99，渠道签发一次就成；之前用 a50 上下文拿到的凭证永远发不出渠道票。
 func mpayDebugGameID() string {
-	if mpayDebug().Game == "ma75" {
-		return profile.LongGameID
+	if mpayDebug().Game == "a50" {
+		return profile.HostedGameID
 	}
-	return profile.HostedGameID
+	return profile.LongGameID
 }
 
 // findSkin 找官方登录窗要用的皮肤资源（发烧平台安装目录里的 skin.zip）。

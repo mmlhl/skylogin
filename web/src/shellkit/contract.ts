@@ -31,6 +31,8 @@ export interface Account {
   region?: string;
   /** 区的中文名（安卓区 / iOS 区），界面直接显示；空 = 未选 */
   regionLabel?: string;
+  /** 非空 = 选了渠道但当前凭证用不了，内容是原因（界面直接提示） */
+  regionBlocked?: string;
   /** 远程身份 id（同一账号的原始行与副本相同） */
   playerId: string;
   /** 这行账号自己的游戏画质档位（空 = 跟随游戏） */

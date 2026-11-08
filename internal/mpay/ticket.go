@@ -245,9 +245,14 @@ func newTransID() string {
 //
 // 实测：200 且返回 {}，验证码由网易下发；号码格式不对会返回 400/1330。
 func (c *Client) SendSMS(mobile, deviceID string) (map[string]any, error) {
-	// 短信登录已整体迁移到 a50（发烧平台）上下文：官方平台内的短信登录
+	// 短信登录默认走 a50（发烧平台）上下文：官方平台内的短信登录
 	// 就是在 a50 里做的，game_id 用 a50 长 id、jf_game_id 仍为 ma75。
-	form := baseForm(deviceID, profile.HostedGameID, profile.ShortGameID, "a50_sdk_cn", "c4.20.0", "0.0.0.0")
+	// SMSGameID 非空时改用指定 game（诊断：验证能否拿到游戏身份凭证）。
+	gameID := profile.HostedGameID
+	if c.SMSGameID != "" {
+		gameID = c.SMSGameID
+	}
+	form := baseForm(deviceID, gameID, profile.ShortGameID, "a50_sdk_cn", "c4.20.0", "0.0.0.0")
 	form.Set("mobile", mobile)
 	out, err := c.postForm("/mpay/api/users/login/mobile/get_sms", nil, form)
 	if err != nil {
@@ -261,7 +266,11 @@ func (c *Client) SendSMS(mobile, deviceID string) (map[string]any, error) {
 // 这张票可以换登录态（FinishSMS / LoginTicket），也能直接交给游戏。
 // login_for=1 与发烧平台一致（2026-10-29 抓包）。
 func (c *Client) VerifySMS(mobile, code, deviceID string) (string, map[string]any, error) {
-	form := baseForm(deviceID, profile.HostedGameID, profile.ShortGameID, "a50_sdk_cn", "c4.20.0", "0.0.0.0")
+	gameID := profile.HostedGameID
+	if c.SMSGameID != "" {
+		gameID = c.SMSGameID
+	}
+	form := baseForm(deviceID, gameID, profile.ShortGameID, "a50_sdk_cn", "c4.20.0", "0.0.0.0")
 	form.Set("mobile", mobile)
 	form.Set("login_for", "1")
 	form.Set("smscode", code)

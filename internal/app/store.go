@@ -516,29 +516,31 @@ func accountView(a Account) map[string]any {
 	}
 
 	return map[string]any{
-		"credState":    state,
-		"running":      accountRunning(accountKey(a)),
-		"source":       source,
-		"loginMethod":  a.LoginMethod,
-		"lastError":    a.LastError,
-		"lastCheck":    a.LastCheck,
-		"id":           accountKey(a),
-		"copyKey":      a.CopyKey,
-		"qualityMode":  a.QualityMode,
-		"qualityFps":   a.QualityFps,
-		"region":       a.Region,
-		"regionLabel":  regionLabel(a.Region),
-		"name":         displayName(a),
-		"nick":         a.NickName,
-		"channel":      ch,
-		"channelLabel": label,
-		"playerId":     a.PlayerID,
-		"accountId":    a.PlayerID,
-		"idLabel":      "账号 ID",
-		"masked":       maskID(a.PlayerID),
-		"level":        a.PlayerLevel,
-		"updatedTs":    a.UpdatedAt,
-		"updated":      time.Unix(a.UpdatedAt, 0).Format("01-02 15:04"),
+		"credState":   state,
+		"running":     accountRunning(accountKey(a)),
+		"source":      source,
+		"loginMethod": a.LoginMethod,
+		"lastError":   a.LastError,
+		"lastCheck":   a.LastCheck,
+		"id":          accountKey(a),
+		"copyKey":     a.CopyKey,
+		"qualityMode": a.QualityMode,
+		"qualityFps":  a.QualityFps,
+		"region":      a.Region,
+		"regionLabel": regionLabel(a.Region),
+		// regionBlocked 非空 = 虽然选了渠道，但当前凭证用不了（界面要提示原因）
+		"regionBlocked": regionBlockReason(a),
+		"name":          displayName(a),
+		"nick":          a.NickName,
+		"channel":       ch,
+		"channelLabel":  label,
+		"playerId":      a.PlayerID,
+		"accountId":     a.PlayerID,
+		"idLabel":       "账号 ID",
+		"masked":        maskID(a.PlayerID),
+		"level":         a.PlayerLevel,
+		"updatedTs":     a.UpdatedAt,
+		"updated":       time.Unix(a.UpdatedAt, 0).Format("01-02 15:04"),
 
 		// ── 详情页用的环境/时间信息 ──────────────────────────────
 		// 全给原始值 + 格式化值两份：界面显示用后者，以后做"存了几天"的
@@ -572,6 +574,8 @@ func fmtStamp(t int64) string {
 // 真实数字，同时给出“能不能长期用”这个用户真正关心的信息。
 func tokenSaLabel(sa int) string {
 	switch sa {
+	case -99:
+		return "账号级（sa=-99，长期）"
 	case -9:
 		return "账号级（sa=-9，长期）"
 	case 3:

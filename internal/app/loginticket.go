@@ -27,11 +27,20 @@ import (
 // 之后 login/ticket 直接 1306，**别拿它来试**（2026-11-05 实测）。
 func exchangeSMSLoginTicket(c *mpay.Client, ticket, devID string) (map[string]any, error) {
 	var errs []string
-	// 短信票是 a50 签的，所以 a50 的两组上下文先生效。
-	for _, v := range []struct{ name, long, short, ch, cv string }{
+	contexts := []struct {
+		name, long, short, ch, cv string
+	}{
 		{"我们的 SMS 上下文", profile.HostedGameID, profile.ShortGameID, "a50_sdk_cn", "c4.20.0"},
 		{"平台原始参数", profile.HostedGameID, "a50", "netease.allysdk3rd", "c4.21.0"},
-	} {
+	}
+	// 诊断：想验证“验证码登录能不能直接拿游戏身份”时，先试游戏上下文。
+	// 拿到 ma75 身份的 token 才能用渠道签发（见 channelplatform.go）。
+	if c.SMSGameID != "" {
+		contexts = append([]struct {
+			name, long, short, ch, cv string
+		}{{"游戏上下文（诊断）", c.SMSGameID, profile.ShortGameID, "a50_sdk_cn", "c4.20.0"}}, contexts...)
+	}
+	for _, v := range contexts {
 		out, err := c.FinishSMS(ticket, devID, v.long, v.short, v.ch, v.cv)
 		if err == nil && userTokenOf(out) != "" {
 			logf("票据换登录态：mobile/finish（%s）成功", v.name)

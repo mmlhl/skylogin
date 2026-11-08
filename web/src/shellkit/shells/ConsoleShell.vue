@@ -197,8 +197,14 @@ const lastCheckText = computed(() => {
           <button :class="{ on: cur.region === 'android' }" @click="store.setAccountRegion(cur.id, 'android')">安卓</button>
           <button :class="{ on: cur.region === 'ios' }" @click="store.setAccountRegion(cur.id, 'ios')">iOS</button>
         </div>
-        <p class="regionnote">
-          {{ cur.region ? "启动时光遇直接进" + (cur.regionLabel || "") + "，不再问选哪个区" : "启动时光遇会自己问选哪个区" }}
+        <p class="regionnote" :class="{ warn: !!cur.regionBlocked }">
+          {{
+            cur.regionBlocked
+              ? cur.regionBlocked
+              : cur.region
+                ? "启动时光遇直接进" + (cur.regionLabel || "") + "，不再问选哪个区"
+                : "启动时光遇会自己问选哪个区"
+          }}
         </p>
       </div>
 
@@ -495,6 +501,10 @@ const lastCheckText = computed(() => {
   margin: 6px 0 0;
   font-size: 12px;
   color: var(--faint);
+}
+/* 选了渠道但凭证用不了：用告警色，别让用户以为已经生效 */
+.regionnote.warn {
+  color: #d98b8b;
 }
 
 .dinfo {

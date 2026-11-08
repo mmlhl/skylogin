@@ -69,17 +69,52 @@ func platformLabel(code string) string {
 
 // channelMintable 判断这个账号能不能走渠道签发。
 //
-// 只放行网易官方账号（渠道服账号的渠道由渠道 SDK 决定，不该由我们声明），
-// 以及“用户已经选了渠道”的账号。
+// 条件：
+//   - 网易官方账号（渠道服账号的渠道由渠道 SDK 决定，不该由我们声明）；
+//   - 用户已经选了渠道；
+//   - 凭证是**游戏身份（ma75）签订**的。
 //
-// 早期曾限定 sa=-9（账号级），但实测发现手机号验证码登录的号也会是 sa=-4：
-// 它同样能走完声明平台→确认→换票，只是寿命短一些。是否能用由服务端判定，
-// 失败会自动回退原有签票，不应因为一个等级标签就直接剥夺用户的选择功能。
+// 第三条是实测出来的硬限制（2026-11-08）：
+//
+//	渠道签发走的是 ma75 的 uni_sauth 和 ma75 的签名密钥。用 a50（平台身份）
+//	签订的凭证（典型：大神扫码，t=7、sa=-4、g_i=aecglf6ee4aaaarz）去请求，
+//	服务端直接回 501（X-Client-Sign error）——身份和签名都对不上。
+//	这种号必须先用账号密码/验证码登录一次，换成 ma75 凭证才能选区。
+//
+// 不再限制 sa 等级：手机号验证码登录也可能给 sa=-4，但只要签发身份是 ma75
+// 就能走通。
 func channelMintable(acc Account) bool {
 	if acc.Channel != "netease" || acc.MpayToken == "" || acc.UserID == "" {
 		return false
 	}
-	return platformCodeOf(acc.Region) != ""
+	if platformCodeOf(acc.Region) == "" {
+		return false
+	}
+	_, short := ticketContextForToken(acc.MpayToken)
+	return short == profile.ShortGameID
+}
+
+// regionBlockReason 返回“选了这个渠道但当前凭证用不了”的原因（空 = 没问题）。
+//
+// 给界面用：用户在详情页选了渠道后，如果凭证身份不对，要当场告诉他为什么
+// 下次启动仍会弹选区，而不是让他反复试。
+func regionBlockReason(acc Account) string {
+	if platformCodeOf(acc.Region) == "" {
+		return ""
+	}
+	if acc.Channel != "netease" {
+		return "只有网易官方账号可以选择渠道"
+	}
+	if acc.MpayToken == "" {
+		return "还没有登录凭证"
+	}
+	_, short := ticketContextForToken(acc.MpayToken)
+	if short != profile.ShortGameID {
+		// 用户能看懂的说法：他不需要知道 a50/ma75，只需要知道“点哪”。
+		// 点『刷新凭证』会用游戏身份重新登录一次（mpayDebugGameID 默认 ma75）。
+		return "此号的凭证是平台身份，不能声明游戏区；点『刷新凭证』重新登录一次即可"
+	}
+	return ""
 }
 
 // mintTicketByPlatform 用账号的长期凭证，按所选渠道签一张游戏票。
@@ -171,7 +206,15 @@ func mintTicketByPlatform(acc Account, dev *device.ClientProfile) (string, strin
 // channelMint 是 mintTicket 的渠道分支入口：能走就签，不能走返回 ok=false
 // 让调用方继续用原有逻辑。
 func channelMint(acc Account) (ticket string, ch string, ok bool) {
-	if !channelMintable(acc) {
+	if platformCodeOf(acc.Region) == "" || acc.Channel != "netease" {
+		return "", "", false
+	}
+	if reason := regionBlockReason(acc); reason != "" {
+		// 选了渠道却用不了：必须留痕，并在界面上给提示，
+		// 否则用户只会看到“又弹选区了”却不知道为什么。
+		logf("%s：所选渠道暂时用不了（%s）", displayName(acc), reason)
+		setAuthHint("region_blocked", "所选渠道还没生效",
+			fmt.Sprintf("%s：%s", displayName(acc), reason), acc.Username, acc.UserID)
 		return "", "", false
 	}
 	dev, err := device.LoadOrCreateClient(filepath.Join(dataDir(), "sdk_device.json"))
