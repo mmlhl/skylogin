@@ -249,7 +249,7 @@ func refreshGameCred(acc Account) (Account, bool) {
 		if _, err := autoRelogin(acc); err != nil {
 			logf("%s：自动重登换凭证失败（%v）", displayName(acc), err)
 		} else if fresh, ok := findAccountByUserID(acc.UserID); ok && regionBlockReason(fresh) == "" {
-			logf("%s：原凭证不能选区，已自动重登换成游戏身份凭证", displayName(acc))
+			logf("%s：原凭证类型不对，已自动重登换成游戏身份凭证", displayName(acc))
 			return fresh, true
 		}
 	}

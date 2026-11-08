@@ -95,8 +95,10 @@ func mpayDebugDLLDir(skyDir, skinPath string) (string, string) {
 //
 //	ma75 → 游戏上下文（**正常登录固定用它**）：回调凭证 g_i=aecfs5n2y4aaaakd、
 //	        sa=-9，能按渠道签发；窗口里的二维码也能用光遇手游扫。
-//	a50  → 平台上下文：回调凭证 g_i=aecglf6ee4aaaarz（平台身份），
-//	        uni_sauth 会回 501，选渠道永远不生效。
+//	a50  → 平台上下文：回调凭证 g_i=aecglf6ee4aaaarz（平台身份）。
+//	        这份凭证**不能直接**声明渠道（uni_sauth 回 501），要先签票再按游戏
+//	        上下文兑换一次；程序会自动换（见 channelplatform.go 的 refreshGameCred），
+//	        但正常登录没必要绕这一圈。
 //
 // 2026-11-08 两次实测（都记录在 05/06 号文档）：
 //

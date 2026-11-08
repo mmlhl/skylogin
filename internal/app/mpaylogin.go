@@ -153,8 +153,8 @@ func startMpayLogin(targetUserID, forceGame string) error {
 		logf("渠道服扫码：登录窗用游戏身份初始化（%s）", gameID)
 	} else if gameID == profile.HostedGameID {
 		// 默认是 ma75（游戏身份）；只有在调试里显式选 a50 时才提醒：
-		// a50 上下文登出来的凭证是平台身份，不能按渠道签发。
-		logf("[调试] 登录窗用平台身份初始化（%s）：此凭证不能按渠道签发", gameID)
+		// 这份平台凭证不能直接声明渠道，要先签票换成游戏凭证（程序会自动换）。
+		logf("[调试] 登录窗用平台身份初始化（%s）：这份凭证要先换成游戏凭证才能选区", gameID)
 	}
 	args := []string{
 		"--mpaylogin",

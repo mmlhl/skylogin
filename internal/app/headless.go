@@ -50,7 +50,7 @@ type HeadlessResult struct {
 	DeviceID string
 	GameID   string
 	Token    string
-	Platform bool // true = 平台身份凭证（不能按渠道签发）
+	Platform bool // true = 平台身份凭证（要先换成游戏凭证才能声明渠道）
 	Slots    []string
 }
 
@@ -218,7 +218,7 @@ func HeadlessLoginAccount(user, password, region, name string) (map[string]any, 
 		return nil, err
 	}
 	if res.Platform {
-		return nil, fmt.Errorf("这次登录拿到的是平台身份凭证，不能按渠道签发，请重试")
+		return nil, fmt.Errorf("这次登录拿到的是平台身份凭证，需要先换成游戏凭证；请先按游戏身份重登一次")
 	}
 	if res.UserID == "" || res.Token == "" {
 		return nil, fmt.Errorf("登录成功但没拿到完整凭证")
