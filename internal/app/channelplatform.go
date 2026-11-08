@@ -83,6 +83,11 @@ func platformLabel(code string) string {
 //
 // 不再限制 sa 等级：手机号验证码登录也可能给 sa=-4，但只要签发身份是 ma75
 // 就能走通。
+//
+// ⚠ 2026-11-09 更正：上面这条"不再限制 sa 等级"是错的。会话级（sa=3）能过
+// uni_sauth（200），但 confirm_login 会 403/1306，签不出票。两次对照证明限制在
+// 等级本身，不在来源（平台兑换出来的 sa=3、账号级凭证自己滚出来的 sa=3 都失败）。
+// 所以现在要求账号级（sa=-9 / -99），见 isAccountLevelToken。
 func channelMintable(acc Account) bool {
 	if acc.Channel != "netease" || acc.MpayToken == "" || acc.UserID == "" {
 		return false
@@ -91,7 +96,16 @@ func channelMintable(acc Account) bool {
 		return false
 	}
 	_, short := ticketContextForToken(acc.MpayToken)
-	return short == profile.ShortGameID
+	if short != profile.ShortGameID {
+		return false
+	}
+	return isAccountLevelToken(acc.MpayToken)
+}
+
+// isAccountLevelToken 判断是不是账号级凭证（长期有效、能走完渠道签发）。
+func isAccountLevelToken(token string) bool {
+	sa := tokenSaValue(token)
+	return sa == -9 || sa == -99
 }
 
 // regionBlockReason 返回“选了这个渠道但当前凭证用不了”的原因（空 = 没问题）。
@@ -110,10 +124,11 @@ func regionBlockReason(acc Account) string {
 	}
 	_, short := ticketContextForToken(acc.MpayToken)
 	if short != profile.ShortGameID {
-		// 用户能看懂的说法：他不需要知道 a50/ma75，只需要知道"会发生什么"。
-		// 现在启动时就会自动把平台凭证换成游戏凭证（两条路：有密码直接重登；
-		// 没密码就用平台凭证签票再兑换），正常情况下用户看不到这条提示。
-		return "这个号的凭证需要先转成游戏凭证才能选区，启动时会自动完成；若连续几次启动仍提示，点『刷新凭证』重登一次即可"
+		// 用户能看懂的说法：他不需要知道 a50/ma75，只需要知道"点哪"。
+		return "这个号的凭证是平台身份，不能直接选区；点『刷新凭证』用密码或验证码重新登录一次即可"
+	}
+	if !isAccountLevelToken(acc.MpayToken) {
+		return "这个号的凭证是会话级（会过期），不能免选区；点『刷新凭证』用密码或验证码重新登录一次即可"
 	}
 	return ""
 }
@@ -254,14 +269,12 @@ func refreshGameCred(acc Account) (Account, bool) {
 		}
 	}
 
-	// 路径二：没有密码，但手里已经是**平台身份**凭证 —— 不用重新登录，
-	// 拿它签一张票、再按游戏上下文兑换，换出来的就是游戏身份凭证。
-	// （2026-11-08 实测：平台票 + game_id=…-ma75 兑换 → g_i=ma75，ad/ios 都能声明渠道）
-	if isPlatformToken(acc.MpayToken) {
-		if fresh, ok := convertPlatformCred(acc); ok {
-			return fresh, true
-		}
-	}
+	// 没有密码就只能重新登录。
+	//
+	// 曾经在这里加过一条"平台凭证签票 + 游戏上下文兑换"的路（换出来 g_i=ma75），
+	// 当时只验到 uni_sauth 200 就以为通了。2026-11-09 补验 confirm 才发现：
+	// 兑换出来的是 sa=3 会话级凭证，confirm_login 一律 403/1306，签不出票。
+	// 所以那条路对"免选区"没有价值，已移除；别再重走。
 	return acc, false
 }
 
@@ -271,13 +284,13 @@ func isPlatformToken(token string) bool {
 	return gi != "" && strings.HasPrefix(profile.HostedGameID, gi)
 }
 
-// convertPlatformCred 用平台身份凭证换一份游戏身份凭证，并写回账号。
+// convertPlatformCred 用平台身份凭证换一份游戏身份凭证（**仅诊断，正式流程不再调用**）。
 //
-// 平台凭证不能直接声明渠道（uni_sauth 会回 501），但可以走官方那条换票链：
+// 换得出来（g_i=ma75），但它一定是 sa=3 会话级：uni_sauth 能过，confirm_login 会
+// 403/1306，签不出票。2026-11-09 两次对照确认限制在等级、不在来源，所以这条路
+// 不能用来免选区，只能用来观察换票链。留着是因为排查"平台账号为什么能进游戏"时有用。
 //
 //	create_ticket(平台上下文) → login/ticket(游戏上下文) → g_i=游戏身份的 token
-//
-// 这正是官方平台启动游戏时的路径，也是"平台账号能进游戏"的原因。
 func convertPlatformCred(acc Account) (Account, bool) {
 	longID, shortID := ticketContextForToken(acc.MpayToken)
 	c := mpay.New()

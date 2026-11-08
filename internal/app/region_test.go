@@ -33,7 +33,9 @@ func TestPlatformCodeOf(t *testing.T) {
 // 只有"网易官方 + 已选渠道 + 有凭证"才允许渠道签发；渠道服账号必须拦下。
 func TestChannelMintable(t *testing.T) {
 	accountToken := "1-" + b64(t, `{"si":"s","s":"x","g_i":"aecfs5n2y4aaaakd","t":1,"sa":-9}`)
-	sessionToken := "1-" + b64(t, `{"si":"s","s":"x","g_i":"aecfs5n2y4aaaakd","t":1,"sa":-4}`)
+	smsToken := "1-" + b64(t, `{"si":"s","s":"x","g_i":"aecfs5n2y4aaaakd","t":7,"sa":-99}`)
+	sessionToken := "1-" + b64(t, `{"si":"s","s":"x","g_i":"aecfs5n2y4aaaakd","t":1,"sa":3}`)
+	platformToken := "1-" + b64(t, `{"si":"s","s":"x","g_i":"aecglf6ee4aaaarz","t":1,"sa":-9}`)
 
 	cases := []struct {
 		name string
@@ -43,8 +45,12 @@ func TestChannelMintable(t *testing.T) {
 		{"网易+安卓+账号级", Account{Channel: "netease", UserID: "u", MpayToken: accountToken, Region: "android"}, true},
 		{"网易+iOS+账号级", Account{Channel: "netease", UserID: "u", MpayToken: accountToken, Region: "ios"}, true},
 		{"未选渠道", Account{Channel: "netease", UserID: "u", MpayToken: accountToken}, false},
-		// 手机号验证码登录可能是 sa=-4，不能因此禁用选区
-		{"手机号凭证(sa=-4)+已选区", Account{Channel: "netease", UserID: "u", MpayToken: sessionToken, Region: "android"}, true},
+		// 短信登录给 sa=-99，同属账号级，能签发
+		{"手机号凭证(sa=-99)+已选区", Account{Channel: "netease", UserID: "u", MpayToken: smsToken, Region: "android"}, true},
+		// 会话级（sa=3）能过 uni_sauth，但 confirm 会 1306，签不出票 → 不算可签发
+		{"会话凭证(sa=3)", Account{Channel: "netease", UserID: "u", MpayToken: sessionToken, Region: "android"}, false},
+		// 平台身份（a50）直接声明会 501 → 不算可签发
+		{"平台凭证", Account{Channel: "netease", UserID: "u", MpayToken: platformToken, Region: "android"}, false},
 		// 渠道服账号仍必须拦下：它们的渠道由渠道 SDK 决定
 		{"渠道服账号", Account{Channel: "huawei", UserID: "u", MpayToken: accountToken, Region: "android"}, false},
 		{"没有 token", Account{Channel: "netease", UserID: "u", Region: "android"}, false},
