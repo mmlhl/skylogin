@@ -258,6 +258,19 @@ func runUILessProbe(mode, slotsFile, uid, token, account, atk, openid, device, c
 		_ = os.WriteFile(os.Getenv("URS_DUMP"), b, 0o600)
 		fmt.Printf("槽位已落盘 %s\n", os.Getenv("URS_DUMP"))
 	}
+	// 回调 token 若是 ma75 签发的，存成**游戏身份凭证**（MpayToken）——
+	// 渠道签发只认它。用来修复"账号被 a50 凭证污染后选不了区"。
+	if os.Getenv("URS_SAVE_MAIN") != "" && len(res.Slots) > 2 {
+		dev := ""
+		if len(res.Slots) > 1 {
+			dev = res.Slots[1]
+		}
+		if err := app.SaveGameCred(os.Getenv("URS_SAVE_MAIN"), res.Slots[2], dev, os.Getenv("URS_USER")); err != nil {
+			fmt.Printf("游戏身份凭证保存失败: %v\n", err)
+		} else {
+			fmt.Printf("已把游戏身份凭证存进 %s 的账号记录\n", os.Getenv("URS_SAVE_MAIN"))
+		}
+	}
 	// 回调 token 若是 a50 签发的，存进账号库（A50Token），正式启用自寄宿
 	if os.Getenv("URS_SAVE") != "" && len(res.Slots) > 2 {
 		a50Dev := ""
