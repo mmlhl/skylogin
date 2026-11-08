@@ -2,7 +2,7 @@ package app
 
 // 本地探针（默认跳过）：给某个账号设置所选渠道，方便真机验证。
 //
-//	REGION_KEY=aebggifyh5w2dop4 REGION_VALUE=ios go test ./internal/app -run TestZZSetRegion -v
+//	REGION_KEY=aebdemo0000000000 REGION_VALUE=ios go test ./internal/app -run TestZZSetRegion -v
 //
 // 只改本地账号记录，不发网络请求。
 

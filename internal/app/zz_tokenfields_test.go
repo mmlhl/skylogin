@@ -15,7 +15,7 @@ func TestZZTokenFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"aebgerymcruc6zqx", "aebfx7kv2q5vpldc"} {
+	for _, key := range []string{"aebdemo0000000000", "aedemo0000000000"} {
 		acc, ok := findAccount(list, key)
 		if !ok {
 			continue

@@ -6,7 +6,7 @@ package app
 // 报 1306。为排除"平台兑换出来的凭证本身有问题"，这里用**账号级凭证自己滚出来的
 // sa=3** 做对照：如果它也 1306，说明限制在等级，不在来源。
 //
-// 开关：ZZ_SA3CONFIRM=<账号 PlayerID>（建议用 sa=-9 的号，如 aebggifyh5w2dop4）
+// 开关：ZZ_SA3CONFIRM=<账号 PlayerID>（建议用 sa=-9 的号，如 aebdemo0000000000）
 
 import (
 	"os"

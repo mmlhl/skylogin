@@ -45,10 +45,10 @@ func TestTokenOwnerIs(t *testing.T) {
 func TestIdentityFromResult(t *testing.T) {
 	r := Result{
 		OK:  true,
-		Slots: []string{"aebggifyh5w2dop4", "amawv4aac7qrqapv-d", makeToken(t, "aecfs5n2y4aaaakd")},
+		Slots: []string{"aebdemo0000000000", "amdemo0000000000-d", makeToken(t, "aecfs5n2y4aaaakd")},
 	}
 	id := r.Identity("aecglf6ee4aaaarz-g-a50")
-	if id.UserID != "aebggifyh5w2dop4" || id.DeviceID != "amawv4aac7qrqapv-d" {
+	if id.UserID != "aebdemo0000000000" || id.DeviceID != "amdemo0000000000-d" {
 		t.Fatalf("槽位映射错了: %+v", id)
 	}
 	if id.Platform {

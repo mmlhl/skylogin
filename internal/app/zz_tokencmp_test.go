@@ -35,7 +35,7 @@ func TestZZTokenCompare(t *testing.T) {
 		odi, _ := m["odi"]
 		t.Logf("%s: 键=%v si有=%v lt=%v odi有=%v", label, keys, si != "", lt, odi != "")
 	}
-	for _, key := range []string{"aebgerymcruc6zqx", "aebfx7kv2q5vpldc"} {
+	for _, key := range []string{"aebdemo0000000000", "aedemo0000000000"} {
 		acc, ok := findAccount(list, key)
 		if !ok {
 			continue
