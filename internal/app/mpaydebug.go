@@ -29,6 +29,10 @@ type MpayDebugConfig struct {
 }
 
 // mpayDebug 读当前配置，空值填成默认。
+//
+// 默认用**平台目录**那份（4.21）：平台自己登录用的就是它，登录后的表现
+// （包括会不会弹“选择平台”页）与平台行为一致。要回游戏目录那份，在
+// 设置页的开发者调试里显式选“游戏目录”。
 func mpayDebug() MpayDebugConfig {
 	c := loadConfig()
 	d := MpayDebugConfig{
@@ -37,8 +41,8 @@ func mpayDebug() MpayDebugConfig {
 		SkipLogout: c.MpayDebugSkipLogout,
 		DataPath:   c.MpayDebugDataPath,
 	}
-	if d.DLL != "platform" {
-		d.DLL = "game"
+	if d.DLL != "game" && d.DLL != "platform" {
+		d.DLL = "platform"
 	}
 	if d.Game != "ma75" {
 		d.Game = "a50"

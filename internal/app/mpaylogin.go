@@ -108,6 +108,27 @@ func startMpayLogin(targetUserID, forceGame string) error {
 		dataPath = dbg.DataPath
 		logf("[调试] 数据目录：%s", dataPath)
 	}
+	// 默认给每次登录一个**临时数据目录**：
+	//
+	//	DLL 会把“上次登录的账号”“记住的平台选择”这类状态写在数据目录里。
+	//	直接在用户的正式目录里登，就两头为难：不清态——会静默登录成上次
+	//	那个号（加不了新账号）；清态——平台记忆也一起没了，登录完又弹
+	//	“你玩哪个端”。
+	//
+	//	换成全新临时目录就都绕开了：本来就是空的，不需要清态，也不会有
+	//	账号列表页；登录拿到结果后整个目录删掉，不污染正式数据。
+	var tmpDataDir string
+	if dataPath == "" {
+		tmpDataDir = filepath.Join(os.TempDir(), "SkyLoginLogin",
+			strconv.FormatInt(time.Now().UnixNano(), 36))
+		if err := os.MkdirAll(tmpDataDir, 0o755); err == nil {
+			dataPath = tmpDataDir
+			logf("本次登录用临时数据目录：%s", tmpDataDir)
+		} else {
+			tmpDataDir = ""
+			logf("临时数据目录创建失败（%v），改用正式目录", err)
+		}
+	}
 
 	exe, err := os.Executable()
 	if err != nil {
@@ -170,7 +191,7 @@ func startMpayLogin(targetUserID, forceGame string) error {
 	mpayLoginProc = cmd.Process
 	mpayLoginMu.Unlock()
 
-	go watchMpayLogin(cmd, outPath, targetUserID)
+	go watchMpayLogin(cmd, outPath, targetUserID, tmpDataDir)
 	return nil
 }
 
@@ -222,13 +243,27 @@ func wasCancelled() bool {
 }
 
 // watchMpayLogin 等子进程写出结果，然后换 token 落库。
-func watchMpayLogin(cmd *exec.Cmd, outPath, targetUserID string) {
+func watchMpayLogin(cmd *exec.Cmd, outPath, targetUserID, tmpDataDir string) {
 	defer func() {
 		mpayLoginTr.finish()
 		mpayLoginMu.Lock()
 		mpayLoginProc = nil
 		mpayLoginMu.Unlock()
 		_ = os.Remove(outPath)
+		// 临时数据目录登录完就没用了：里面是这次会话的副本，留着只会占地方。
+		// 子进程刚退出时 dl 可能还开着库文件，所以要重试几次，不能删失败就放弃。
+		if tmpDataDir != "" {
+			var lastErr error
+			for i := 0; i < 10; i++ {
+				if lastErr = os.RemoveAll(tmpDataDir); lastErr == nil {
+					break
+				}
+				time.Sleep(300 * time.Millisecond)
+			}
+			if lastErr != nil {
+				logf("清理临时登录目录失败（不影响登录结果）：%v", lastErr)
+			}
+		}
 	}()
 
 	deadline := time.Now().Add(6 * time.Minute)

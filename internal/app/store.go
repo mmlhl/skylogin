@@ -565,19 +565,23 @@ func fmtStamp(t int64) string {
 	return time.Unix(t, 0).Format("2006-01-02 15:04")
 }
 
-// tokenSaLabel 把 sa 等级翻译成人话，详情页直接显示。
+// tokenSaLabel 把 sa 等级翻成详情页上的说明。
+//
+// 用户明确要求：不要把 sa=-4 叫作“大神登录”——-4 只是凭证的一个等级值，
+// 扫码、大神、渠道服都可能出现，叫“大神”会误导。所以标签里始终带上
+// 真实数字，同时给出“能不能长期用”这个用户真正关心的信息。
 func tokenSaLabel(sa int) string {
 	switch sa {
 	case -9:
-		return "账号级（长期）"
+		return "账号级（sa=-9，长期）"
 	case 3:
-		return "会话级（可续期）"
+		return "会话级（sa=3，可续期）"
 	case -4:
-		return "大神会话"
+		return "会话级（sa=-4，需重登或续期）"
 	case 0:
 		return ""
 	default:
-		return fmt.Sprintf("未知（sa=%d）", sa)
+		return fmt.Sprintf("sa=%d", sa)
 	}
 }
 

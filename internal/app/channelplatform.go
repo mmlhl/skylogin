@@ -69,17 +69,17 @@ func platformLabel(code string) string {
 
 // channelMintable 判断这个账号能不能走渠道签发。
 //
-// 只放行网易官方账号 + 账号级凭证（sa=-9）。理由：
-//   - 渠道服账号（华为/B站/4399/vivo/九游）的渠道由渠道 SDK 决定，不该由我们声明；
-//   - 扫码凭证（sa=-4 / sa=3）走这条路没验证过，不能拿用户的号去赌。
+// 只放行网易官方账号（渠道服账号的渠道由渠道 SDK 决定，不该由我们声明），
+// 以及“用户已经选了渠道”的账号。
+//
+// 早期曾限定 sa=-9（账号级），但实测发现手机号验证码登录的号也会是 sa=-4：
+// 它同样能走完声明平台→确认→换票，只是寿命短一些。是否能用由服务端判定，
+// 失败会自动回退原有签票，不应因为一个等级标签就直接剥夺用户的选择功能。
 func channelMintable(acc Account) bool {
 	if acc.Channel != "netease" || acc.MpayToken == "" || acc.UserID == "" {
 		return false
 	}
-	if platformCodeOf(acc.Region) == "" {
-		return false
-	}
-	return tokenSaValue(acc.MpayToken) == -9
+	return platformCodeOf(acc.Region) != ""
 }
 
 // mintTicketByPlatform 用账号的长期凭证，按所选渠道签一张游戏票。

@@ -30,8 +30,7 @@ func TestPlatformCodeOf(t *testing.T) {
 	}
 }
 
-// 只有"网易官方 + 已选渠道 + 账号级凭证(sa=-9)"才允许渠道签发。
-// 任何一条不满足都必须返回 false，让调用方回退原有签票逻辑。
+// 只有"网易官方 + 已选渠道 + 有凭证"才允许渠道签发；渠道服账号必须拦下。
 func TestChannelMintable(t *testing.T) {
 	accountToken := "1-" + b64(t, `{"si":"s","s":"x","g_i":"aecfs5n2y4aaaakd","t":1,"sa":-9}`)
 	sessionToken := "1-" + b64(t, `{"si":"s","s":"x","g_i":"aecfs5n2y4aaaakd","t":1,"sa":-4}`)
@@ -44,7 +43,9 @@ func TestChannelMintable(t *testing.T) {
 		{"网易+安卓+账号级", Account{Channel: "netease", UserID: "u", MpayToken: accountToken, Region: "android"}, true},
 		{"网易+iOS+账号级", Account{Channel: "netease", UserID: "u", MpayToken: accountToken, Region: "ios"}, true},
 		{"未选渠道", Account{Channel: "netease", UserID: "u", MpayToken: accountToken}, false},
-		{"扫码凭证(sa=-4)", Account{Channel: "netease", UserID: "u", MpayToken: sessionToken, Region: "android"}, false},
+		// 手机号验证码登录可能是 sa=-4，不能因此禁用选区
+		{"手机号凭证(sa=-4)+已选区", Account{Channel: "netease", UserID: "u", MpayToken: sessionToken, Region: "android"}, true},
+		// 渠道服账号仍必须拦下：它们的渠道由渠道 SDK 决定
 		{"渠道服账号", Account{Channel: "huawei", UserID: "u", MpayToken: accountToken, Region: "android"}, false},
 		{"没有 token", Account{Channel: "netease", UserID: "u", Region: "android"}, false},
 	}

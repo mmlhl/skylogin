@@ -280,6 +280,10 @@ func Login(opts Options) Result {
 		// 扫码窗里会浮一个「年龄提示」小气泡（skin 里的 age_tips.xml），
 		// 尺寸 60x76 还跟着窗口走，正好挡在二维码上方。官方留了开关。
 		setOptionInt(dll, "mpay_option_show_welcome_tip", 0)
+	} else {
+		// 账号密码/验证码登录：直接到输入表单，不要先弹“上次登录的账号列表”。
+		// 否则用户还得多点一下才能输账号（用户 2026-11-08 反馈）。
+		setSkipAccountListForm(dll)
 	}
 
 	buildCallbacks()
@@ -385,6 +389,23 @@ func installLogHook(dll *syscall.DLL, inst uintptr) {
 	if p, err := dll.FindProc("?SetLogHook@CMpay_Interface@Mpay@@QEAAXP6AXPEBD@Z@Z"); err == nil {
 		p.Call(inst, fn)
 	}
+}
+
+// setSkipAccountListForm 让登录窗一打开就是输入表单，而不是“上次登录的账号列表”。
+//
+// 背景：DLL 登录过后会记住账号，下次 login() 先弹一个“选择账号”的列表页，
+// 用户还得多点一下才能到输入框。官方提供了 mpay_option_skip_account_list_form
+// 这个开关，设上后直接进输入表单，省一次点击。
+func setSkipAccountListForm(dll *syscall.DLL) {
+	p, err := dll.FindProc("?SetOption@CMpay_Interface@Mpay@@SAXPEBDPEBX@Z")
+	if err != nil {
+		logf("这个 mpay.dll 没有 SetOption，无法跳过账号列表页")
+		return
+	}
+	key, _ := syscall.BytePtrFromString("mpay_option_skip_account_list_form")
+	val := 1
+	p.Call(uintptr(unsafe.Pointer(key)), uintptr(unsafe.Pointer(&val)))
+	logf("已设置跳过账号列表（mpay_option_skip_account_list_form=1）")
 }
 
 func setParentWindow(dll *syscall.DLL, hwnd uintptr) {
@@ -906,8 +927,53 @@ func onTicketResult(this, code, ticket, _ uintptr) uintptr {
 		return 0
 	}
 	logf("拿到票据: %s…", t[:min(len(t), 4)])
+	// 票已到手，本次登录的任务就完成了。DLL 在 NotifyLoginFinishForAas 之后
+	// 会把登录窗切到“选择平台”页（pc_form_login_page_platform_*）——那个页面
+	// 对 SkyLogin 没用（渠道由账号记录里的 Region 决定，启动时自己声明），
+	// 弹出来只会让用户又选一次。所以拿到票就把窗藏掉。
+	hideLoginWindowNow()
 	emit(Result{OK: true, Ticket: t, DeviceID: slotAt(got, 1), Account: accountOf(got), Slots: got})
 	return 0
+}
+
+// hideLoginWindowNow 把官方登录窗隐起来（不销毁：DLL 可能还要用它出回调）。
+//
+// 用途：用户填完账号密码、我们已拿到票据后，DLL 会继续把窗切到“选择平台”页。
+// 渠道已经由 SkyLogin 自己在启动时声朋了，这个页面纯属多余，隐掉即可。
+// 只动类名为 MPAY_LOGIN 的窗，不碰其它窗口。
+func hideLoginWindowNow() {
+	h := findWindowByClass("MPAY_LOGIN")
+	if h == 0 {
+		// 没找到就先把当前进程的所有顶层窗口类名记下来：
+		// 平台选择页到底属于哪个窗口，靠这份名单才能定位。
+		logWindowsNow("拿票时")
+		return
+	}
+	procShowWindow.Call(h, 0) // SW_HIDE
+	logf("已隐藏登录窗（防止后续弹出平台选择）")
+}
+
+// logWindowsNow 把本进程当前的顶层窗口类名/标题/可见性记进日志（诊断用）。
+// 只在需要定位“某个弹窗是哪来的”时调，正常流程不调。
+func logWindowsNow(when string) {
+	pid, _, _ := procGetCurrentProcessId.Call()
+	enumProc := syscall.NewCallback(func(hwnd, _ uintptr) uintptr {
+		var wpid uint32
+		procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&wpid)))
+		if uintptr(wpid) != pid {
+			return 1
+		}
+		cls := make([]uint16, 128)
+		procGetClassNameW.Call(hwnd, uintptr(unsafe.Pointer(&cls[0])), 128)
+		class := syscall.UTF16ToString(cls)
+		if class == "" {
+			return 1
+		}
+		vis, _, _ := procIsWindowVisible.Call(hwnd)
+		logf("[%s] 窗口 class=%q visible=%v", when, class, vis != 0)
+		return 1
+	})
+	procEnumWindows.Call(enumProc, 0)
 }
 
 func slotAt(s []string, i int) string {
