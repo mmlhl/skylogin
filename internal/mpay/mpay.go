@@ -19,6 +19,8 @@ import (
 // Client 是极简的 MPay 二维码客户端。
 type Client struct {
 	Base string
+	// ProbeTrace 仅供实验链路保存请求/响应，默认关闭；可能含凭证，只能写本地忽略目录。
+	ProbeTrace func(method, path string, request url.Values, response map[string]any)
 	// AppChannel 是建码/扫码时上报的渠道名。空表示华为（历史默认值）。
 	// 其它渠道（如九游 uc_platform）必须显式指定，否则服务端会回「非法请求」。
 	AppChannel string

@@ -142,8 +142,16 @@ func (c *Client) probeQRCodeRequest(ctx context.Context, method, path string, va
 	if err := decoder.Decode(&out); err != nil || out == nil {
 		return nil, fmt.Errorf("HTTP=%d，响应不是有效 JSON 对象", resp.StatusCode)
 	}
+	if c.ProbeTrace != nil {
+		c.ProbeTrace(method, path, values, out)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		code, _ := probeBusinessCode(out)
+		// 实测 scan 用 HTTP 400 携带 1424 和 game.id；这是上下文切换指令，
+		// 交给调用方处理。其它 HTTP 错误仍立即失败，不能忽略确认阶段的拒绝。
+		if resp.StatusCode == http.StatusBadRequest && path == "/mpay/api/qrcode/scan" && code == 1424 {
+			return out, nil
+		}
 		return nil, fmt.Errorf("HTTP=%d code=%d", resp.StatusCode, code)
 	}
 	return out, nil

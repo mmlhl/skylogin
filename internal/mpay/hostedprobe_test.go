@@ -29,6 +29,7 @@ func TestCompleteHostedQRCodeFlow(t *testing.T) {
 				t.Error("标记扫描未携带正确会话和渠道")
 			}
 			if len(calls) == 1 {
+				w.WriteHeader(http.StatusBadRequest)
 				out = map[string]any{"code": 1424, "game": map[string]any{"id": "target-game"}}
 			} else {
 				if r.URL.Query().Get("game_id") != "target-game" {
