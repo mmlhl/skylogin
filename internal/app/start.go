@@ -484,7 +484,40 @@ func validateNetEaseToken(acc Account) error {
 // 但游戏服务端不认——进游戏一直"网络错误"，就是 某个网易账号"签出废票"那个问题。
 // 所以固定优先 a50 上下文，失败再退回 token 自带的上下文，
 // 两条路都断才标记凭证过期（界面上会出现刷新入口）。
+// mintTicket 给指定账号现签一张一次性票据，带**加级重试**。
+//
+// 加级顺序（从便宜到贵）：
+//
+//	L0 渠道签发 / 槽出票 / A50 签票 / create_ticket —— mintTicketOnce 里的既有顺序
+//	L1 以上全失败时，如果有保存过密码，无头重登一次刷新两份凭证，再重试一遍
+//
+// 为什么重登放最后：同设备重新登录会顶掉该账号的其它会话（正在跑的客户端也会被顶）。
+// 所以只在"完全签不出票"时才做，成功即停。
 func mintTicket(acc Account, dev *device.ClientProfile) (string, string, error) {
+	t, ch, err := mintTicketOnce(acc, dev)
+	if err == nil {
+		return t, ch, nil
+	}
+	if !hasSavedPassword(acc) {
+		return "", "", err
+	}
+	logf("%s：签票失败（%v），尝试无头重登后重试", displayName(acc), err)
+	if _, rerr := autoRelogin(acc); rerr != nil {
+		logf("%s：自动重登失败（%v）", displayName(acc), rerr)
+		return "", "", err
+	}
+	// 重登只保证 ma75；平台凭证另外补一份，否则这个号当不了宿主、槽位会枯竭
+	ensureHostCred(acc)
+	fresh, ok := findAccountByUserID(acc.UserID)
+	if !ok {
+		return "", "", err
+	}
+	logf("%s：已重登，重新尝试签票", displayName(fresh))
+	return mintTicketOnce(fresh, dev)
+}
+
+// mintTicketOnce 是单轮签票：按现有顺序尝试各种来源，失败就返回错误。
+func mintTicketOnce(acc Account, dev *device.ClientProfile) (string, string, error) {
 	if canUseNetEase(acc) {
 		// ⓞ 用户给这个账号选了渠道（iOS / 安卓）：按渠道声明平台签发。
 		// 这是唯一能让游戏不再弹选区的路径（2026-11-08 ad/ios 均真机验证）。

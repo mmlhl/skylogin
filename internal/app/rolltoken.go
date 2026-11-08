@@ -6,8 +6,8 @@ package app
 // 但实测：拿它签一张票再走 `login/ticket`，换回来的新 token `lt` 会刷成当前时间
 // （2026-11-05 实测：lt 从 1793879111 变成 1793879845，且新 token 立刻可用）。
 //
-// 也就是说**只要在过期前滚一次，这个号就能一直用下去**，不用重新扫码。
-// 所以：启动器每次启动，把"好久没滚过"的会话 token 滚一遍。
+// 这能刷新会话的登录时间，但短期验证不能证明无限续期。
+// 自动滚动的等级开关和间隔集中在下面，便于根据后续寿命实测调整。
 
 import (
 	"encoding/base64"
@@ -19,7 +19,24 @@ import (
 	"skylogin/internal/mpay"
 )
 
-// tokenLoginUnix 取 token 里的 lt（登录时间，秒）；不是会话级 token 返回 0。
+// 自动滚动策略：只在这里调整各等级开关，未列出的等级默认关闭。
+// 负数等级先保留原凭证：-4 的寿命未知，-9/-99 是账号级，滚动可能降级成 3。
+// 这是编译期的代码配置，不从账号或界面动态修改。
+var tokenRollEnabledBySA = map[float64]bool{
+	3:   true,
+	-4:  false,
+	-9:  false,
+	-99: false,
+}
+
+const (
+	// 打开登录器时，距凭证登录时间超过此间隔才滚动；不是常驻定时器。
+	rollAfter = 12 * time.Hour
+	// 单开成功拿票后的滚动间隔，避免短时间重复续期。
+	rollAfterLaunch = time.Hour
+)
+
+// tokenLoginUnix 取 token 里的 lt（登录时间，秒）；没有该字段时返回 0。
 func tokenLoginUnix(token string) int64 {
 	raw := strings.TrimPrefix(token, "1-")
 	b, err := base64.RawStdEncoding.DecodeString(raw)
@@ -50,9 +67,9 @@ func tokenLoginUnix(token string) int64 {
 
 // tokenSaValue 取凭证里的 sa 值：
 //
-//	-9  = 账号级（密码 / 短信登录拿到，永久）
-//	 3  = 普通会话级（扫码拿到，会过期，可以滚）
-//	-4  = 大神扫码拿到的会话（也会过期，但不知道活多久）
+//	-9/-99 = 账号级（长期有效，仍可能被撤销）
+//	 3     = 普通会话级（会过期，可滚动续期）
+//	-4     = 扫码或手机号登录可能返回的等级，实际寿命未知
 //
 // 不认识的返回 0。
 func tokenSaValue(token string) float64 {
@@ -91,29 +108,19 @@ func tokenSaValue(token string) float64 {
 	return 0
 }
 
-// rollable 判断这份凭证要不要滚。
-//
-// 规则（2026-11-08 晚修订）：
-//
-//	sa=3  —— 普通会话凭证（扫码 / 网页 / 换票得来）：可滚，滚动只刷新 lt，稳定。
-//	sa=-4 —— 大神扫码 / 手机号那种会话：寿命未知。以前不敢碰，怕"本来能活更久、
-//	         滚一下就缩短了"。但现在实测 sa=3 的凭证**同样能按渠道签发、同样能启动
-//	         游戏**，滚成 3 等于把它纳入可续期轨道，比放着自然过期强。
-//	         所以现在允许滚；万一某天发现它其实很长寿，再改回来。
-//	sa=-9 —— 账号级，永久有效。滚一遍会被降级成会话级，绝对不碰。
+// rollable 统一判断当前策略是否允许滚动，所有滚动入口都经过这里。
+// sa=3 还要求带有效 lt，保留原有检查；其它等级开启后允许没有 lt。
 func rollable(token string) bool {
-	switch tokenSaValue(token) {
-	case 3:
-		return tokenLoginUnix(token) > 0
-	case -4:
-		return true
+	sa := tokenSaValue(token)
+	if !tokenRollEnabledBySA[sa] {
+		return false
 	}
-	return false
+	return sa != 3 || tokenLoginUnix(token) > 0
 }
 
 // rollSessionToken 把一条会话 token 滚到"现在"，返回新 token。
 //
-// 只处理 sa=3 的普通会话凭证，理由见 rollable 的注释。
+// 只处理集中策略允许的凭证，见 tokenRollEnabledBySA。
 func rollSessionToken(acc Account, devID string) (string, error) {
 	if acc.MpayToken == "" || !rollable(acc.MpayToken) {
 		return "", errors.New("不是可续期的会话凭证，跳过")
@@ -136,10 +143,6 @@ func rollSessionToken(acc Account, devID string) (string, error) {
 	return tok, nil
 }
 
-// rollAfter 超过这个时长没滚过就滚一次。
-// 会话凭证实测能活几天到几周，留足余量，避免用户隔两天开一次就失效。
-const rollAfter = 12 * time.Hour
-
 // rollStaleTokens 启动时把该滚的会话 token 滚一遍（后台跑，不挡界面）。
 func rollStaleTokens() {
 	list, err := loadAccounts()
@@ -154,7 +157,7 @@ func rollStaleTokens() {
 			continue
 		}
 		if !rollable(a.MpayToken) {
-			continue // 账号级 / 大神扫码那种，先不碰（见 rollable）
+			continue // 当前等级未开启滚动，或缺少必要的登录时间
 		}
 		lt := tokenLoginUnix(a.MpayToken)
 		if now-lt < int64(rollAfter.Seconds()) {
@@ -183,7 +186,7 @@ func rollStaleTokens() {
 
 // rollAccountToken 给单个账号滚一次（启动游戏后顺手做，后台）。
 //
-// 一小时内滚过的就不重复滚了（多开时同一个号可能被连着取好几次票）。
+// rollAfterLaunch 内不重复滚动，避免连续启动时重复取票续期。
 func rollAccountToken(userID string) {
 	list, err := loadAccounts()
 	if err != nil {
@@ -195,10 +198,10 @@ func rollAccountToken(userID string) {
 			continue
 		}
 		if !rollable(a.MpayToken) {
-			return // 账号级 / 大神扫码那种，先不碰
+			return // 当前等级未开启滚动，或缺少必要的登录时间
 		}
 		lt := tokenLoginUnix(a.MpayToken)
-		if time.Now().Unix()-lt < 3600 {
+		if time.Now().Unix()-lt < int64(rollAfterLaunch.Seconds()) {
 			return
 		}
 		tok, rerr := rollSessionToken(a, a.DeviceID)
