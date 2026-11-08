@@ -512,3 +512,24 @@ func (c *Client) ScanStatus(uuid, longGameID string) (status int, code, channel 
 	}
 	return status, code, channel, raw, nil
 }
+
+// GetRaw 诊断探针用的通用 GET：原样打 query，返回解析后的响应。
+// 只给 zz_* 测试用，不进正式流程。
+func (c *Client) GetRaw(path string, q url.Values) (map[string]any, error) {
+	return c.get(path, q)
+}
+
+// ExtractString 从 map 里递归找一个字符串键值（诊断用）。
+func ExtractString(m map[string]any, key string) (string, map[string]any, bool) {
+	if v, ok := m[key].(string); ok {
+		return v, m, true
+	}
+	for _, v := range m {
+		if sub, ok := v.(map[string]any); ok {
+			if s, _, found := ExtractString(sub, key); found {
+				return s, sub, true
+			}
+		}
+	}
+	return "", m, false
+}

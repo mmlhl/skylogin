@@ -486,18 +486,35 @@ func validateNetEaseToken(acc Account) error {
 // 两条路都断才标记凭证过期（界面上会出现刷新入口）。
 func mintTicket(acc Account, dev *device.ClientProfile) (string, string, error) {
 	if canUseNetEase(acc) {
-		// 先验证 token 活性：失效的 token 也能签出废票，等游戏里报
-		// "网络错误"才知道就太晚了。验证失败当场拦下并推刷新提示。
-		if verr := validateNetEaseToken(acc); verr != nil {
-			// 凭证过期了，但服务端可能还"记住"着这个号（扫码换票时带 sid 写进去的）。
-			// 只要它是记住的那一个，就能免扫直接拿票——覆盖"扫码号过期要重扫"的痛点。
-			if t, rerr := rememberedTicket(acc); rerr == nil {
-				logf("%s：凭证已失效，但服务端还记得这个号，用记住的授权直接发票", displayName(acc))
+		// ① a50 凭证直接签票（平台常规路径）：A50Token 是 DLL 无头密码登录
+		// 后服务端签发的 a50 身份永久凭证（g_i=a50, t=1, sa=-9），在本上下文
+		// 签票合法（无 1306 墙）。2026-11-08 实测通过。
+		if acc.A50Token != "" {
+			a50Dev := acc.A50DeviceID
+			if a50Dev == "" {
+				a50Dev = acc.DeviceID
+			}
+			t, _, terr := mpay.New().CreateTicketFor(acc.A50Token, acc.UserID, a50Dev, a50Long, a50Short)
+			if terr == nil {
+				logf("%s：用 a50 凭证签票成功（平台常规路径，免渠道启动）", displayName(acc))
 				setAccountCredState(acc.UserID, "ok", "")
 				return t, "netease", nil
-			} else {
-				logf("%s：免扫续期也没成功（%v）", displayName(acc), rerr)
 			}
+			logf("%s：a50 凭证签票失败（%v），走后续兜底", displayName(acc), terr)
+		}
+		// ② 平台记住槽（和平台扫码登录同源）：别的号（如大神码）写进槽时的兜底。
+		if t, rerr := rememberedTicket(acc); rerr == nil {
+			logf("%s：用记住槽出票（与平台扫码登录同源，游戏不应再弹渠道选择）", displayName(acc))
+			setAccountCredState(acc.UserID, "ok", "")
+			return t, "netease", nil
+		} else {
+			// 失败必须留痕：这是实验链路，不写日志就没法知道为什么回退
+			logf("%s：记住槽出票未命中（%v），改走 create_ticket", displayName(acc), rerr)
+		}
+		// 再验证 token 活性：失效的 token 也能签出废票，等游戏里报
+		// "网络错误"才知道就太晚了。验证失败当场拦下并推刷新提示。
+		if verr := validateNetEaseToken(acc); verr != nil {
+			logf("%s：免扫续期也没成功（%v）", displayName(acc), verr)
 			setAccountCredState(acc.UserID, "expired", verr.Error())
 			setAuthHint("netease_expired", "网易账号凭证已过期",
 				fmt.Sprintf("%s 的凭证已失效，请刷新凭证", displayName(acc)),

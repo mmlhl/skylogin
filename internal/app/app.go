@@ -53,6 +53,14 @@ type Account struct {
 	MpayToken  string `json:"mpay_token,omitempty"`  // MPay token（1-eyJ…）
 	DeviceID   string `json:"device_id,omitempty"`   // 建码/换票用的设备号
 	LastTicket int64  `json:"last_ticket,omitempty"` // 上次发票时间（排查用）
+	// A50Token 是平台身份（a50）签发的账号级 token（g_i=a50, sa=-9, t=1）。
+	// 来源：mpayhost 无头密码登录（UILessUrsLogin）后 DLL 自己推 devices/users
+	// 拿到的回调。它才能换平台会话 sid → 槽位票（免渠道启动）。MpayToken 是
+	// ma75 签发的，换不了 sid（1306），两者并存、各司其职。
+	A50Token string `json:"a50_token,omitempty"`
+	// A50DeviceID 是 a50 token 签发时 DLL 用的设备号（token 绑定它，
+	// 换平台会话 sid 时必须配套传，否则 1000 sauth error）。
+	A50DeviceID string `json:"a50_device_id,omitempty"`
 
 	// 下面这些字段描述"这个账号是怎么来的、现在还能不能用"。
 	//

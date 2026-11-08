@@ -233,3 +233,13 @@ func buildExtraUnisdk(sauth map[string]any, userName, playerLevel, ts string, de
 		"realname":         `{"realname_type": 0, "duration": 0}`,
 	}
 }
+
+// NeteaseChannelInfo 网易渠道（官方窗登录的号走这套身份参数）。
+func NeteaseChannelInfo() ChannelInfo {
+	return ChannelInfo{
+		Login:          "netease",
+		SDKVersion:     "4.21.0",
+		GetAccessToken: "0",
+		Realname:       `{"realname_type": 0, "duration": 0}`,
+	}
+}

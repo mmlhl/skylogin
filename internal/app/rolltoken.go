@@ -204,3 +204,24 @@ func rollAccountToken(userID string) {
 		return
 	}
 }
+
+// tokenFields 解出 token 的全部字段（诊断用，只看值不打日志泄露）。
+func tokenFields(token string) map[string]any {
+	raw := strings.TrimPrefix(token, "1-")
+	b, err := base64.RawStdEncoding.DecodeString(raw)
+	if err != nil {
+		b, _ = base64.StdEncoding.DecodeString(raw)
+	}
+	var m map[string]any
+	json.Unmarshal(b, &m)
+	return m
+}
+
+// tokenGI 取 token 的签发身份（g_i）：aecglf6ee4aaaarz=a50 平台，
+// aecfs5n2y4aaaakd=ma75 光遇本体。解不出返回空串。
+func tokenGI(token string) string {
+	if v, _ := tokenFields(token)["g_i"].(string); v != "" {
+		return v
+	}
+	return ""
+}

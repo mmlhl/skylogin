@@ -521,6 +521,19 @@ func buildCallbacksLogged() {
 		vtable[i] = syscall.NewCallback(func(a1, a2, a3 uintptr) uintptr {
 			logf("回调槽位 %d 被触发  a1=%s  a2=%s  a3=%s",
 				idx, argText(a1), argText(a2), argText(a3))
+			// urs 探针：槽位 14 是 UILessRSAKeyGen 的公钥回调（PEM 文本，
+			// 在 a2），捕获到包级变量，uiless.go 的 ActionUrs 用它加密密码。
+			if idx == 14 {
+				for _, cand := range []uintptr{a2, a3} {
+					if s, ok := readStringAt(cand); ok && strings.Contains(s, "PUBLIC KEY") {
+						mu.Lock()
+						rsaPublicKey = s
+						mu.Unlock()
+						logf("[urs] 已捕获 RSA 公钥（%d 字符）", len(s))
+						break
+					}
+				}
+			}
 			return 0
 		})
 	}
@@ -531,8 +544,22 @@ func buildCallbacksLogged() {
 	cbObject[0] = uintptr(unsafe.Pointer(&vtable[0]))
 }
 
-// argText 把一个回调参数尽量解释成人能看懂的东西。
-//
+// readStringAt 尽量把指针位置的内存读成字符串（探针用）。
+// 读不出来返回 false。
+func readStringAt(p uintptr) (string, bool) {
+	if p == 0 || !looksLikeString(p) {
+		return "", false
+	}
+	s := goString(p)
+	if s == "" {
+		return "", false
+	}
+	return s, true
+}
+
+// rsaPublicKey UILessRSAKeyGen 回调（槽位 14）交出来的公钥 PEM。
+var rsaPublicKey string
+
 // 小整数直接打数值；像指针的地址先试读成字符串（前 4 个字节都可打印才算），
 // 读不出来再按 UTF-16 试一次（DLL 内部大量用宽字符），都不行就打地址 +
 // 一小段十六进制，避免把随机内存当字符串读崩。
@@ -753,6 +780,15 @@ func onLoginFinish(this, code, info uintptr) uintptr {
 	// 替用户点，之后游戏里就不该再弹那个选择框了。
 	if plat := setPlatformWanted(); plat != "" {
 		callSetUserPlatform(dllHandle, this, plat)
+		// 再推一次服务端账号服务（Aas）：SetUserPlatform 只写本地库，
+		// 游戏用的是自己那份 ma75 库，看不见这边写的东西（2026-11-08 实测
+		// 游戏内照样弹选择框）。UpdateAasAcountPlatform 看名字是把平台
+		// 记录推到服务端账号上，游戏侧就能读到。失败只写日志。
+		if proc, err := dllHandle.FindProc("?UpdateAasAcountPlatform@CMpay_Interface@Mpay@@QEAAXPEBD@Z"); err == nil {
+			p, _ := syscall.BytePtrFromString(plat)
+			proc.Call(this, uintptr(unsafe.Pointer(p)))
+			logf("已调 UpdateAasAcountPlatform(%s)（推服务端账号平台）", plat)
+		}
 	}
 
 	// 渠道服扫的码：拿回来的是渠道账号（slot7=huawei 这种），MPay 没有它的票。

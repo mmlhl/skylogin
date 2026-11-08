@@ -58,6 +58,42 @@ func rememberedTicket(acc Account) (string, error) {
 	return "", lastErr
 }
 
+// selfHostTicket 用账号自己的 a50 凭证完成"自己寄宿自己"，出槽位票。
+//
+// 链路（2026-11-08 全链实测打通）：
+//  1. A50Token（g_i=a50, sa=-9）→ launcher.Login → 平台会话 sid
+//  2. 读自己槽：空或已是自己 → 直接出票；是别人 → 也直接出票试试
+//     （服务端允许覆盖；被顶掉的是之前寄宿的扫码号，靠 rememberTicket 兜底）
+//  3. third_party_account/ticket?account_id=自己 → 槽位票（免渠道）
+//
+// 失败场景：A50Token 失效（服务端记录被清）、服务端拒写。调用方回退记住槽。
+func selfHostTicket(acc Account) (string, error) {
+	if acc.A50Token == "" || acc.UserID == "" {
+		return "", fmt.Errorf("没有 a50 凭证")
+	}
+	a50Dev := acc.A50DeviceID
+	if a50Dev == "" {
+		a50Dev = acc.DeviceID
+	}
+	sid, err := launcher.Login(acc.UserID, acc.A50Token, a50Dev)
+	if err != nil || sid == "" {
+		return "", fmt.Errorf("a50 凭证换会话失败: %w", err)
+	}
+	hosted, herr := launcher.SavedAccount(sid)
+	if herr == nil {
+		if hosted == "" {
+			logf("自寄宿：自己的槽是空的，写入自己")
+		} else if hosted != acc.UserID {
+			logf("自寄宿：自己的槽里是另一个号（%s），覆盖为自己", hosted)
+		}
+	}
+	r, terr := launcher.TicketForAccount(acc.UserID, acc.DeviceID, sid)
+	if terr != nil {
+		return "", fmt.Errorf("自寄宿出票失败: %w", terr)
+	}
+	return r.Ticket, nil
+}
+
 // pickScanSid 给"扫码换票"挑一个 sid：优先用**空槽**的会话。
 //
 // 记住槽是按 sid 分的，用空槽写就不会把别的账号顶掉；都满了就用第一个（覆盖）。

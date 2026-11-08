@@ -348,6 +348,13 @@ func watchMpayLogin(cmd *exec.Cmd, outPath, targetUserID string) {
 		LastCheck:   time.Now().Unix(),
 		UpdatedAt:   time.Now().Unix(),
 	}
+	// 回调 token 若是 a50 签发的（g_i=a50），存进 A50Token——它才能换平台
+	// 会话 sid → 槽位票（免渠道启动）。MpayToken 存 ma75 的，用于 create_ticket。
+	// 2026-11-08 实测：无头密码登录（UILessUrsLogin）回调的就是 a50 token；
+	// 官方窗登录回调的是 ma75 的，此时保留已有的 A50Token 不覆盖。
+	if tokenGI(token) == profile.HostedGameID {
+		acc.A50Token = token
+	}
 	if acc.Name == "" {
 		acc.Name = userID
 	}
@@ -365,6 +372,10 @@ func watchMpayLogin(cmd *exec.Cmd, outPath, targetUserID string) {
 		acc.PlayerLevel = old.PlayerLevel
 		acc.SavedUser = old.SavedUser
 		acc.SavedPass = old.SavedPass
+		// a50 token 是身份级的长期凭证，别让这次（ma75 回调）把它清掉
+		if acc.A50Token == "" {
+			acc.A50Token = old.A50Token
+		}
 	}
 
 	if err := saveAccount(acc); err != nil {
@@ -373,6 +384,16 @@ func watchMpayLogin(cmd *exec.Cmd, outPath, targetUserID string) {
 	}
 	_ = setCurrent(acc.PlayerID)
 	clearAuthHint()
+	// 诊断开关：把这次登录回调的原始槽位落盘（setuser 注入实验的模板）。
+	// 标记文件：%APPDATA%\SkyLogin\dump_slots.txt 存在才写，平时不落盘。
+	if _, err := os.Stat(filepath.Join(dataDir(), "dump_slots.txt")); err == nil {
+		if b, jerr := json.MarshalIndent(res.Slots, "", "  "); jerr == nil {
+			p := filepath.Join(dataDir(), "netease_slots.json")
+			if werr := os.WriteFile(p, b, 0o600); werr == nil {
+				logf("已把登录回调槽位写到 %s（%d 个）", p, len(res.Slots))
+			}
+		}
+	}
 	logf("官方窗口登录成功，账号已保存")
 	if existed {
 		// 登的还是列表里已有的号：凭证更新了，但别说成"新增成功"

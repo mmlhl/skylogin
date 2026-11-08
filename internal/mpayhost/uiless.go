@@ -20,7 +20,12 @@ package mpayhost
 // 不接进正式流程，失败也不影响任何现有功能。
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -42,6 +47,11 @@ const (
 	// 平台客户端那个"记住上次的账号，是否登录"就是这个列表，用它可以直接
 	// 看到某个号（尤其是渠道服扫进来的号）有没有被记住。
 	ActionList UILessAction = "list"
+	// ActionSetPlatform 单独调 SetUserPlatform(platform)，写"当前用户"的平台记录。
+	ActionSetPlatform UILessAction = "setplatform"
+	// ActionUrs 无头账号密码登录：UILessUrsLogin(user, pass, ?, savePwd)。
+	// 参数含义待验证（探针），成功后 DLL 走完整登录链（写库 + 推送）。
+	ActionUrs UILessAction = "urs"
 )
 
 // UILessOptions 是诊断需要的输入。
@@ -192,6 +202,81 @@ func ProbeUILess(o UILessOptions) Result {
 		callTicketLogin(dll, inst, o.Ticket)
 	case ActionList:
 		callGetAccountList(dll, inst)
+	case ActionSetPlatform:
+		// 不需要先登录——游戏退出后库里留着"当前用户"，跟它写就行。
+		// 用途：登录窗（a50）写的平台选择游戏（ma75）看不见，两份库是分开的，
+		// 得分别对 ma75 再写一次（2026-11-08 实测：只写 a50 游戏内照样弹选择框）。
+		// 先试 UILessUidLogin 把当前用户加载起来（SetUserPlatform 需要库里
+		// 有"已登录的当前用户"，直接调返回 0），成了再写平台。
+		if proc, err := dll.FindProc("?UILessUidLogin@CMpay_Interface@Mpay@@QEAAXPEBD00H_NH@Z"); err == nil {
+			u, _ := syscall.BytePtrFromString(o.UID)
+			t, _ := syscall.BytePtrFromString(o.Token)
+			e, _ := syscall.BytePtrFromString("")
+			logf("调用 UILessUidLogin(uid=%s, token=%d字符, \"\", 0, true, 0)", o.UID, len(o.Token))
+			proc.Call(inst,
+				uintptr(unsafe.Pointer(u)),
+				uintptr(unsafe.Pointer(t)),
+				uintptr(unsafe.Pointer(e)),
+				0, 1, 0)
+		} else {
+			logf("没有 UILessUidLogin: %v", err)
+		}
+		// 另一个入口：UpdateAasAcountPlatform，名字上是"直接改账号平台记录"，
+		// 顺带调一次对比（Aas = 官方账号服务的内部叫法，猜测）。
+		if proc, err := dll.FindProc("?UpdateAasAcountPlatform@CMpay_Interface@Mpay@@QEAAXPEBD@Z"); err == nil {
+			p, _ := syscall.BytePtrFromString(o.Platform)
+			proc.Call(inst, uintptr(unsafe.Pointer(p)))
+			logf("UpdateAasAcountPlatform(%s) 已调", o.Platform)
+		} else {
+			logf("没有 UpdateAasAcountPlatform: %v", err)
+		}
+	case ActionUrs:
+		// UILessRSAKeyGen → 槽位 14 回调 PEM 公钥 → RSA 加密密码 →
+		// UILessUrsLogin(user, 密文, "", true)。明文密码会 decrypt fail。
+		passText := o.Token // Token 字段复用为密码
+		if rg, err := dll.FindProc("?UILessRSAKeyGen@CMpay_Interface@Mpay@@QEAAXXZ"); err == nil {
+			logf("调用 UILessRSAKeyGen()（等槽位 14 回调公钥）")
+			rg.Call(inst)
+			deadline := time.Now().Add(6 * time.Second)
+			for time.Now().Before(deadline) {
+				pumpMessages()
+				mu.Lock()
+				pk := rsaPublicKey
+				mu.Unlock()
+				if pk != "" {
+					break
+				}
+				time.Sleep(30 * time.Millisecond)
+			}
+			mu.Lock()
+			pk := rsaPublicKey
+			mu.Unlock()
+			if pk != "" {
+				if enc, eerr := rsaEncryptPassword(pk, passText); eerr == nil {
+					logf("密码已用 DLL 公钥加密（密文 %d 字符）", len(enc))
+					passText = enc
+				} else {
+					logf("RSA 加密失败（将传明文试一次）: %v", eerr)
+				}
+			} else {
+				logf("没等到 RSA 公钥回调（将传明文试一次）")
+			}
+		} else {
+			logf("没有 UILessRSAKeyGen: %v", err)
+		}
+		if proc, err := dll.FindProc("?UILessUrsLogin@CMpay_Interface@Mpay@@QEAAXPEBD00_N@Z"); err == nil {
+			u, _ := syscall.BytePtrFromString(o.UID)
+			p, _ := syscall.BytePtrFromString(passText)
+			e, _ := syscall.BytePtrFromString("")
+			logf("调用 UILessUrsLogin(user=%d字符, pass=%d字符, \"\", true)", len(o.UID), len(passText))
+			proc.Call(inst,
+				uintptr(unsafe.Pointer(u)),
+				uintptr(unsafe.Pointer(p)),
+				uintptr(unsafe.Pointer(e)),
+				1)
+		} else {
+			logf("没有 UILessUrsLogin: %v", err)
+		}
 	default:
 		return fail("未知动作: " + string(o.Action))
 	}
@@ -206,9 +291,10 @@ func ProbeUILess(o UILessOptions) Result {
 	}
 
 	// list 只是"读一下列表"，本来就不该有登录结果，等到这里就收工
-	if o.Action == ActionList {
-		logf("list 模式结束（账号列表见上面被触发的回调槽位）")
-		return Result{OK: false, Error: "list 模式只读列表，没有登录结果", Finished: time.Now().Unix()}
+	// setplatform 同理：写完就收工，结果看日志里的返回值
+	if o.Action == ActionList || o.Action == ActionSetPlatform {
+		logf("%s 模式结束", o.Action)
+		return Result{OK: false, Error: string(o.Action) + " 模式没有登录结果", Finished: time.Now().Unix()}
 	}
 
 	// 还没结果：主动要一张票看看
@@ -268,6 +354,34 @@ func callSetUserInfo(dll *syscall.DLL, inst uintptr, slots []string) error {
 		len(slots), len(slotAt(slots, 0)), slotAt(slots, 7), len(slotAt(slots, 8)))
 	proc.Call(inst, uintptr(unsafe.Pointer(&slotPtrs[0])))
 	return nil
+}
+
+// rsaEncryptPassword 用 DLL 回调的 PEM 公钥加密密码（RSA PKCS#1 v1.5）。
+// URS 密码登录的标准做法；具体 padding 若不对，DLL 会报 decrypt fail，
+// 到时再换 OAEP 试。
+func rsaEncryptPassword(publicKeyPEM, password string) (string, error) {
+	block, _ := pem.Decode([]byte(publicKeyPEM))
+	if block == nil {
+		return "", fmt.Errorf("公钥 PEM 解析失败")
+	}
+	pubAny, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		// 也可能是 PKCS#1 裸格式（BEGIN RSA PUBLIC KEY）
+		if rsaKey, e2 := x509.ParsePKCS1PublicKey(block.Bytes); e2 == nil {
+			pubAny = rsaKey
+		} else {
+			return "", fmt.Errorf("公钥解析失败: %v / %v", err, e2)
+		}
+	}
+	pub, ok := pubAny.(*rsa.PublicKey)
+	if !ok {
+		return "", fmt.Errorf("不是 RSA 公钥: %T", pubAny)
+	}
+	enc, err := rsa.EncryptPKCS1v15(rand.Reader, pub, []byte(password))
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(enc), nil
 }
 
 // callUILessTokenLogin 调 UILessTokenLogin(uid, token)。

@@ -179,3 +179,45 @@ func LoginExt(uid, token, deviceID, udid string) (string, error) {
 	}
 	return out.Data.Sid, nil
 }
+
+// TicketForCode 诊断探针：拿一个扫码 code（或任意串）走槽位出票接口。
+// 只给 zz_* 测试用。
+func TicketForCode(code, sid string) (*TicketResult, error) {
+	q := url.Values{}
+	q.Set("code", code)
+	q.Set("app_id", SkyAppID)
+	req, err := http.NewRequest(http.MethodGet, TicketURL+"?"+q.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+	req.Header.Set("Accept", "application/json")
+	setPlatformHeaders(req)
+	if sid != "" {
+		req.Header.Set("sid", sid)
+	}
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			Ticket       string `json:"ticket"`
+			LoginChannel string `json:"login_channel"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(body, &out) != nil {
+		return nil, fmt.Errorf("响应解析失败: %s", truncate(string(body), 120))
+	}
+	if out.Data.Ticket == "" {
+		return nil, fmt.Errorf("槽位出票失败: code=%d %s", out.Code, out.Msg)
+	}
+	return &TicketResult{Ticket: out.Data.Ticket, Channel: out.Data.LoginChannel}, nil
+}

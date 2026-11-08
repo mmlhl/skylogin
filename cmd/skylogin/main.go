@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"skylogin/internal/app"
@@ -224,8 +225,51 @@ func runUILessProbe(mode, slotsFile, uid, token, account, atk, openid, device, c
 		o.Ticket = tk
 		fmt.Printf("已为 %s 签票（%d 字符）\n", who, len(tk))
 	}
+	// setplatform 模式：没显式给 uid/token 时直接从账号库取（token 存在加密
+	// 的 accounts.json 里，命令行传不进来）
+	if mode == string(mpayhost.ActionSetPlatform) && account != "" {
+		if uid, tok, dev, ok := app.NetEaseCredForProbe(account); ok {
+			if o.UID == "" {
+				o.UID = uid
+			}
+			if o.Token == "" {
+				o.Token = tok
+			}
+			if o.Device == "" {
+				o.Device = dev
+			}
+			fmt.Printf("已从账号库取 %s 的凭证（uid=%s token=%d字符）\n", account, uid, len(tok))
+		}
+	}
+	// urs 模式：账号密码从环境变量读（不落盘、不进命令行历史）
+	if mode == string(mpayhost.ActionUrs) {
+		o.UID = os.Getenv("URS_USER")
+		o.Token = os.Getenv("URS_PASS") // Token 字段复用为密码
+		if o.UID == "" || o.Token == "" {
+			fmt.Fprintln(os.Stderr, "urs 模式需要 URS_USER / URS_PASS 环境变量")
+			os.Exit(2)
+		}
+		fmt.Printf("urs 探针：user=%d字符 pass=%d字符（仅内存）\n", len(o.UID), len(o.Token))
+	}
 	res := mpayhost.ProbeUILess(o)
 	fmt.Printf("结果: ok=%v ticket=%d字符 err=%s\n", res.OK, len(res.Ticket), res.Error)
+	if os.Getenv("URS_DUMP") != "" && len(res.Slots) > 0 {
+		b, _ := json.MarshalIndent(res.Slots, "", "  ")
+		_ = os.WriteFile(os.Getenv("URS_DUMP"), b, 0o600)
+		fmt.Printf("槽位已落盘 %s\n", os.Getenv("URS_DUMP"))
+	}
+	// 回调 token 若是 a50 签发的，存进账号库（A50Token），正式启用自寄宿
+	if os.Getenv("URS_SAVE") != "" && len(res.Slots) > 2 {
+		a50Dev := ""
+		if len(res.Slots) > 1 {
+			a50Dev = res.Slots[1] // DLL 这次登录实际用的设备号，token 绑定它
+		}
+		if err := app.SaveA50Token(os.Getenv("URS_SAVE"), res.Slots[2], a50Dev, os.Getenv("URS_USER")); err != nil {
+			fmt.Printf("A50Token 保存失败: %v\n", err)
+		} else {
+			fmt.Printf("已把 a50 凭证存进 %s 的账号记录\n", os.Getenv("URS_SAVE"))
+		}
+	}
 	mpayhost.Shutdown()
 }
 
@@ -255,9 +299,38 @@ func runMpayLogin(skyDir, skin, game, outPath, logPath string, centerX, centerY 
 	b, _ := json.Marshal(res)
 	_ = os.WriteFile(outPath, b, 0o600)
 
+	// 保活实验（2026-11-08）：两次官方窗口登录后 DLL 的记住列表都没变化，
+	// 怀疑 DLL 是在登录成功后的空闲期才异步把账号落库，而我们一拿到票据
+	// 就退出了，落库没机会执行。标记文件 mpay_keepalive.txt 存在时
+	// 多等 60 秒再退，验证"活着才会记住"这个假设。
+	if keepaliveSeconds() > 0 {
+		time.Sleep(time.Duration(keepaliveSeconds()) * time.Second)
+	}
+
 	// 结果落盘后硬退出：mpay.dll 的 WebView2 线程偶尔会让正常退出卡住，
 	// 表现就是"窗口关了但进程还挂着"。
 	mpayhost.Shutdown()
+}
+
+// keepaliveSeconds 读保活秒数：标记文件内容是数字就生效，没有/不合法 = 不保活。
+// 文件：%APPDATA%\SkyLogin\mpay_keepalive.txt
+func keepaliveSeconds() int {
+	p := filepath.Join(os.Getenv("APPDATA"), "SkyLogin", "mpay_keepalive.txt")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, c := range strings.TrimSpace(string(b)) {
+		if c < '0' || c > '9' {
+			return 0
+		}
+		n = n*10 + int(c-'0')
+	}
+	if n > 600 {
+		n = 600
+	}
+	return n
 }
 
 // runWebLogin 打开网页登录窗口，拿到 token 后写结果文件并退出。
