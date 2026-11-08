@@ -211,12 +211,19 @@ func channelMint(acc Account) (ticket string, ch string, ok bool) {
 		return "", "", false
 	}
 	if reason := regionBlockReason(acc); reason != "" {
-		// 选了渠道却用不了：必须留痕，并在界面上给提示，
-		// 否则用户只会看到“又弹选区了”却不知道为什么。
-		logf("%s：所选渠道暂时用不了（%s）", displayName(acc), reason)
-		setAuthHint("region_blocked", "所选渠道还没生效",
-			fmt.Sprintf("%s：%s", displayName(acc), reason), acc.Username, acc.UserID)
-		return "", "", false
+		// 凭证类型不对（典型：早期用平台身份登录留下的 a50 凭证）。
+		// 存过密码的号直接自己修：无头重登一次就换成游戏身份凭证，
+		// 用户不需要点任何东西。没密码的只能提示他手动刷新。
+		if fresh, fixed := refreshGameCred(acc); fixed {
+			acc = fresh
+		} else {
+			// 选了渠道却用不了：必须留痕，并在界面上给提示，
+			// 否则用户只会看到“又弹选区了”却不知道为什么。
+			logf("%s：所选渠道暂时用不了（%s）", displayName(acc), reason)
+			setAuthHint("region_blocked", "所选渠道还没生效",
+				fmt.Sprintf("%s：%s", displayName(acc), reason), acc.Username, acc.UserID)
+			return "", "", false
+		}
 	}
 	dev, err := device.LoadOrCreateClient(filepath.Join(dataDir(), "sdk_device.json"))
 	if err != nil {
@@ -230,4 +237,24 @@ func channelMint(acc Account) (ticket string, ch string, ok bool) {
 	}
 	setAccountCredState(acc.UserID, "ok", "")
 	return t, c, true
+}
+
+// refreshGameCred 把"凭证类型不支持选区"的账号就地修好。
+//
+// 只有存过账号密码的号能做到（无头重登，不打扰用户）。修完再判一次，
+// 还是不行就返回 false，让调用方按原逻辑提示手动刷新。
+func refreshGameCred(acc Account) (Account, bool) {
+	if !hasSavedPassword(acc) {
+		return acc, false
+	}
+	if _, err := autoRelogin(acc); err != nil {
+		logf("%s：自动换成游戏身份凭证失败（%v）", displayName(acc), err)
+		return acc, false
+	}
+	fresh, ok := findAccountByUserID(acc.UserID)
+	if !ok || regionBlockReason(fresh) != "" {
+		return acc, false
+	}
+	logf("%s：原凭证不能选区，已自动重登换成游戏身份凭证", displayName(acc))
+	return fresh, true
 }

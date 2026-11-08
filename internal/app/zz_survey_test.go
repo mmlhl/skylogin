@@ -26,5 +26,6 @@ func TestZZCredSurvey(t *testing.T) {
 		t.Logf("账号=%s uid=%s region=%q sa=%.0f tokenLen=%d method=%s source=%s 可渠道签发=%v",
 			displayName(a), a.UserID, a.Region, tokenSaValue(a.MpayToken),
 			len(a.MpayToken), a.LoginMethod, a.Source, channelMintable(a))
+		t.Logf("    g_i=%s 拦截原因=%q", tokenGI(a.MpayToken), regionBlockReason(a))
 	}
 }
