@@ -174,6 +174,7 @@ func RunUI(title string) error {
 		Duplicate:       duplicateAccount,
 		SetRegion:       setAccountRegion,
 		HeadlessLogin:   HeadlessLoginAccount,
+		HostPool:        func() any { return HostPoolStatus() },
 		SetMaskTitles:   setMaskTitlesOn,
 		GetBuild:        func() int { return buildNumber() },
 		SetReleaseState: setReleaseState,

@@ -71,6 +71,8 @@ type Hooks struct {
 	// HeadlessLogin 用账号密码无头添加/更新网易账号（不弹网易登录窗）。
 	// 返回给界面用的结果（id / name / existed / region）。
 	HeadlessLogin func(user, password, region, name string) (map[string]any, error)
+	// HostPool 返回寄宿池状态：哪些账号能当宿主、槽里记着谁。
+	HostPool func() any
 	Settings     func() map[string]any
 	SaveSettings func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int) error
 	// SaveMpayDebug 保存官方登录窗的调试参数（用哪份 DLL / 哪个 game id / 是否跳过清理）。
@@ -471,6 +473,16 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		writeJSON(w, map[string]any{"ok": true, "result": res})
+	})
+
+	// 寄宿池状态：给界面展示"哪些账号能当宿主、槽里现在记着谁"。
+	// 一个平台账号只能带一个扫码号，槽满了要用新号就得顶掉一个。
+	mux.HandleFunc("/api/hosts", func(w http.ResponseWriter, r *http.Request) {
+		if s.hooks.HostPool == nil {
+			writeJSON(w, map[string]any{"ok": false, "message": "当前版本不支持寄宿池"})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "pool": s.hooks.HostPool()})
 	})
 
 	mux.HandleFunc("/api/settings", func(w http.ResponseWriter, r *http.Request) {

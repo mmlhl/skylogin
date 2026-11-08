@@ -144,6 +144,13 @@ export const api = {
       body: JSON.stringify({ user, password, region, name }),
     }),
 
+  /**
+   * 寄宿池状态：哪些账号能当宿主、槽里现在记着谁、还有没有空槽。
+   *
+   * 一个平台账号只能带一个扫码号（服务端一对一），槽满了要用新号就会顶掉旧号。
+   */
+  hostPool: () => request("/api/hosts"),
+
   /** 华为扫码：开始（Go 去华为申请二维码） */
   startHuaweiLogin: () => request("/api/login", { method: "POST" }),
 
