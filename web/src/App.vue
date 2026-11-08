@@ -27,6 +27,7 @@ import ChannelPicker from "./components/ChannelPicker.vue";
 import ChannelWebLoginDialog from "./components/ChannelWebLoginDialog.vue";
 import ChannelAskDialog from "./components/ChannelAskDialog.vue";
 import MpayLoginDialog from "./components/MpayLoginDialog.vue";
+import HeadlessLoginDialog from "./components/HeadlessLoginDialog.vue";
 import SMSLoginDialog from "./components/SMSLoginDialog.vue";
 import ScanDialog from "./components/ScanDialog.vue";
 import HuaweiDialog from "./components/HuaweiDialog.vue";
@@ -70,6 +71,7 @@ const showScan = ref(false);
 const showHuawei = ref(false);
 const showSettings = ref(false);
 const showMpayLogin = ref(false);
+const showHeadless = ref(false);
 /** 渠道协议登录（九游密码 / 验证码）：kind 是渠道 key，空表示关着 */
 const askKind = ref("");
 /** 具体是哪种方式：password / sms */
@@ -109,9 +111,18 @@ async function onPick(entry: { action: string; kind: string }) {
       else showVivoLogin.value = true;
       return;
     }
+    case "scan":
+      // 网易账号扫码：纯 Go 建码，不弹官方登录窗。
+      // 只有自己建码才拿得到 login_info.code，才能带平台会话去换票，
+      // 服务端才会把这个号写进记住槽（凭证过期后免扫出票）。
+      // 打开弹窗放到请求之后：建码失败时由弹窗里的错误态显示原因。
+      await api.startScan();
+      showScan.value = true;
+      return;
     case "channelscan":
-      // 扫码窗：以游戏身份（ma75）开官方登录窗，默认用平台目录那份 mpay.dll。
-      // 网易账号、渠道服账号都走这里——扫的是什么号就存成什么号。
+      // 渠道服扫码：以游戏身份（ma75）开官方登录窗，默认用平台目录那份 mpay.dll。
+      // 它要的是 DLL 回调里的渠道整包（sdk_info / SAUTH），纯 Go 扫码给不出那种形态，
+      // 所以这条路保持官方窗不变。
       await api.mpayChannelStart();
       showMpayLogin.value = true;
       return;
@@ -123,9 +134,10 @@ async function onPick(entry: { action: string; kind: string }) {
         askMethod.value = "password";
         return;
       }
-      // 官方 mpay.dll 弹窗登录：打不开也把进度窗口打开，里面会显示原因
-      await api.mpayLoginStart(target);
-      showMpayLogin.value = true;
+      // 网易账号：改用本工具的无头登录输入框，不再弹官方登录窗。
+      // 原因：官方窗的密码我们看不到、存不下来，而且它只给一份凭证，
+      // 那个号当不了寄宿宿主，扫码号就没有槽位可用。
+      showHeadless.value = true;
       return;
     }
     case "sms":
@@ -203,6 +215,7 @@ onUnmounted(() => {
           @update:show="(v: boolean) => !v && (askKind = '')"
         />
         <MpayLoginDialog v-model:show="showMpayLogin" />
+        <HeadlessLoginDialog v-model:show="showHeadless" />
         <SMSLoginDialog v-model:show="showSMS" :target-user-id="refreshTarget?.accountId || ''" :default-mobile="refreshTarget?.name || ''" />
         <ScanDialog v-model:show="showScan" />
         <HuaweiDialog v-model:show="showHuawei" />

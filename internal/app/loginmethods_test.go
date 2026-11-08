@@ -54,6 +54,37 @@ func TestNeteaseIsGrouped(t *testing.T) {
 	}
 }
 
+// 网易账号的扫码必须走纯 Go 建码（kind=scan），不能退回官方登录窗。
+//
+// 原因：只有自己建码才拿得到 login_info.code，才能带平台会话去加载湾换票，
+// 服务端才会把这个号写进记住槽。官方窗那条路 DLL 内部就换完票了，没有 code，
+// 自动寄宿也就无从谈起。渠道服扫码（netease-channel）仍走官方窗，别一起改。
+func TestNeteaseScanUsesGoFlow(t *testing.T) {
+	entries := LoginEntries()
+
+	netease, ok := findEntry(entries, "netease")
+	if !ok {
+		t.Fatal("网易账号入口缺失")
+	}
+	var scanKind string
+	for _, m := range netease.Methods {
+		if m.Kind == "scan" || m.Kind == "channelscan" {
+			scanKind = m.Kind
+		}
+	}
+	if scanKind != "scan" {
+		t.Fatalf("网易账号扫码应走纯 Go 建码（kind=scan），实际是 %q", scanKind)
+	}
+
+	channelEntry, ok := findEntry(entries, "netease-channel")
+	if !ok {
+		t.Fatal("渠道服扫码入口缺失")
+	}
+	if len(channelEntry.Methods) == 0 || channelEntry.Methods[0].Kind != "channelscan" {
+		t.Fatal("渠道服扫码必须保持官方登录窗（kind=channelscan）")
+	}
+}
+
 func TestUCEntryOffersPassword(t *testing.T) {
 	entries := LoginEntries()
 	e, ok := findEntry(entries, "uc_platform")

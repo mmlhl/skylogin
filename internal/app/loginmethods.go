@@ -102,6 +102,13 @@ func LoginEntries() []loginEntry {
 	})
 
 	// 网易账号：二级菜单，扫码 / 账号密码（官方 DLL 窗自带手机号登录）
+	//
+	// 这里的扫码走**纯 Go 建码**（Kind=scan，见 scan.go），不用官方登录窗：
+	//   - 只有自己建码才拿得到 login_info.code，才能带平台会话去加载湾换票，
+	//     服务端才会把这个号写进记住槽（过期后免扫出票）；
+	//   - 官方窗那条路 DLL 内部就把换票做完了，我们手上没有 code，补不了写槽。
+	// 渠道服扫码仍然走官方窗（Kind=channelscan）：它要的是 DLL 回调里的渠道整包，
+	// 纯 Go 扫码给不出那种形态。
 	entries = append(entries, loginEntry{
 		ID:      "netease",
 		Action:  "netease",
@@ -110,7 +117,7 @@ func LoginEntries() []loginEntry {
 		Initial: "网",
 		Group:   true,
 		Methods: []loginMethod{
-			{Kind: "channelscan", Label: "扫码登录", Hint: "用光遇手游 / 网易大神扫官方窗里的二维码"},
+			{Kind: "scan", Label: "扫码登录", Hint: "用光遇手游 / 网易大神扫码，过期后免扫"},
 			{Kind: "password", Label: "账号密码登录", Hint: "网易官方登录窗：账号密码 / 手机号"},
 		},
 	})

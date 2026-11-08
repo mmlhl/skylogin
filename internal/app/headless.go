@@ -208,6 +208,18 @@ func HeadlessListAccounts() (HeadlessResult, error) {
 // 和"账号密码登录"（弹官方窗）的区别：全程没有窗口，密码是我们收的，
 // 所以能顺手存下来供以后自动重登；凭证也是干净的**游戏身份**（ma75）。
 //
+// 2026-11-09 起一次登录**拿两份凭证**：
+//
+//	ma75（游戏身份）→ MpayToken，用来启动游戏、按渠道签发
+//	a50 （平台身份）→ A50Token， 用来换加载湾 sid，也就是"当寄宿宿主"
+//
+// 为什么两份都要：宿主资格只看 A50Token，而换 sid 只认平台身份。
+// 没有它，这个号就没法给扫码号提供槽位。
+//
+// 为什么登录后必须立刻落盘：同设备重新登录会把旧 token 顶掉
+// （实测旧 A50Token 报 1000 sauth error，新登录的能正常换 sid）。
+// 所以两份都在拿到后立刻存，不能只在内存里用。
+//
 // region 为空表示"先不选"；name 为空时用账号名当显示名。
 func HeadlessLoginAccount(user, password, region, name string) (map[string]any, error) {
 	if user == "" || password == "" {
@@ -269,6 +281,25 @@ func HeadlessLoginAccount(user, password, region, name string) (map[string]any, 
 	}
 	logf("网易账号已就绪：%s（无头登录，凭证 %d 字符%s）", displayName(acc), len(res.Token),
 		map[bool]string{true: "，已更新", false: "，新增"}[existed])
+
+	// 第二份：平台身份。失败不影响这次登录，只是这个号暂时当不了宿主。
+	hostOK := false
+	hostRes, hostErr := HeadlessPasswordLogin(user, password, profile.HostedGameID)
+	switch {
+	case hostErr != nil:
+		logf("%s：平台身份登录失败（%v），这个号暂时不能当寄宿宿主", displayName(acc), hostErr)
+	case !hostRes.Platform:
+		// 理论上不该发生：上下文传的就是 a50。真发生了说明 DLL 行为变了。
+		logf("%s：平台登录没拿到平台身份凭证，暂不能当宿主", displayName(acc))
+	default:
+		if serr := saveHeadlessCred(acc.PlayerID, hostRes); serr != nil {
+			logf("%s：平台凭证保存失败（%v），暂不能当宿主", displayName(acc), serr)
+		} else {
+			hostOK = true
+			logf("%s：已同时取得平台身份凭证，可以当寄宿宿主", displayName(acc))
+		}
+	}
+
 	return map[string]any{
 		"id":       acc.PlayerID,
 		"name":     displayName(acc),
@@ -276,6 +307,7 @@ func HeadlessLoginAccount(user, password, region, name string) (map[string]any, 
 		"existed":  existed,
 		"region":   acc.Region,
 		"credSize": len(res.Token),
+		"canHost":  hostOK,
 	}, nil
 }
 
