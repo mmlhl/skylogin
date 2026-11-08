@@ -486,6 +486,12 @@ func validateNetEaseToken(acc Account) error {
 // 两条路都断才标记凭证过期（界面上会出现刷新入口）。
 func mintTicket(acc Account, dev *device.ClientProfile) (string, string, error) {
 	if canUseNetEase(acc) {
+		// ⓞ 用户给这个账号选了渠道（iOS / 安卓）：按渠道声明平台签发。
+		// 这是唯一能让游戏不再弹选区的路径（2026-11-08 ad/ios 均真机验证）。
+		// 未选渠道的账号不进这条分支，行为完全不变。
+		if t, ch, ok := channelMint(acc); ok {
+			return t, ch, nil
+		}
 		// ① a50 凭证直接签票（平台常规路径）：A50Token 是 DLL 无头密码登录
 		// 后服务端签发的 a50 身份永久凭证（g_i=a50, t=1, sa=-9），在本上下文
 		// 签票合法（无 1306 墙）。2026-11-08 实测通过。

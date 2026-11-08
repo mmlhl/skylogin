@@ -123,9 +123,13 @@ export const api = {
   setAccountQuality: (id: string, mode: string, fps: number) =>
     request("/api/accounts/quality", { method: "POST", body: JSON.stringify({ id, mode, fps }) }),
 
-  /** 创建一条账号的副本（name 为空时后端自动起名） */
-  duplicateAccount: (id: string, name: string) =>
-    request("/api/accounts/duplicate", { method: "POST", body: JSON.stringify({ id, name }) }),
+  /** 创建一条账号的副本（name 为空时后端自动起名，region 为空表示副本先不选区） */
+  duplicateAccount: (id: string, name: string, region = "") =>
+    request("/api/accounts/duplicate", { method: "POST", body: JSON.stringify({ id, name, region }) }),
+
+  /** 设置账号的所选渠道（仅网易官方账号；空值 = 先不选） */
+  setAccountRegion: (id: string, region: string) =>
+    request(`/api/accounts/region${qs({ id, region })}`, { method: "POST" }),
 
   /** 华为扫码：开始（Go 去华为申请二维码） */
   startHuaweiLogin: () => request("/api/login", { method: "POST" }),
@@ -234,7 +238,8 @@ export const api = {
   mpayChannelStart: () => request("/api/mpay-login/channel-start", { method: "POST", body: "{}" }),
 
   /** 账号密码登录进度 */
-  mpayLoginStatus: () => request("/api/mpay-login/status"),
+  mpayLoginStatus: () =>
+    request<{ phase?: string; message?: string; account?: string; userId?: string }>("/api/mpay-login/status"),
 
   /** 取消账号密码登录（结束子进程） */
   mpayLoginCancel: () => request("/api/mpay-login/cancel", { method: "POST" }),

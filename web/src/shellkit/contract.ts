@@ -29,6 +29,8 @@ export interface Account {
   current: boolean;
   /** 副本标注的区（android / ios）；主记录为空 */
   region?: string;
+  /** 区的中文名（安卓区 / iOS 区），界面直接显示；空 = 未选 */
+  regionLabel?: string;
   /** 远程身份 id（同一账号的原始行与副本相同） */
   playerId: string;
   /** 这行账号自己的游戏画质档位（空 = 跟随游戏） */
@@ -128,8 +130,10 @@ export interface LauncherStore {
   refreshCred(id: string): void;
   rename(id: string, name: string): void;
   remove(id: string): void;
-  /** 创建一条账号的副本（name 为空时后端自动起名）。 */
-  duplicate(id: string, name: string): void;
+  /** 创建一条账号的副本（name 为空时后端自动起名，region 为空表示副本先不选区）。 */
+  duplicate(id: string, name: string, region?: string): void;
+  /** 设置账号的所选渠道（仅网易官方账号；空值 = 先不选）。 */
+  setAccountRegion(id: string, region: string): void;
   toggleMask(): void;
   /**
    * 添加账号。不带参数 = 打开添加入口（demo 弹「模拟扫码」，正式版弹真实登录流程）；

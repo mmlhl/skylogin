@@ -64,7 +64,10 @@ type Hooks struct {
 	// OpenURL 用系统浏览器打开下载渠道链接（白名单在 release 包里）。
 	OpenURL func(url string) error
 	// Duplicate 创建一条账号的副本（同 PlayerID 的第二条本地记录，键 xxx-2）。
-	Duplicate    func(id, region string) (string, error)
+	// region 是副本自己的渠道（空 = 先不选），可与原行不同。
+	Duplicate func(id, name, region string) (string, error)
+	// SetRegion 设置某条账号记录的所选渠道（仅网易官方账号）。
+	SetRegion func(id, region string) error
 	Settings     func() map[string]any
 	SaveSettings func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int) error
 	// SaveMpayDebug 保存官方登录窗的调试参数（用哪份 DLL / 哪个 game id / 是否跳过清理）。
@@ -414,16 +417,28 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("/api/accounts/duplicate", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
+			ID     string `json:"id"`
+			Name   string `json:"name"`
+			Region string `json:"region"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		id, err := s.hooks.Duplicate(body.ID, body.Name)
+		id, err := s.hooks.Duplicate(body.ID, body.Name, body.Region)
 		if err != nil {
 			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
 			return
 		}
 		writeJSON(w, map[string]any{"ok": true, "id": id})
+	})
+
+	// 设置所选渠道（仅网易官方账号；空值 = 先不选）。
+	// 只改记录，不立即签发：下次启动按新渠道走（见 channelplatform.go）。
+	mux.HandleFunc("/api/accounts/region", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if err := s.hooks.SetRegion(q.Get("id"), q.Get("region")); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
 	})
 
 	mux.HandleFunc("/api/settings", func(w http.ResponseWriter, r *http.Request) {

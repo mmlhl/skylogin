@@ -178,13 +178,19 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
       void api.setRailWidth(width);
     },
 
-    duplicate(id, name) {
-      void api.duplicateAccount(id, name).then((r) => {
+    duplicate(id, name, region = "") {
+      void api.duplicateAccount(id, name, region).then((r) => {
         if (r.ok === false) {
           toast(r.message || "创建副本失败");
           return;
         }
         toast("已创建副本");
+      });
+    },
+
+    setAccountRegion(id: string, region: string) {
+      void api.setAccountRegion(id, region).then((r) => {
+        if (r.ok === false) toast(r.message || "切换渠道失败");
       });
     },
 

@@ -172,6 +172,7 @@ func RunUI(title string) error {
 		Rename:          renameAccount,
 		Delete:          deleteAccount,
 		Duplicate:       duplicateAccount,
+		SetRegion:       setAccountRegion,
 		SetMaskTitles:   setMaskTitlesOn,
 		GetBuild:        func() int { return buildNumber() },
 		SetReleaseState: setReleaseState,

@@ -19,6 +19,9 @@ const message = useMessage();
 const phase = ref<"waiting" | "done" | "failed">("waiting");
 const text = ref("请在弹出的网易登录窗口里完成登录");
 const canCancel = ref(true);
+// 登录时可顺手选游戏区：登录成功后写到新账号上，之后启动不再问
+// （只有网易官方账号能选区；数据库账号走这个窗，所以这里都可以选）
+const region = ref<"" | "android" | "ios">("");
 let timer: number | undefined;
 // 这一次弹窗里是否见到过"进行中"。上一次登录留下的 done 会让弹窗一开就"登录成功"
 let sawActive = false;
@@ -36,6 +39,10 @@ async function poll() {
     phase.value = "done";
     text.value = "登录成功，已保存账号";
     canCancel.value = false;
+    // 用户选了区就写到刚保存的账号上；没选就不发请求，保持旧行为
+    if (region.value && r.userId) {
+      void api.setAccountRegion(r.userId, region.value);
+    }
     message.success("登录成功");
     stop();
     window.setTimeout(() => emit("update:show", false), 600);
@@ -76,6 +83,7 @@ watch(
       text.value = "正在打开网易登录窗口…";
       canCancel.value = true;
       sawActive = false;
+      region.value = "";
       stop();
       timer = window.setInterval(poll, 1200);
       poll();
@@ -112,6 +120,17 @@ onUnmounted(stop);
     </div>
 
     <p class="hint">登录完成后这个窗口会自动关闭，账号会保存到左侧列表</p>
+
+    <!-- 游戏区：不选也可以，选了就记住，之后启动不再问 -->
+    <div v-if="phase !== 'failed'" class="regionsel">
+      <p class="regionsel-title">这个账号玩哪个区（可不选）</p>
+      <div class="regionsel-btns">
+        <button :class="{ on: region === '' }" @click="region = ''">先不选</button>
+        <button :class="{ on: region === 'android' }" @click="region = 'android'">安卓</button>
+        <button :class="{ on: region === 'ios' }" @click="region = 'ios'">iOS</button>
+      </div>
+      <p class="regionsel-note">选了之后，以后启动光遇就不再弹选哪个区</p>
+    </div>
 
     <template #footer>
       <div class="footer">
@@ -193,5 +212,42 @@ onUnmounted(stop);
 .footer {
   display: flex;
   justify-content: flex-end;
+}
+
+/* 登录时的游戏区选择（三态，默认先不选） */
+.regionsel {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+.regionsel-title {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--dim);
+}
+.regionsel-btns {
+  display: flex;
+  gap: 6px;
+}
+.regionsel-btns button {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.regionsel-btns button.on {
+  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.06);
+  font-weight: 600;
+}
+.regionsel-note {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  color: var(--faint);
 }
 </style>

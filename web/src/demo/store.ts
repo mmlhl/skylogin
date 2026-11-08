@@ -129,7 +129,7 @@ export const store: LauncherStore = {
 
     setRailWidth() {},
 
-  duplicate(id, name) {
+  duplicate(id, name, region = "") {
     const acc = state.accounts.find((a) => a.id === id);
     if (!acc) return;
     const n = state.accounts.filter((a) => a.playerId === acc.playerId && a.copyKey).length + 1;
@@ -138,10 +138,19 @@ export const store: LauncherStore = {
       id: acc.playerId + "-" + (n + 1),
       copyKey: acc.playerId + "-" + (n + 1),
       name: name || acc.name + " · 副本" + n,
+      region: region,
+      regionLabel: region === "ios" ? "iOS 区" : region === "android" ? "安卓区" : region === "harmony" ? "鸿蒙区" : "",
       current: false,
     };
     state.accounts.push(copy);
     toast("已创建副本");
+  },
+
+  setAccountRegion(id, region) {
+    const acc = state.accounts.find((a) => a.id === id);
+    if (!acc) return;
+    acc.region = region;
+    acc.regionLabel = region === "ios" ? "iOS 区" : region === "android" ? "安卓区" : region === "harmony" ? "鸿蒙区" : "";
   },
 
   remove(id) {

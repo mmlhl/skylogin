@@ -165,7 +165,11 @@ function confirmMulti() {
 
 /* ---- 创建副本 ---- */
 const dupName = ref("");
+// 副本自己的渠道：空 = 先不选（保留游戏里手选的旧行为）。
+// 只有网易官方账号能选——渠道服账号的渠道由渠道 SDK 决定。
+const dupRegion = ref("");
 const dupAccount = computed(() => store.accounts.find((a) => a.id === demoUi.dupId));
+const dupCanPickRegion = computed(() => dupAccount.value?.channel === "netease");
 // 已有副本：同 PlayerID 且带副本键的记录（创建第 2 条起在弹窗里提醒）
 const dupExisting = computed(() =>
   dupAccount.value ? store.accounts.filter((a) => a.playerId === dupAccount.value!.playerId && a.copyKey) : [],
@@ -174,13 +178,16 @@ const dupDefaultName = computed(() => `${dupAccount.value?.name ?? ""}-副本${d
 watch(
   () => demoUi.dupId,
   () => {
-    if (demoUi.dupId) dupName.value = dupDefaultName.value;
+    if (demoUi.dupId) {
+      dupName.value = dupDefaultName.value;
+      dupRegion.value = "";
+    }
   },
 );
 function confirmDup() {
   const name = dupName.value.trim();
   if (!demoUi.dupId) return;
-  store.duplicate(demoUi.dupId, name);
+  store.duplicate(demoUi.dupId, name, dupRegion.value);
   demoUi.dupId = "";
 }
 
@@ -396,6 +403,16 @@ function confirmRename() {
       </div>
       <p class="mhint">为「{{ dupAccount?.name }}」创建一条副本记录；副本与原记录共用凭证，游戏内互相独立。</p>
       <input v-model="dupName" class="minput" maxlength="24" placeholder="副本名称" @keyup.enter="confirmDup" />
+      <!-- 副本可以单独选区：同一账号在安卓、iOS 各玩一个角色 -->
+      <div v-if="dupCanPickRegion" class="qsec">
+        <div class="qlabel2">渠道</div>
+        <div class="qpills">
+          <button :class="{ on: dupRegion === '' }" @click="dupRegion = ''">先不选</button>
+          <button :class="{ on: dupRegion === 'android' }" @click="dupRegion = 'android'">安卓</button>
+          <button :class="{ on: dupRegion === 'ios' }" @click="dupRegion = 'ios'">iOS</button>
+        </div>
+        <p class="qnote">选了渠道后，启动这个副本时游戏不会再问选哪个区。</p>
+      </div>
       <p v-if="dupExisting.length" class="dupwarn">
         该账号已创建过 {{ dupExisting.length }} 条副本（{{ dupExisting.map((a) => a.name).join("、") }}）。可以继续创建多条，确认继续吗？
       </p>

@@ -188,6 +188,20 @@ const lastCheckText = computed(() => {
         <p v-if="cur.lastError" class="derr">{{ cur.lastError }}</p>
       </template>
 
+      <!-- 游戏区：只有网易官方账号能选。选了之后启动时按这个区声明平台，
+           游戏就不再弹选哪个区；未选则保持旧行为。 -->
+      <div v-if="cur.channel === 'netease'" class="dsection">
+        <p class="dseclabel tight">游戏区</p>
+        <div class="regionpick">
+          <button :class="{ on: !cur.region }" @click="store.setAccountRegion(cur.id, '')">先不选</button>
+          <button :class="{ on: cur.region === 'android' }" @click="store.setAccountRegion(cur.id, 'android')">安卓</button>
+          <button :class="{ on: cur.region === 'ios' }" @click="store.setAccountRegion(cur.id, 'ios')">iOS</button>
+        </div>
+        <p class="regionnote">
+          {{ cur.region ? "启动时光遇直接进" + (cur.regionLabel || "") + "，不再问选哪个区" : "启动时光遇会自己问选哪个区" }}
+        </p>
+      </div>
+
       <div class="dacts">
         <button v-if="runningSelf" class="btn" @click="store.stop(cur.id)"><Square />停止运行</button>
         <button v-else class="btn primary" @click="store.launch(cur.id)"><Play />启动光遇</button>
@@ -452,6 +466,37 @@ const lastCheckText = computed(() => {
   font-weight: 600;
   letter-spacing: -0.02em;
 }
+/* 游戏区切换：三态按钮组（先不选 / 安卓 / iOS） */
+.dsection {
+  margin: 2px 0 12px;
+}
+.regionpick {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.regionpick button {
+  flex: 1;
+  min-width: 64px;
+  padding: 7px 10px;
+  border: 1px solid var(--line, #e3e5eb);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text, #333);
+  font-size: 13px;
+  cursor: pointer;
+}
+.regionpick button.on {
+  border-color: var(--gold, #c8a24a);
+  background: rgba(200, 162, 74, 0.14);
+  font-weight: 600;
+}
+.regionnote {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--faint);
+}
+
 .dinfo {
   margin-top: 22px;
   border-top: 1px solid var(--line);

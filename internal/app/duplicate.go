@@ -18,9 +18,10 @@ import (
 //     channel 改成专属名字，浏览器侧状态（登录会话等）互不干扰。
 
 // duplicateAccount 复制 id 指定的账号记录。name 为用户在弹窗里输入的
-// 副本名（空 = 自动取「原显示名 · 副本N」）；返回新记录的键
+// 副本名（空 = 自动取「原显示名 · 副本N」）；region 是副本自己的渠道
+// （空 = 先不选），可与原行不同。返回新记录的键
 // （"PlayerID-2" 这样的副本键）。
-func duplicateAccount(id, name string) (string, error) {
+func duplicateAccount(id, name, region string) (string, error) {
 	list, err := loadAccounts()
 	if err != nil {
 		return "", errors.New("还没有账号")
@@ -29,12 +30,20 @@ func duplicateAccount(id, name string) (string, error) {
 	if !ok {
 		return "", errors.New("没有找到该账号")
 	}
+	if src.Channel != "netease" && region != "" {
+		return "", errors.New("只有网易官方账号可以选择渠道")
+	}
+	normRegion, rerr := normalizeRegion(region)
+	if rerr != nil {
+		return "", rerr
+	}
 
 	copyKey := nextCopyKey(list, src.PlayerID)
 
 	cp := src
 	cp.CopyKey = copyKey
-	cp.Region = ""
+	// 副本的渠道独立：用户可以在副本里选另一个区（与原件并存）。
+	cp.Region = normRegion
 	// 副本不继承别名（那是用户给原行起的）；用户没起名就按序号自动补
 	base := displayName(src)
 	name = strings.TrimSpace(name)
@@ -59,6 +68,6 @@ func duplicateAccount(id, name string) (string, error) {
 	if err := setCurrent(copyKey); err != nil {
 		logf("创建副本后设为当前失败: %v", err)
 	}
-	logf("已创建副本：%s → %s（键=%s）", base, cp.Name, copyKey)
+	logf("已创建副本：%s → %s（键=%s，渠道=%s）", base, cp.Name, copyKey, regionOrNone(cp.Region))
 	return copyKey, nil
 }
