@@ -386,10 +386,15 @@ func watchMpayLogin(cmd *exec.Cmd, outPath, targetUserID, tmpDataDir string) {
 		UpdatedAt:   time.Now().Unix(),
 	}
 	// 回调 token 若是 a50 签发的（g_i=a50），存进 A50Token——它才能换平台
-	// 会话 sid → 槽位票（免渠道启动）。MpayToken 存 ma75 的，用于 create_ticket。
-	// 2026-11-08 实测：无头密码登录（UILessUrsLogin）回调的就是 a50 token；
-	// 官方窗登录回调的是 ma75 的，此时保留已有的 A50Token 不覆盖。
-	if tokenGI(token) == profile.HostedGameID {
+	// 会话 sid → 槽位票（免渠道启动）。MpayToken 存 ma75 的，用于渠道签发和
+	// create_ticket。
+	//
+	// 2026-11-08 实测：凭证身份由 init 的 game_id 决定（mpayDebugGameID 固定 ma75），
+	// 正常登录回调都是 ma75；a50 只在显式开诊断时才出现。真出现时只补 A50Token，
+	// **绝不覆盖 MpayToken**——被换成平台身份后这个号就再也签不出渠道票，
+	// 而"刷新凭证"再登一次还是 a50，会把账号卡死（用户实测踩过）。
+	isA50 := tokenGI(token) == profile.HostedGameID
+	if isA50 {
 		acc.A50Token = token
 	}
 	if acc.Name == "" {
@@ -398,6 +403,12 @@ func watchMpayLogin(cmd *exec.Cmd, outPath, targetUserID, tmpDataDir string) {
 	existedAcc, existed := findAccountByUserID(userID)
 	if existed {
 		old := existedAcc
+		// a50 回调不动已有的游戏身份凭证（token 和设备号是一对，必须一起保留）
+		if isA50 && old.MpayToken != "" && tokenGI(old.MpayToken) != profile.HostedGameID {
+			acc.MpayToken = old.MpayToken
+			acc.DeviceID = old.DeviceID
+			logf("这次回调是平台身份凭证，已保留原游戏身份凭证（%s）不覆盖", old.MpayToken[:8]+"…")
+		}
 		// 老记录可能把用户 id 当成了别名（早先拿不到 display_username 时的兜底）。
 		// 这次能拿到真正的账号名，就顺手把它修掉。
 		if account != "" && looksLikeBareAccountID(old.Name) {

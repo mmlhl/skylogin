@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"skylogin/internal/fever"
 	"skylogin/internal/profile"
@@ -90,16 +91,24 @@ func mpayDebugDLLDir(skyDir, skinPath string) (string, string) {
 	return platformDir, "平台目录"
 }
 
-// mpayDebugGameID 按调试参数决定用哪个 game id 初始化登录窗。
+// mpayDebugGameID 决定用哪个 game id 初始化登录窗。
 //
-//	ma75 → 游戏上下文（**默认**）：登录后拿到的凭证 g_i=ma75，才能按渠道签发；
-//	        窗口里的二维码也能用光遇手游扫。
-//	a50  → 平台上下文：拿到的凭证是平台身份，不能按渠道签发（uni_sauth 会回 501）。
+//	ma75 → 游戏上下文（**正常登录固定用它**）：回调凭证 g_i=aecfs5n2y4aaaakd、
+//	        sa=-9，能按渠道签发；窗口里的二维码也能用光遇手游扫。
+//	a50  → 平台上下文：回调凭证 g_i=aecglf6ee4aaaarz（平台身份），
+//	        uni_sauth 会回 501，选渠道永远不生效。
 //
-// 2026-11-08 实测：验证码登录（SMS）改用 ma75 上下文后，凭证 g_i=ma75、
-// sa=-99，渠道签发一次就成；之前用 a50 上下文拿到的凭证永远发不出渠道票。
+// 2026-11-08 两次实测（都记录在 05/06 号文档）：
+//
+//	平台目录 mpay.dll 4.21 + init ma75 + 账号密码 → g_i=ma75 sa=-9 ✅
+//	同一份 DLL        + init a50 + 账号密码 → g_i=a50  sa=-9 ❌（501）
+//
+// 结论：**凭证身份完全由 init 的 game_id 决定**，跟有没有窗口、用哪份 DLL 无关。
+// 所以这里不再读设置页那个下拉——那个值一旦被存成 a50，正常登录就会拿到
+// 不能签发的平台凭证，账号再也选不了区（用户实测踩过）。要复现 a50 行为，
+// 只能显式设环境变量 SKYLOGIN_MPAY_GAME=a50，日常路径不受影响。
 func mpayDebugGameID() string {
-	if mpayDebug().Game == "a50" {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("SKYLOGIN_MPAY_GAME")), "a50") {
 		return profile.HostedGameID
 	}
 	return profile.LongGameID

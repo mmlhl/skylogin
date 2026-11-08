@@ -111,8 +111,9 @@ func regionBlockReason(acc Account) string {
 	_, short := ticketContextForToken(acc.MpayToken)
 	if short != profile.ShortGameID {
 		// 用户能看懂的说法：他不需要知道 a50/ma75，只需要知道“点哪”。
-		// 点『刷新凭证』会用游戏身份重新登录一次（mpayDebugGameID 默认 ma75）。
-		return "此号的凭证是平台身份，不能声明游戏区；点『刷新凭证』重新登录一次即可"
+		// 正常登录已经固定用游戏身份初始化（mpayDebugGameID），所以点一次
+		// 『刷新凭证』重登就能换成能选区的凭证——这条提示是真的可执行的。
+		return "这个号的登录凭证类型不支持选区，点『刷新凭证』重新登录一次即可；重登会自动换成支持选区的凭证"
 	}
 	return ""
 }
