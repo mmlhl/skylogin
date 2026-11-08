@@ -26,7 +26,7 @@ func TestZZAutoRelogin(t *testing.T) {
 	}
 	uid := os.Getenv("ZZ_UID")
 	if uid == "" {
-		uid = "aebggifyh5w2dop4"
+		uid = os.Getenv("ZZ_ACCOUNT")
 	}
 	acc, ok := findAccountByUserID(uid)
 	if !ok {

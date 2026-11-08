@@ -17,7 +17,7 @@ func TestZZTokenGI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	acc, ok := findAccount(list, "aebfx7kv2q5vpldc")
+	acc, ok := findAccount(list, os.Getenv("ZZ_ACCOUNT"))
 	if !ok {
 		t.Fatal("找不到 js2fv5")
 	}

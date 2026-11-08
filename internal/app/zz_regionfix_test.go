@@ -32,7 +32,7 @@ func TestZZRegionFix(t *testing.T) {
 	if user == "" || pass == "" {
 		t.Fatal("缺少 URS_USER / URS_PASS")
 	}
-	acc, ok := findAccountByUserID("aebggifyh5w2dop4")
+	acc, ok := findAccountByUserID(os.Getenv("ZZ_ACCOUNT"))
 	if !ok {
 		t.Fatal("找不到测试账号")
 	}

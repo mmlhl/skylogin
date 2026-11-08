@@ -13,7 +13,7 @@ func TestZZA50(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	acc, ok := findAccount(list, "aebggifyh5w2dop4")
+	acc, ok := findAccount(list, os.Getenv("ZZ_ACCOUNT"))
 	if !ok {
 		t.Fatal("没找到")
 	}
