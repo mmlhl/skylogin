@@ -504,6 +504,8 @@ func displayName(a Account) string {
 
 // accountView 把账号转成 UI 用的结构（不含"是否当前"）。
 func accountView(a Account) map[string]any {
+	// 寄宿关系只读一次账本：下面的 hosted / hostedBy 两个字段都要用它。
+	hosted, hostedBy := isHostedBy(a.UserID)
 	// 各渠道统一叫「账号 ID」：
 	// 华为存的是渠道侧玩家 id，网易存的是 MPay 账号 id，B站存的是 B站 uid，
 	// 都不是游戏内角色 id（那个只在游戏服务器侧，拿不到）。
@@ -553,7 +555,13 @@ func accountView(a Account) map[string]any {
 		// hosted = 这个号住在某个平台账号的寄宿槽里。
 		// 这类号的渠道由扫码设备固定（槽位票继承），再给选区选择器只会误导：
 		// 选什么都没用，因为它没有平台凭证，走不了"声明 + 确认"那条路。
-		"hosted": isHosted(a.UserID),
+		//
+		// hostedBy = 提供槽位的那个账号（宿主）的 UserID。凭证失效时要靠它告诉
+		// 用户"该去刷新谁"：槽位票跟着宿主的平台凭证走，宿主一坏，住在它槽里
+		// 的号也跟着失效。UserID 与 PlayerID 在所有登录路径上都相同，界面可以
+		// 直接拿它去账号列表里认人。
+		"hosted":   hosted,
+		"hostedBy": hostedBy,
 		// regionBlocked 非空 = 虽然选了渠道，但当前凭证用不了（界面要提示原因）
 		"regionBlocked": regionBlockReason(a),
 		"name":          displayName(a),

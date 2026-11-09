@@ -147,9 +147,21 @@ func slotHostedBy(hostUserID string) (string, bool) {
 // 界面据此决定要不要显示"选区"选择器：被寄宿的号渠道已由扫码设备固定，
 // 再让它选区只会误导——它没有平台凭证，走不了"声明 + 确认"那条路。
 func isHosted(userID string) bool {
+	hosted, _ := isHostedBy(userID)
+	return hosted
+}
+
+// isHostedBy 一次读账本，同时给出"是否被寄宿"和"寄宿在谁的槽里"。
+//
+// 界面需要后者：被寄宿的号凭证失效时，用户最想知道该去刷新哪个账号——
+// 槽位票是跟着宿主的平台凭证走的，宿主一坏，住在它槽里的号也跟着失效。
+func isHostedBy(userID string) (hosted bool, hostUserID string) {
 	if userID == "" {
-		return false
+		return false, ""
 	}
-	_, ok := slotBindingOf(userID)
-	return ok
+	b, ok := slotBindingOf(userID)
+	if !ok {
+		return false, ""
+	}
+	return true, b.HostUserID
 }

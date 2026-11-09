@@ -35,6 +35,8 @@ export interface Account {
   regionBlocked?: string;
   /** 住在某个平台账号的寄宿槽里：渠道由扫码设备固定，不再显示选区 */
   hosted?: boolean;
+  /** 提供槽位的宿主账号 id（UserID == playerId）；空 = 没被寄宿 */
+  hostedBy?: string;
   /** 远程身份 id（同一账号的原始行与副本相同） */
   playerId: string;
   /** 这行账号自己的游戏画质档位（空 = 跟随游戏） */

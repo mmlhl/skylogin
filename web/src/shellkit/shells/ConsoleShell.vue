@@ -37,6 +37,15 @@ function onDividerDown(e: MouseEvent) {
 const expired = computed(() => cur.value?.cred === "expired");
 const runningSelf = computed(() => !!cur.value?.running);
 
+// 被寄宿的号：找出提供槽位的那个宿主账号，给用户看名字而不是一串 ID。
+// 宿主可能已经被删掉了，那种情况下标出来——用户需要知道这条关系已经悬空。
+const hostName = computed(() => {
+  const id = cur.value?.hostedBy;
+  if (!id) return "";
+  const hit = store.accounts.find((x) => x.playerId === id || x.fullId === id);
+  return hit ? hit.name : `已删除的账号 ${id.slice(0, 6)}…`;
+});
+
 // 详情默认只露最常用的四项，其余收在「更多信息」里（换账号时保持展开状态，
 // 正在排查过期问题的用户不用每次重新点开）
 const detailOpen = ref(false);
@@ -215,8 +224,14 @@ const lastCheckText = computed(() => {
         </p>
       </div>
       <div v-else-if="cur.channel === 'netease' && cur.hosted" class="dsection">
-        <p class="dseclabel tight">游戏区</p>
-        <p class="regionnote">渠道由扫码时的手机决定，启动不再询问</p>
+        <p class="dseclabel tight">寄宿槽位</p>
+        <p class="regionnote" :class="{ warn: expired }">
+          {{
+            expired
+              ? `票来自「${hostName}」的寄宿槽；槽位票跟着宿主的平台凭证走，先去刷新「${hostName}」`
+              : `寄宿在「${hostName}」的槽位里，渠道由扫码时的手机决定，启动不再询问`
+          }}
+        </p>
       </div>
 
       <div class="dacts">

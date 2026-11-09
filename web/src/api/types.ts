@@ -76,6 +76,8 @@ export interface AccountView {
   regionBlocked?: string;
   /** 这个号住在某个平台账号的寄宿槽里：渠道由扫码设备固定，不再显示选区 */
   hosted?: boolean;
+  /** 提供槽位的宿主账号 id（UserID == PlayerID）；空 = 没被寄宿 */
+  hostedBy?: string;
 
   /** 是否是当前选中的账号 */
   current: boolean;
