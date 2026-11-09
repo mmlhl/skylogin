@@ -46,7 +46,16 @@ const (
 	gwlStyle       = ^uintptr(15) // -16
 	wsExToolWindow = 0x80
 	wsCaption      = 0x00C00000
+	wsPopup        = 0x80000000
+	wsMaximize     = 0x01000000
+	wsThickFrame   = 0x00040000
+	wsSysMenu      = 0x00080000
 	spiGetWorkArea = 0x0048
+
+	// SetWindowPos 的开关位：只改样式、不动位置尺寸（见 forceWindowedStyle）。
+	// swpNoSize / swpNoZOrder / swpNoActivate 在 webview.go 里已有定义。
+	swpNoMove       = 0x0002
+	swpFrameChanged = 0x0020
 
 	vkMenu     = 0x12 // ALT
 	vkReturn   = 0x0D // ENTER
@@ -60,6 +69,12 @@ type ClientCell struct {
 	PID   uint32
 	Label string
 }
+
+// Diag 诊断输出钩子：app 层接到日志里（win 层不依赖日志实现）。
+//
+// 排列、切全屏这些动作发生在用户看不见的地方，失败了只会表现为
+// "窗口纹丝不动"或"还是全屏"，光看结果分不清卡在哪一步。默认丢弃。
+var Diag = func(string) {}
 
 // monitorInfo 是 GetMonitorInfoW 的入参/出参（只需要工作区矩形）。
 type monitorInfo struct {
@@ -269,21 +284,54 @@ func primaryWorkArea() windowRect {
 	return r
 }
 
-// isProbablyFullscreen 判断窗口是否处于全屏：无标题栏且盖住整个主屏。
-// 游戏把"全屏"记在 preferences.sav 里，启动时会自己恢复成全屏——
-// 这种窗口 MoveWindow 是排不动的，得先切回窗口模式。
-func isProbablyFullscreen(h uintptr) bool {
-	style, _, _ := procGetWindowLongW.Call(h, gwlStyle)
-	if style&wsCaption != 0 {
-		return false // 有标题栏 = 普通窗口
-	}
-	var r windowRect
-	if ret, _, _ := procGetWindowRect.Call(h, uintptr(unsafe.Pointer(&r))); ret == 0 {
-		return false
-	}
+// coversScreenRect 矩形是否盖住整个主屏（±4px 容差）。
+// 只比尺寸不看样式：全屏窗口和"被引擎撑到屏幕大小"的窗口都算。
+func coversScreenRect(r windowRect) bool {
 	w, _, _ := procGetSystemMetrics.Call(smCXScreen)
 	hh, _, _ := procGetSystemMetrics.Call(smCYScreen)
-	return r.left <= 0 && r.top <= 0 && r.right-r.left >= int32(w) && r.bottom-r.top >= int32(hh)
+	if w == 0 || hh == 0 {
+		return false
+	}
+	const tol = 4
+	return r.left <= tol && r.top <= tol &&
+		r.right >= int32(w)-tol && r.bottom >= int32(hh)-tol
+}
+
+// coversPrimaryScreen 窗口当前是否盖满整个主屏。
+func coversPrimaryScreen(h uintptr) bool {
+	r, ok := getWindowRect(h)
+	if !ok {
+		return false
+	}
+	return coversScreenRect(r)
+}
+
+// isFullscreenWindow 判断窗口是否盖满整个主屏（不看标题栏）。
+// 最大化的普通窗口会贴满工作区但底边到不了屏幕底边（任务栏），
+// 所以不会被误判；任务栏自动隐藏时靠 WS_MAXIMIZE 兜住。
+func isFullscreenWindow(h uintptr) bool {
+	style, _, _ := procGetWindowLongW.Call(h, gwlStyle)
+	if style&wsMaximize != 0 {
+		return false
+	}
+	return coversPrimaryScreen(h)
+}
+
+// hasNonClientFrame 窗口有没有可见的非客户区（标题栏 / 边框）：
+// 窗口矩形比客户区大就说明有。
+//
+// 为什么不用 WS_CAPTION 判：引擎自绘的窗口可以在样式里保留 WS_CAPTION，
+// 同时把 WM_NCCALCSIZE 处理成"零非客户区"——样式看着像窗口，画面上
+// 一条标题栏都没有。量窗口矩形与客户区之差，才是"眼睛能不能看到边框"。
+func hasNonClientFrame(h uintptr) bool {
+	var wr, cr windowRect
+	if ret, _, _ := procGetWindowRect.Call(h, uintptr(unsafe.Pointer(&wr))); ret == 0 {
+		return false
+	}
+	if ret, _, _ := procGetClientRect.Call(h, uintptr(unsafe.Pointer(&cr))); ret == 0 {
+		return false
+	}
+	return wr.right-wr.left > cr.right-cr.left || wr.bottom-wr.top > cr.bottom-cr.top
 }
 
 // forceWindowed 给全屏窗口发一次 Alt+Enter（多数引擎的全屏/窗口切换键）。
@@ -311,6 +359,145 @@ func forceWindowed(h uintptr) {
 	if tid != 0 {
 		_, _, _ = procAttachThreadInput.Call(our, uintptr(tid), 0)
 	}
+}
+
+// forceWindowedStyle 直接把窗口样式改回"带标题栏的普通窗口"：
+// 去掉 WS_POPUP，补回 WS_CAPTION / WS_THICKFRAME / WS_SYSMENU，
+// 再 SetWindowPos 带 SWP_FRAMECHANGED 触发 WM_NCCALCSIZE / WM_SIZE，
+// 让窗口管理器重新划出非客户区。
+//
+// 这是 Alt+Enter 不灵时的第二条路（有的引擎没绑这个快捷键）。
+// 独占全屏（D3D exclusive）连窗口管理器都拿不到真实窗口，改样式也
+// 救不回来，只能让用户在游戏内切成窗口模式。
+func forceWindowedStyle(h uintptr) {
+	style, _, _ := procGetWindowLongW.Call(h, gwlStyle)
+	next := (style &^ wsPopup) | wsCaption | wsThickFrame | wsSysMenu
+	_, _, _ = procSetWindowLongPtrW.Call(h, gwlStyle, next)
+	_, _, _ = procSetWindowPos.Call(h, 0, 0, 0, 0, 0,
+		swpNoMove|swpNoSize|swpNoZOrder|swpNoActivate|swpFrameChanged)
+}
+
+// exitFullscreen 让客户端从"无边框"退回"带标题栏的普通窗口"，
+// 返回是否已经是普通窗口。
+//
+// 判据是"有没有非客户区边框"，不是"盖不盖满屏"：全屏多开启动的客户端
+// 是无边框窗口，MoveWindow 其实摆得动（位置尺寸都对），但画面上一条
+// 标题栏都没有——看着还像全屏，也没法拖动、没法点最小化。
+//
+// 顺序：盖满屏的先发 Alt+Enter（这是引擎自己的切换键，切完窗口是
+// 引擎维护的，最干净）；没反应再改窗口样式硬加边框。已经不满屏、
+// 只是无边框的，直接改样式——那种窗口发 Alt+Enter 反而会切回全屏。
+func exitFullscreen(h uintptr) bool {
+	if hasNonClientFrame(h) {
+		return true
+	}
+	style, _, _ := procGetWindowLongW.Call(h, gwlStyle)
+	Diag(fmt.Sprintf("排列：hwnd=%#x 无标题栏（style=%#x 盖满屏=%v）",
+		h, style, isFullscreenWindow(h)))
+
+	if isFullscreenWindow(h) {
+		forceWindowed(h)
+		time.Sleep(900 * time.Millisecond)
+		if hasNonClientFrame(h) {
+			Diag("排列：Alt+Enter 生效，已切回窗口模式")
+			return true
+		}
+		Diag("排列：Alt+Enter 没反应，改窗口样式硬加边框")
+	}
+
+	forceWindowedStyle(h)
+	time.Sleep(700 * time.Millisecond)
+	if hasNonClientFrame(h) {
+		Diag("排列：已有标题栏")
+		return true
+	}
+	Diag("排列：加不上标题栏（引擎自绘非客户区），窗口仍是无边框")
+	return false
+}
+
+// movedInto 复核一次摆放是否真的生效（wantW/wantH 是请求的格位尺寸）。
+//
+// 判据取"尺寸到位"或"不再盖满整屏"二者之一：引擎有最小窗口尺寸
+// （实测 1024×720），请求的格比它小会被撑大，尺寸对不上但确实摆动了；
+// 而独占全屏的窗口两种都不成立，MoveWindow 返回 TRUE 却没动。
+func movedInto(h uintptr, wantW, wantH int32) bool {
+	r, ok := getWindowRect(h)
+	if !ok {
+		return false
+	}
+	if abs32(r.right-r.left-wantW) <= 8 && abs32(r.bottom-r.top-wantH) <= 8 {
+		return true
+	}
+	return !coversScreenRect(r)
+}
+
+// ArrangeFullscreen 把每个客户端都摆成"占满整屏"：多开全屏模式就是
+// 所有客户端叠在一起，靠监控墙切换。返回成功切到全屏的窗口数。
+//
+// 与多开弹窗里选「全屏」启动是同一个目标状态，区别只在于这里是运行中
+// 临时切——所以走 enterFullscreen，而不是预写 preferences.sav。
+func ArrangeFullscreen(cells []ClientCell) int {
+	if len(cells) == 0 {
+		return 0
+	}
+	g, _ := enterPhysicalPixels()
+	defer g.restore()
+	moved := 0
+	for _, c := range cells {
+		h := MainWindowOfPID(c.PID)
+		if h == 0 {
+			continue
+		}
+		_, _, _ = procShowWindow.Call(h, swRestore) // 最小化的先还原
+		if enterFullscreen(h) {
+			moved++
+		}
+	}
+	return moved
+}
+
+// enterFullscreen 让一个客户端占满整屏，返回是否成功。
+//
+// 顺序与 exitFullscreen 对称：已经是"无边框 + 盖满屏"就什么都不做；
+// 普通窗口先发 Alt+Enter（它是 toggle，窗口模式按下去就进全屏）；
+// 引擎不认这个键，就去掉标题栏边框、直接铺满主屏——观感与全屏一致，
+// 而且仍在 DWM 管理下（监控墙的缩略图照常能缩）。
+func enterFullscreen(h uintptr) bool {
+	if coversPrimaryScreen(h) && !hasNonClientFrame(h) {
+		return true
+	}
+	if hasNonClientFrame(h) {
+		forceWindowed(h)
+		time.Sleep(900 * time.Millisecond)
+		if coversPrimaryScreen(h) && !hasNonClientFrame(h) {
+			Diag("排列：Alt+Enter 已切回全屏")
+			return true
+		}
+	}
+	forceFullscreenStyle(h)
+	sw, _, _ := procGetSystemMetrics.Call(smCXScreen)
+	sh, _, _ := procGetSystemMetrics.Call(smCYScreen)
+	if sw == 0 || sh == 0 {
+		return false
+	}
+	_, _, _ = procMoveWindow.Call(h, 0, 0, sw, sh, 1)
+	time.Sleep(250 * time.Millisecond)
+	if coversPrimaryScreen(h) {
+		Diag("排列：已铺满主屏（无边框全屏）")
+		return true
+	}
+	Diag("排列：切不到全屏（引擎可能只认游戏内设置）")
+	return false
+}
+
+// forceFullscreenStyle 去边框：用 WS_POPUP 取代标题栏与可调整边框，
+// 再 SWP_FRAMECHANGED 让窗口管理器重算非客户区（此时为零）。
+func forceFullscreenStyle(h uintptr) {
+	style, _, _ := procGetWindowLongW.Call(h, gwlStyle)
+	next := (style &^ (wsCaption | wsThickFrame | wsSysMenu)) | wsPopup
+	_, _, _ = procSetWindowLongPtrW.Call(h, gwlStyle, next)
+	_, _, _ = procSetWindowPos.Call(h, 0, 0, 0, 0, 0,
+		swpNoMove|swpNoSize|swpNoZOrder|swpNoActivate|swpFrameChanged)
 }
 
 // getWindowRect 读窗口矩形。
@@ -377,20 +564,24 @@ func ArrangeByGrid(cells []ClientCell, cols, rows, wantW, wantH int) int {
 		if h == 0 {
 			continue
 		}
-		// 全屏的先切窗口化：切换后引擎要重建交换链，稍等再摆
-		if isProbablyFullscreen(h) {
-			forceWindowed(h)
-			time.Sleep(900 * time.Millisecond)
-			if h2 := MainWindowOfPID(c.PID); h2 != 0 {
-				h = h2
-			}
+		// 全屏的先切窗口化：切换后引擎要重建交换链，稍等再摆。
+		// 切不回来也要接着摆——MoveWindow 在少数引擎上仍能生效，
+		// 复核那一步会把真实结果记进日志。
+		exitFullscreen(h)
+		if h2 := MainWindowOfPID(c.PID); h2 != 0 {
+			h = h2
 		}
 		// 最小化的窗口 MoveWindow 不生效，先还原
 		_, _, _ = procShowWindow.Call(h, swRestore)
 		x := wa.left + int32(i%cols)*cw
 		y := wa.top + int32(i/cols)*ch
-		if ret, _, _ := procMoveWindow.Call(h, uintptr(x), uintptr(y), uintptr(cw), uintptr(ch), 1); ret != 0 {
+		_, _, _ = procMoveWindow.Call(h, uintptr(x), uintptr(y), uintptr(cw), uintptr(ch), 1)
+		// 复核：独占全屏的窗口 MoveWindow 返回 TRUE 却没动，不能算成功
+		time.Sleep(200 * time.Millisecond)
+		if movedInto(h, cw, ch) {
 			moved++
+		} else {
+			Diag(fmt.Sprintf("排列：pid=%d 的窗口没排动（仍占满整屏）", c.PID))
 		}
 		list = append(list, placedWindow{hwnd: h, x: x, y: y, w: cw, ht: ch})
 		renameWindow(h, c.Label, i+1)
@@ -430,17 +621,19 @@ func ArrangeByScheme(cells []ClientCell, scheme string, wantW, wantH int) int {
 			continue
 		}
 		// 全屏的先切窗口化：切换后引擎要重建交换链，稍等再摆
-		if isProbablyFullscreen(h) {
-			forceWindowed(h)
-			time.Sleep(900 * time.Millisecond)
-			if h2 := MainWindowOfPID(c.PID); h2 != 0 {
-				h = h2
-			}
+		exitFullscreen(h)
+		if h2 := MainWindowOfPID(c.PID); h2 != 0 {
+			h = h2
 		}
 		_, _, _ = procShowWindow.Call(h, swRestore)
-		if ret, _, _ := procMoveWindow.Call(h, uintptr(rects[i].left), uintptr(rects[i].top),
-			uintptr(rects[i].right-rects[i].left), uintptr(rects[i].bottom-rects[i].top), 1); ret != 0 {
+		_, _, _ = procMoveWindow.Call(h, uintptr(rects[i].left), uintptr(rects[i].top),
+			uintptr(rects[i].right-rects[i].left), uintptr(rects[i].bottom-rects[i].top), 1)
+		// 同 ArrangeByGrid：独占全屏的窗口会"调用成功但没动"
+		time.Sleep(200 * time.Millisecond)
+		if movedInto(h, rects[i].right-rects[i].left, rects[i].bottom-rects[i].top) {
 			moved++
+		} else {
+			Diag(fmt.Sprintf("排列：pid=%d 的窗口没排动（仍占满整屏）", c.PID))
 		}
 		renameWindow(h, c.Label, i+1)
 	}

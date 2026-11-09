@@ -286,7 +286,7 @@ const lastCheckText = computed(() => {
   --badbg: rgba(224, 141, 124, 0.1);
   display: flex;
   flex-direction: row;
-  height: 100vh;
+  height: 100%;
   background: var(--bg);
   color: var(--tx);
 }

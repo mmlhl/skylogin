@@ -32,6 +32,7 @@ import SMSLoginDialog from "./components/SMSLoginDialog.vue";
 import ScanDialog from "./components/ScanDialog.vue";
 import HuaweiDialog from "./components/HuaweiDialog.vue";
 import SettingsPanel from "./components/SettingsPanel.vue";
+import TitleBar from "./components/TitleBar.vue";
 
 /** 把 Naive UI 默认外观压到设计系统里 */
 const themeOverrides: GlobalThemeOverrides = {
@@ -200,28 +201,50 @@ onUnmounted(() => {
   <n-config-provider :theme="darkTheme" :theme-overrides="themeOverrides" :locale="zhCN" :date-locale="dateZhCN">
     <n-message-provider>
       <n-dialog-provider>
-        <LaunchAlertDialog />
-        <ReleaseNotice />
-        <ShellHost :store="realStore" :default-index="2" :show-switcher="false" :load-pref="loadShellPref" :save-pref="saveShellPref" />
+        <!-- 窗口去掉了系统标题栏（反白问题的根治），标题条自己画 -->
+        <div class="app-frame">
+          <TitleBar />
+          <div class="app-body">
+            <LaunchAlertDialog />
+            <ReleaseNotice />
+            <ShellHost :store="realStore" :default-index="2" :show-switcher="false" :load-pref="loadShellPref" :save-pref="saveShellPref" />
 
-        <ChannelPicker v-model:show="showChannelPicker" :mode="pickerMode" :entries="loginEntries" @pick="onPick" />
-        <ChannelWebLoginDialog v-model:show="showBiliLogin" kind="bilibili" />
-        <ChannelWebLoginDialog v-model:show="showM4399Login" kind="m4399" />
-        <ChannelWebLoginDialog v-model:show="showVivoLogin" kind="vivo" />
-        <ChannelAskDialog
-          :show="!!askKind"
-          :kind="askKind"
-          :method="askMethod"
-          @update:show="(v: boolean) => !v && (askKind = '')"
-        />
-        <MpayLoginDialog v-model:show="showMpayLogin" />
-        <HeadlessLoginDialog v-model:show="showHeadless" :default-user="refreshTarget?.loginUser || ''" />
-        <SMSLoginDialog v-model:show="showSMS" :target-user-id="refreshTarget?.accountId || ''" :default-mobile="refreshTarget?.name || ''" />
-        <ScanDialog v-model:show="showScan" />
-        <HuaweiDialog v-model:show="showHuawei" />
-        <SettingsPanel v-model:show="showSettings" />
+            <ChannelPicker v-model:show="showChannelPicker" :mode="pickerMode" :entries="loginEntries" @pick="onPick" />
+            <ChannelWebLoginDialog v-model:show="showBiliLogin" kind="bilibili" />
+            <ChannelWebLoginDialog v-model:show="showM4399Login" kind="m4399" />
+            <ChannelWebLoginDialog v-model:show="showVivoLogin" kind="vivo" />
+            <ChannelAskDialog
+              :show="!!askKind"
+              :kind="askKind"
+              :method="askMethod"
+              @update:show="(v: boolean) => !v && (askKind = '')"
+            />
+            <MpayLoginDialog v-model:show="showMpayLogin" />
+            <HeadlessLoginDialog v-model:show="showHeadless" :default-user="refreshTarget?.loginUser || ''" />
+            <SMSLoginDialog v-model:show="showSMS" :target-user-id="refreshTarget?.accountId || ''" :default-mobile="refreshTarget?.name || ''" />
+            <ScanDialog v-model:show="showScan" />
+            <HuaweiDialog v-model:show="showHuawei" />
+            <SettingsPanel v-model:show="showSettings" />
+          </div>
+        </div>
       </n-dialog-provider>
     </n-message-provider>
   </n-config-provider>
 </template>
+
+<style scoped>
+/* 标题条固定 36px，下面才是界面本体。界面壳原来用 100vh，
+   现在容器有确定高度，壳改成 100% 就正好填满剩余空间。 */
+.app-frame {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.app-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+</style>
 

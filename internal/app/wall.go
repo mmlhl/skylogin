@@ -41,6 +41,7 @@ func ensureWallHooks() {
 				"rows":    func() { _ = wallArrange("cascade:" + win.SchemeRows) },
 				"cols":    func() { _ = wallArrange("cascade:" + win.SchemeCols) },
 				"fan":     func() { _ = wallArrange("cascade:" + win.SchemeFan) },
+				"full":    func() { _ = wallArrange("fullscreen") },
 				"mask":    func() { setMaskTitlesOn(!maskEnabled()) },
 				"stopall": wallStopAll,
 			},
@@ -50,7 +51,8 @@ func ensureWallHooks() {
 }
 
 // wallArrange 监控墙快捷菜单：立即重排当前客户端窗口。
-// tile = 自适应正方形网格（16:9 不变形）；cascade[:scheme] = 堆叠方案。
+// tile = 自适应正方形网格（16:9 不变形）；cascade[:scheme] = 堆叠方案；
+// fullscreen = 每个客户端各占满整屏（叠在一起，用监控墙切换）。
 // 一次性摆放，不带渐进排列的漂移回夹——用户手动挪窗口不该被弹回来。
 func wallArrange(mode string) error {
 	cells := clientCells()
@@ -58,7 +60,9 @@ func wallArrange(mode string) error {
 		return fmt.Errorf("没有正在运行的客户端")
 	}
 	var moved int
-	if isCascade, scheme := win.SplitCascadeMode(mode); isCascade {
+	if mode == "fullscreen" {
+		moved = win.ArrangeFullscreen(cells)
+	} else if isCascade, scheme := win.SplitCascadeMode(mode); isCascade {
 		moved = win.ArrangeByScheme(cells, scheme, 0, 0)
 	} else {
 		n := len(cells)
@@ -67,7 +71,7 @@ func wallArrange(mode string) error {
 		moved = win.ArrangeByGrid(cells, cols, rows, 0, 0)
 	}
 	if moved == 0 {
-		return fmt.Errorf("窗口找到了但移不动（可能权限不够）")
+		return fmt.Errorf("窗口没排动：全屏切不回窗口模式（详见日志）或权限不足")
 	}
 	logf("监控墙：快捷菜单重排（%s），%d 个客户端", mode, moved)
 	return nil

@@ -71,3 +71,5 @@ __pycache__/
 # 提交信息临时文件（git commit -F msg.txt 的惯例产物）
 msg.txt
 
+# 本地临时构建产物（临时预览程序、测试 exe）
+/tmp/

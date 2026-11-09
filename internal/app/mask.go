@@ -79,13 +79,6 @@ func setMaskTitlesOn(on bool) bool {
 	return on
 }
 
-func maskMenuText(on bool) string {
-	if on {
-		return "显示全名"
-	}
-	return "打码"
-}
-
 func maskEnabledForConfig() {}
 
 // displayLabelOf 账号 → 显示标签（按开关打码）。窗口标题、监控墙标签、
@@ -108,7 +101,8 @@ func applyMaskEverywhere(on bool) {
 	}
 	windowSlotsMu.Unlock()
 	_ = wallRefresh()
-	win.SetWallMenuItem("mask", maskMenuText(on))
+	// 顶栏的打码按钮是图标：开着时点亮成金色，不再改文字
+	win.SetWallMenuOn("mask", on)
 }
 
 // findAccountByPID 运行中 pid → 账号行。

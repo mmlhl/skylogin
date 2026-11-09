@@ -66,7 +66,7 @@ func arrangeClients(cols, rows, w, h int) (string, error) {
 
 	moved := win.ArrangeByGrid(cells, cols, rows, w, h)
 	if moved == 0 {
-		return "", fmt.Errorf("窗口找到了但移不动（可能权限不够）")
+		return "", fmt.Errorf("窗口没排动：全屏切不回窗口模式（详见日志）或权限不足")
 	}
 	msg := fmt.Sprintf("已把 %d 个客户端按 %d×%d 排列", moved, cols, rows)
 	if w > 0 && h > 0 {
@@ -189,7 +189,7 @@ func arrangeWhenReady(cols, rows, w, h int, mode string) {
 		recordWindowSlots(cells)
 		moved := win.ProgressiveArrange(cells, mode, cols, rows, w, h)
 		if moved == 0 {
-			logf("自动排列失败: 窗口找到了但移不动（可能权限不够）")
+			logf("自动排列失败: 窗口没排动（全屏切不回窗口模式或权限不足），详见上面的诊断")
 			return
 		}
 		logf("自动排列: %d/%d 个客户端已就位", moved, len(cells))

@@ -153,12 +153,16 @@ function pickArbiterMin() {
 }
 
 function confirmMulti() {
+  // 按账号列表的显示顺序发出去，不用勾选先后：窗口排列按传入顺序铺格子，
+  // 用点击顺序的话先点第三个再点第一个，排出来就是第三个在前——同样的
+  // 一组账号每次布局都不一样，找窗口时很别扭。
+  const ordered = store.accounts.filter((a) => picked.value.includes(a.id)).map((a) => a.id);
   if (display.value === "fullscreen") {
-    store.multiLaunch(picked.value, undefined, undefined, "fullscreen", qMode.value, qFps.value);
+    store.multiLaunch(ordered, undefined, undefined, "fullscreen", qMode.value, qFps.value);
   } else if (display.value === "cascade") {
-    store.multiLaunch(picked.value, undefined, customSize.value, `cascade:${cascadeScheme.value}` as const, qMode.value, qFps.value);
+    store.multiLaunch(ordered, undefined, customSize.value, `cascade:${cascadeScheme.value}` as const, qMode.value, qFps.value);
   } else {
-    store.multiLaunch(picked.value, curLayout.value, customSize.value, "tile", qMode.value, qFps.value);
+    store.multiLaunch(ordered, curLayout.value, customSize.value, "tile", qMode.value, qFps.value);
   }
   demoUi.multiOpen = false;
 }

@@ -28,6 +28,7 @@ var (
 	procIsWindow     = user32dll.NewProc("IsWindow")
 	procLoadCursor   = user32dll.NewProc("LoadCursorW")
 	procGetDpiForWin = user32dll.NewProc("GetDpiForWindow")
+	procScreenToClient = user32dll.NewProc("ScreenToClient")
 	procInvalidate   = user32dll.NewProc("InvalidateRect")
 	procSetWindowPos = user32dll.NewProc("SetWindowPos")
 
@@ -46,8 +47,14 @@ var (
 	procCreateSolidBr = gdi32.NewProc("CreateSolidBrush")
 	procCreatePen     = gdi32.NewProc("CreatePen")
 	procRoundRect     = gdi32.NewProc("RoundRect")
+	procRectangle     = gdi32.NewProc("Rectangle")
+	procEllipse       = gdi32.NewProc("Ellipse")
+	procGetStockObj   = gdi32.NewProc("GetStockObject")
 	procMoveToEx      = gdi32.NewProc("MoveToEx")
 	procLineTo        = gdi32.NewProc("LineTo")
+
+	procSetTimer   = user32dll.NewProc("SetTimer")
+	procKillTimer  = user32dll.NewProc("KillTimer")
 
 	procFrameRect       = user32dll.NewProc("FrameRect")
 	procTrackMouseEvent = user32dll.NewProc("TrackMouseEvent")
@@ -64,6 +71,28 @@ const (
 	wmMouseMove    = 0x0200
 	wmMouseLeave   = 0x02A3
 	wmExitSizeMove = 0x0232
+	wmTimerWin     = 0x0113
+	// 悬停提示的定时器 id（延迟 600ms 才显示）
+	wallTipTimerID = 1
+	wmNcHitTest    = 0x0084
+	wmNcCalcSize   = 0x0083
+	wmGetMinMax    = 0x0024
+
+	// 无边框窗口的命中区：自己判断边缘，保住拖边缩放
+	htCaption     = 2
+	htLeft        = 10
+	htRight       = 11
+	htTop         = 12
+	htTopLeft     = 13
+	htTopRight    = 14
+	htBottom      = 15
+	htBottomLeft  = 16
+	htBottomRight = 17
+	resizeBorder  = 6 // 边缘可拖动的宽度（客户区像素）
+
+	// wsPopup / wsThickFrame 在 arrange.go 里已有定义（窗口化/全屏切换用）
+	wsClipChildren = 0x02000000
+	swMinimize     = 6
 
 	wsOverlappedWindow = 0x00CF0000
 	wsVisible          = 0x10000000
@@ -117,42 +146,94 @@ type WallHooks struct {
 	StopClient func(pid uint32)                 // 格子右上角 ×：强行停止该客户端
 }
 
-// wallMenu 快捷菜单按钮（顶栏，从左到右）。
-// 排列方案与多开弹窗同一套（dual 默认）；danger 类按钮红调示警。
+// 快捷菜单分两组：左边一槽是"排列方案"（互斥，选中的那项高亮），
+// 右边是工具按钮（打码、全部停止）。分组是为了让"摆窗口"和"动客户端"
+// 这两类动作在视觉上分得开——以前七个长得一样的胶囊排一排，看不出主次。
+const (
+	menuGroupArrange = iota // 排列方案（互斥，选中的那项高亮）
+	menuGroupTool           // 工具按钮（独立胶囊）
+	menuGroupSys            // 窗口控制（最小化 / 最大化还原 / 关闭）
+)
+
+// wallMenu 顶栏按钮（从左到右）。
+//
+// 全部图标化：文字标签在 480 宽的最小窗口下会和右侧工具按钮挤在一起，
+// 而且六个两字标签并排读起来像一排按钮，没有主次。图标按钮宽度固定，
+// 布局不再随文字长度变化，窄窗口也不会重叠。text 只用于悬停提示。
+//
+// 排列方案与多开弹窗同一套（dual 默认）。
 var wallMenu = []struct {
 	id, text string
+	group    int
 	danger   bool
 }{
-	{"tile", "平铺", false},
-	{"dual", "双摞", false},
-	{"rows", "两行", false},
-	{"cols", "两列", false},
-	{"fan", "满扇", false},
-	{"mask", "打码", false},
-	{"stopall", "全部停止", true},
+	{"tile", "平铺", menuGroupArrange, false},
+	{"dual", "双摞", menuGroupArrange, false},
+	{"rows", "两行", menuGroupArrange, false},
+	{"cols", "两列", menuGroupArrange, false},
+	{"fan", "满扇", menuGroupArrange, false},
+	{"full", "全屏", menuGroupArrange, false},
+	{"mask", "打码", menuGroupTool, false},
+	{"stopall", "全部停止", menuGroupTool, true},
+	// 无边框后系统不再画窗口控制按钮，自己来（顺序同 Windows：最小化 / 最大化 / 关闭）
+	{"min", "最小化", menuGroupSys, false},
+	{"max", "最大化", menuGroupSys, false},
+	{"close", "关闭", menuGroupSys, true},
 }
 
-// SetWallMenuItem 改某个菜单按钮的文字（打码切换用）并重绘顶栏。
-func SetWallMenuItem(id, text string) {
+// wallTooltipIdx 当前显示悬停提示的按钮下标（-1 = 不显示）。
+var wallTooltipIdx = -1
+
+// wallMenuOn 记录"开关型"按钮的状态（目前只有打码）：开着时图标点亮成金色。
+var wallMenuOn = map[string]bool{}
+
+// wallMenuDivs 分组之间的竖线位置（客户区 x，绘制用；布局时算好）。
+var wallMenuDivs []int32
+
+// wallBarH 顶栏高度（布局时算好，绘制用）。
+var wallBarH int32
+
+// wallDPI 墙窗口的 DPI（提示条排版用）。
+var wallDPI int32 = 96
+
+
+// wallMenuActive 当前高亮的排列方案（点过哪个就亮哪个，纯视觉状态）。
+var wallMenuActive = "tile"
+
+// wallSlotRect 排列组那个分段控件的整体槽（墙线程维护，绘制用）。
+var wallSlotRect windowRect
+
+// wallHoverMenu 鼠标悬停的菜单项下标，-1 = 没有。
+var wallHoverMenu = -1
+
+
+// SetWallMenuOn 设置"开关型"按钮的状态（目前只有打码），开着时图标点亮成金色。
+// 图标按钮宽度固定，状态变化不需要重排，重绘一次就够。
+func SetWallMenuOn(id string, on bool) {
 	wallMu.Lock()
-	defer wallMu.Unlock()
+	changed := wallMenuOn[id] != on
+	wallMenuOn[id] = on
 	h := wallHwnd
-	if h == 0 {
-		// 墙没开：只更新文字，下次开墙就是新文案
-		for i := range wallMenu {
-			if wallMenu[i].id == id {
-				wallMenu[i].text = text
-			}
-		}
+	wallMu.Unlock()
+	if !changed || h == 0 {
 		return
 	}
-	for i := range wallMenu {
-		if wallMenu[i].id == id {
-			wallMenu[i].text = text
-			break
-		}
-	}
 	procInvalidate.Call(h, 0, 1)
+}
+
+// postWallTask 把一段操作投到墙线程执行（墙没开就丢弃）。
+func postWallTask(f func()) {
+	wallMu.Lock()
+	h, ch := wallHwnd, wallTasks
+	wallMu.Unlock()
+	if h == 0 || ch == nil {
+		return
+	}
+	select {
+	case ch <- f:
+		procPostMessageW.Call(h, wmWallTask, 0, 0)
+	default: // 队列满说明墙线程卡了，这轮丢弃
+	}
 }
 
 // trackMouseEvent 是 TRACKMOUSEEVENT（收 WM_MOUSELEAVE 用）。
@@ -163,9 +244,20 @@ type trackMouseEvent struct {
 	DwHoverTime uint32
 }
 
+// minMaxInfo 是 MINMAXINFO（无边框窗口限制最大化范围用）。
+type minMaxInfo struct {
+	ptReserved     point
+	ptMaxSize      point
+	ptMaxPosition  point
+	ptMinTrackSize point
+	ptMaxTrackSize point
+}
+
 var (
 	wallHooks     WallHooks
 	wallMenuRects []windowRect // 顶栏按钮矩形（墙线程维护，wallClick 只读）
+	wallMenuIcons []windowRect // 分段里的小示意图区（排列组才有）
+	wallMenuTexts []windowRect // 分段里的文字区
 	// 强停按钮的悬停状态（墙线程维护）
 	wallMouse      point
 	wallMouseIn    bool
@@ -185,14 +277,34 @@ var (
 	wallFont  uintptr
 	wallRatio float64 // 画面宽高比（来自源窗口客户区），默认 64:45
 	// 界面小部件的画笔/画刷（墙线程创建、退出时销毁）
-	wallRedBrush    uintptr // 强停按钮悬停时的深红底
-	wallLightBrush  uintptr // 强停按钮平时的浅红底
-	wallWhitePen    uintptr // 悬停时的白色 ×
-	wallRedPen      uintptr // 平时的红 ×
-	wallBtnBrush    uintptr // 菜单按钮淡金底
-	wallBtnDanger   uintptr // 危险按钮淡红底
-	wallBtnFrame    uintptr // 按钮边框画笔
-	wallBtnFrameHot uintptr // 悬停/强调边框画笔
+	wallRedBrush   uintptr // 强停按钮悬停时的深红底
+	wallLightBrush uintptr // 强停按钮平时的浅红底
+	wallWhitePen   uintptr // 悬停时的白色 ×
+	wallRedPen     uintptr // 平时的红 ×
+	// 深色主题（跟主界面同一套：surface 分层 + 金色 accent）
+	wallBgBrush     uintptr // 墙背景 RGB(20,20,22)
+	wallBarBrush    uintptr // 顶栏底 RGB(27,27,31)
+	wallHairlinePen uintptr // 1px 分隔线 RGB(38,38,42)
+	wallHoverBrush  uintptr // 悬停底 RGB(32,32,36)
+	wallAccentBrush uintptr // 选中下划线（金）RGB(216,180,124)
+	// 顶栏图标：常态灰 / 悬停白 / 当前项金（复用 wallAccentBrush）
+	wallGlyphBrush    uintptr
+	wallGlyphHotBrush uintptr
+	wallGlyphPen      uintptr
+	wallGlyphHotPen   uintptr
+	wallAccentPen     uintptr // 金色画笔（打码"隐藏中"的斜线用）
+	wallCutPen        uintptr // 背景色画笔（把眼睛斜切一刀）
+	// 全部停止图标：红色空心方块（比实心刺眼度低，但仍一眼看出是危险动作）
+	wallStopGlyphPen    uintptr
+	wallStopGlyphHotPen uintptr
+	// 悬停提示条
+	wallTipBrush uintptr
+	wallTipPen   uintptr
+	// 图标字体：Segoe MDL2 Assets 画动作图标（眼睛/全屏/窗口控制），
+	// 抗锯齿由字体渲染负责——GDI 手绘线条在 14px 下锯齿太明显。
+	wallIconFont uintptr
+	// 符号字体：画 □ 这类空心方块（停止按钮用），雅黑里就有
+	wallSymFont uintptr
 	// 墙线程在 wallMu 下维护的格子位置快照，给 WallTileCenter 跨线程读
 	wallRects []windowRect
 )
@@ -295,10 +407,15 @@ func runWall(ready chan<- error) {
 	}
 
 	title, _ := syscall.UTF16PtrFromString("光遇登录器 · 监控墙")
+	// 无边框（WS_POPUP 取代 WS_CAPTION）：系统标题栏的深浅由 DWM 决定，
+	// 拖动时它会把 per-window 深色建议丢掉、回落成系统浅色（看着像反白），
+	// 而 Win10 没有"指定标题栏颜色"的 API。干脆不要标题栏，顶栏自己画、
+	// 自己处理拖动（WM_NCHITTEST 返回 HTCAPTION），颜色就永远是我们说了算。
+	// WS_THICKFRAME 保留：窗口仍可拖边缩放，也才有 Aero 阴影。
 	// APPWINDOW：任务栏 / Alt+Tab 里能看到监控墙（不然窗口被盖住后很难找回）。
 	// NOACTIVATE 保留：点墙仍然不抢游戏前台（多开挂机的核心约束）。
 	hwnd, _, _ := procCreateWinEx.Call(wsExNoActivate|wsExAppwindow, uintptr(unsafe.Pointer(clsName)),
-		uintptr(unsafe.Pointer(title)), wsOverlappedWindow|wsVisible,
+		uintptr(unsafe.Pointer(title)), wsPopup|wsThickFrame|wsClipChildren|wsVisible,
 		uintptr(x), uintptr(y), uintptr(w), uintptr(h),
 		0, 0, hInst, 0)
 	if hwnd == 0 {
@@ -306,6 +423,8 @@ func runWall(ready chan<- error) {
 		return
 	}
 	applyDarkFrame(hwnd)
+	// 同样去掉 DWM 描的那圈边框（深色顶栏上方一条灰线）
+	DisableNonClientFrame(hwnd)
 
 	// 固定在最顶层：挂机看号时墙不能被游戏窗口盖住
 	// (HWND_TOPMOST=-1, SWP_NOSIZE|SWP_NOMOVE|SWP_NOACTIVATE)
@@ -313,16 +432,31 @@ func runWall(ready chan<- error) {
 
 	dpi, _, _ := procGetDpiForWin.Call(hwnd)
 	wallFont = makeWallFont(int(dpi))
+	wallIconFont = makeGlyphFont("Segoe MDL2 Assets", 15, int(dpi))
+	wallSymFont = makeGlyphFont("Microsoft YaHei UI", 15, int(dpi))
 	wallRatio = 64.0 / 45.0
 	// 界面小部件：红底白 ×、菜单按钮
 	wallRedBrush, _, _ = procCreateSolidBr.Call(0x003539E5)   // 悬停底色 RGB(229,57,53)，COLORREF 是 BGR
 	wallLightBrush, _, _ = procCreateSolidBr.Call(0x00E5E7FA) // 平时底色 RGB(250,231,229)
 	// 菜单按钮：与应用主题一致的配色（米白底 + 浅灰边 + 深字，
 	// 排列方案按钮 hover 感的金色点缀、危险按钮红调）
-	wallBtnBrush, _, _ = procCreateSolidBr.Call(0x00F4EFDF)      // 淡金底 RGB(223,239,244)→BGR
-	wallBtnDanger, _, _ = procCreateSolidBr.Call(0x00DDE8FB)     // 淡红底 RGB(251,232,221)
-	wallBtnFrame, _, _ = procCreatePen.Call(0, 1, 0x00B8C6D8)    // 柔和蓝灰边 RGB(216,198,184)
-	wallBtnFrameHot, _, _ = procCreatePen.Call(0, 1, 0x007CA8BC) // 主题金边 RGB(188,168,124)
+	// 深色主题：墙背景、顶栏、分隔线、悬停底、选中金线
+	wallBgBrush, _, _ = procCreateSolidBr.Call(0x00161414)     // RGB(20,20,22)
+	wallBarBrush, _, _ = procCreateSolidBr.Call(0x001F1B1B)    // RGB(27,27,31)
+	wallHairlinePen, _, _ = procCreatePen.Call(0, 1, 0x002A2626) // RGB(38,38,42)
+	wallHoverBrush, _, _ = procCreateSolidBr.Call(0x00242020)  // RGB(32,32,36)
+	wallAccentBrush, _, _ = procCreateSolidBr.Call(0x007CB4D8) // RGB(216,180,124)
+	// 顶栏图标：常态灰、悬停白（金用 wallAccentBrush）
+	wallGlyphBrush, _, _ = procCreateSolidBr.Call(0x009CA2A5)    // RGB(165,162,156)
+	wallGlyphHotBrush, _, _ = procCreateSolidBr.Call(0x00EFF2F4) // RGB(244,242,239)
+	wallGlyphPen, _, _ = procCreatePen.Call(0, 1, 0x009CA2A5)
+	wallGlyphHotPen, _, _ = procCreatePen.Call(0, 1, 0x00EFF2F4)
+	wallAccentPen, _, _ = procCreatePen.Call(0, 2, 0x007CB4D8)
+	wallCutPen, _, _ = procCreatePen.Call(0, 2, 0x001F1B1B) // 顶栏底色，切断眼睛用
+	wallStopGlyphPen, _, _ = procCreatePen.Call(0, 2, 0x003A5AE0)    // 红 RGB(224,90,58)
+	wallStopGlyphHotPen, _, _ = procCreatePen.Call(0, 2, 0x00506BFF) // 亮红 RGB(255,107,80)
+	wallTipBrush, _, _ = procCreateSolidBr.Call(0x002A2626)          // 提示条底 RGB(38,38,42)
+	wallTipPen, _, _ = procCreatePen.Call(0, 1, 0x00403A3A)          // 提示条边 RGB(58,58,64)
 	penW := int32(dpi) * 2 / 96
 	if penW < 2 {
 		penW = 2
@@ -333,6 +467,9 @@ func runWall(ready chan<- error) {
 	wallMu.Lock()
 	wallHwnd = hwnd
 	wallMu.Unlock()
+	// 建窗时的 WM_SIZE 早于 wallHwnd 赋值，那次布局被 hwndOfWall()==0 挡掉了；
+	// 这里补一次，否则没有客户端时顶栏永远是空的（要等第一次 WallUpdate 才出来）。
+	relayoutWall(false)
 	ready <- nil
 
 	var msg trayMsg
@@ -346,14 +483,21 @@ func runWall(ready chan<- error) {
 	}
 
 	for _, res := range []uintptr{wallFont, wallRedBrush, wallLightBrush, wallWhitePen, wallRedPen,
-		wallBtnBrush, wallBtnDanger, wallBtnFrame, wallBtnFrameHot} {
+		wallBgBrush, wallBarBrush, wallHairlinePen, wallHoverBrush, wallAccentBrush,
+		wallGlyphBrush, wallGlyphHotBrush, wallGlyphPen, wallGlyphHotPen, wallAccentPen, wallCutPen,
+		wallStopGlyphPen, wallStopGlyphHotPen, wallTipBrush, wallTipPen,
+		wallIconFont, wallSymFont} {
 		if res != 0 {
 			procDeleteObject.Call(res)
 		}
 	}
 	wallFont = 0
 	wallRedBrush, wallWhitePen = 0, 0
-	wallBtnBrush, wallBtnDanger, wallBtnFrame, wallBtnFrameHot = 0, 0, 0, 0
+	wallBgBrush, wallBarBrush, wallHairlinePen = 0, 0, 0
+	wallHoverBrush, wallAccentBrush = 0, 0
+	wallGlyphBrush, wallGlyphHotBrush, wallGlyphPen, wallGlyphHotPen = 0, 0, 0, 0
+	wallStopGlyphPen, wallStopGlyphHotPen, wallTipBrush, wallTipPen = 0, 0, 0, 0
+	wallIconFont, wallSymFont = 0, 0
 	wallMu.Lock()
 	wallHwnd = 0
 	wallMu.Unlock()
@@ -383,6 +527,28 @@ func wallWndProc(hwnd, msg, wparam, lparam uintptr) uintptr {
 	case wmSizeWin:
 		relayoutWall(false)
 		return 0
+	case wmNcCalcSize:
+		// 客户区占满整个窗口：WS_THICKFRAME 在浅色主题下会给无边框窗口
+		// 画一圈浅色边框（深色界面上就是一道白边），返回 0 不调 DefWindowProc
+		// 就把它去掉。边缘缩放改由 WM_NCHITTEST 自己判断。
+		if wparam != 0 {
+			return 0
+		}
+	case wmGetMinMax:
+		// 没有标题栏之后系统不知道任务栏边界，最大化会盖住任务栏
+		mmi := (*minMaxInfo)(unsafe.Pointer(lparam))
+		wa := primaryWorkArea()
+		mmi.ptMaxPosition = point{X: wa.left, Y: wa.top}
+		mmi.ptMaxSize = point{X: wa.right - wa.left, Y: wa.bottom - wa.top}
+		mmi.ptMinTrackSize = point{X: 480, Y: 360}
+		return 0
+	case wmNcHitTest:
+		// 无边框窗口：边缘 → 缩放，顶栏空白 → 标题栏（交给系统拖动）。
+		if ht := wallHitTest(hwnd, lparam); ht != 0 {
+			return ht
+		}
+		r, _, _ := procDefWinProc.Call(hwnd, msg, wparam, lparam)
+		return r
 	case wmExitSizeMove:
 		saveWallRect(hwnd)
 		return 0
@@ -398,17 +564,33 @@ func wallWndProc(hwnd, msg, wparam, lparam uintptr) uintptr {
 		wallMouse = point{int32(int16(lparam & 0xFFFF)), int32(int16((lparam >> 16) & 0xFFFF))}
 		wallMouseIn = true
 		armWallMouseLeave(hwnd)
-		h := hoverWallButton()
-		if h != wallHoverTile {
-			wallHoverTile = h
+		h, m := hoverWallButton(), hoverWallMenu()
+		if h != wallHoverTile || m != wallHoverMenu {
+			wallHoverTile, wallHoverMenu = h, m
+			// 悬停提示要延迟出现：扫过一排按钮时不该一路闪字
+			procKillTimer.Call(hwnd, wallTipTimerID)
+			wallTooltipIdx = -1
+			if m >= 0 {
+				procSetTimer.Call(hwnd, wallTipTimerID, 600, 0)
+			}
 			procInvalidate.Call(hwnd, 0, 1) // 悬停目标变了才重绘
+		}
+		return 0
+	case wmTimerWin:
+		if wparam == wallTipTimerID {
+			procKillTimer.Call(hwnd, wallTipTimerID)
+			if wallHoverMenu >= 0 && wallTooltipIdx != wallHoverMenu {
+				wallTooltipIdx = wallHoverMenu
+				procInvalidate.Call(hwnd, 0, 1)
+			}
 		}
 		return 0
 	case wmMouseLeave:
 		wallLeaveArmed = false
 		wallMouseIn = false
-		if wallHoverTile != -1 {
-			wallHoverTile = -1
+		procKillTimer.Call(hwnd, wallTipTimerID)
+		if wallHoverTile != -1 || wallHoverMenu != -1 || wallTooltipIdx != -1 {
+			wallHoverTile, wallHoverMenu, wallTooltipIdx = -1, -1, -1
 			procInvalidate.Call(hwnd, 0, 1)
 		}
 		return 0
@@ -522,9 +704,10 @@ func relayoutWall(hotSwap bool) {
 	}
 	W, H := cr.right, cr.bottom
 	dpi, _, _ := procGetDpiForWin.Call(h)
+	wallDPI = int32(dpi)
 	gap := int32(dpi) * 8 / 96
 	strip := int32(dpi) * 28 / 96 // 每格顶部标题带高
-	barH := layoutWallMenu(int32(dpi))
+	barH := layoutWallMenu(int32(dpi), W)
 	n := len(wallTiles)
 	if n == 0 {
 		wallMu.Lock()
@@ -628,19 +811,62 @@ func relayoutWall(hotSwap bool) {
 	procInvalidate.Call(h, 0, 1)
 }
 
-// layoutWallMenu 摆顶栏快捷菜单按钮，返回栏高。
-// 按钮宽按 CJK 字数估（标签都是中文，14px/字 + 内边距，96dpi 基准）。
-func layoutWallMenu(dpi int32) int32 {
-	barH := int32(dpi) * 34 / 96
+// layoutWallMenu 摆顶栏，返回栏高。
+//
+// 全图标按钮，宽度固定 30（窗口控制 38），所以布局跟文字长度无关——
+// 480 宽的最小窗口下也不会互相压住。分组之间留 6px + 一条 1px 竖线：
+// 左边"怎么摆"、右边"对客户端做什么"、最右是窗口控制。
+func layoutWallMenu(dpi, clientW int32) int32 {
 	scale := func(v int32) int32 { return v * dpi / 96 }
-	x := scale(8)
-	rects := make([]windowRect, 0, len(wallMenu))
-	for _, b := range wallMenu {
-		w := scale(int32(len([]rune(b.text)))*14 + 24)
-		rects = append(rects, windowRect{left: x, top: scale(5), right: x + w, bottom: barH - scale(5)})
-		x += w + scale(6)
+	barH := scale(42)
+	btn := scale(30)
+	gap := scale(2)
+	y0, y1 := (barH-btn)/2, (barH+btn)/2
+
+	rects := make([]windowRect, len(wallMenu))
+
+	// 左侧：排列组
+	x := scale(10)
+	left := x
+	for i, b := range wallMenu {
+		if b.group != menuGroupArrange {
+			continue
+		}
+		rects[i] = windowRect{left: x, top: y0, right: x + btn, bottom: y1}
+		x += btn + gap
+	}
+	wallSlotRect = windowRect{left: left, top: y0, right: x - gap, bottom: y1}
+
+	// 分隔线 + 工具组：间距给足，让"摆窗口"和"动客户端"一眼分开
+	x += scale(10)
+	wallMenuDivs = []int32{x}
+	x += scale(10) + scale(1)
+	for i, b := range wallMenu {
+		if b.group != menuGroupTool {
+			continue
+		}
+		// 打码是开关，用文字标"点下去会发生什么"，比图标+颜色猜状态清楚
+		w := btn
+		if b.id == "mask" {
+			w = scale(46)
+		}
+		rects[i] = windowRect{left: x, top: y0, right: x + w, bottom: y1}
+		x += w + gap
+	}
+
+	// 右侧：窗口控制从右往左（比图标按钮宽一点，跟系统一致）
+	winBtn := scale(38)
+	winH := scale(26)
+	x = clientW - scale(8)
+	for i := len(wallMenu) - 1; i >= 0; i-- {
+		if wallMenu[i].group != menuGroupSys {
+			continue
+		}
+		rects[i] = windowRect{left: x - winBtn, top: (barH - winH) / 2, right: x, bottom: (barH + winH) / 2}
+		x -= winBtn
 	}
 	wallMenuRects = rects
+	wallBarH = barH
 	return barH
 }
 
@@ -681,10 +907,67 @@ func hoverWallButton() int {
 	return -1
 }
 
+// hoverWallMenu 鼠标当前悬停在哪个顶栏按钮上，-1 = 都不是。
+func hoverWallMenu() int {
+	if !wallMouseIn {
+		return -1
+	}
+	for i, r := range wallMenuRects {
+		if r.right > r.left && ptInRect(wallMouse, r) {
+			return i
+		}
+	}
+	return -1
+}
+
+// wallHitTest 无边框窗口的命中判断：先边缘（缩放），再顶栏空白（拖动）。
+// 返回 0 表示交给 DefWindowProc（画面区、按钮上）。
+func wallHitTest(hwnd, lparam uintptr) uintptr {
+	pt := point{X: int32(int16(lparam & 0xFFFF)), Y: int32(int16((lparam >> 16) & 0xFFFF))}
+	procScreenToClient.Call(hwnd, uintptr(unsafe.Pointer(&pt)))
+	var cr windowRect
+	if ret, _, _ := procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&cr))); ret == 0 {
+		return 0
+	}
+	b := int32(resizeBorder)
+	left, right := pt.X < b, pt.X >= cr.right-b
+	top, bottom := pt.Y < b, pt.Y >= cr.bottom-b
+	switch {
+	case top && left:
+		return htTopLeft
+	case top && right:
+		return htTopRight
+	case bottom && left:
+		return htBottomLeft
+	case bottom && right:
+		return htBottomRight
+	case left:
+		return htLeft
+	case right:
+		return htRight
+	case top:
+		return htTop
+	case bottom:
+		return htBottom
+	}
+	// 顶栏空白处 = 标题栏：能拖窗口、双击最大化
+	if pt.Y >= 0 && pt.Y < wallSlotRect.bottom {
+		for _, r := range wallMenuRects {
+			if r.right > r.left && ptInRect(pt, r) {
+				return 0 // 按钮上不拖动
+			}
+		}
+		return htCaption
+	}
+	return 0
+}
+
 // ptInRect 点是否在矩形内。
 func ptInRect(p point, r windowRect) bool {
 	return p.X >= r.left && p.X <= r.right && p.Y >= r.top && p.Y <= r.bottom
 }
+
+// topBarDragZone 已并入 wallHitTest（无边框窗口要同时判断边缘缩放）。
 
 // saveWallRect 把墙当前位置尺寸回传 app 层持久化（拖拽结束/关闭时）。
 func saveWallRect(hwnd uintptr) {
@@ -740,26 +1023,28 @@ func paintWall(hwnd uintptr) {
 	}
 	defer procEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
 
-	bg, _, _ := procGetSysBrush.Call(colorBtnFace)
 	var full windowRect
 	procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&full)))
-	procFillRect.Call(hdc, uintptr(unsafe.Pointer(&full)), bg)
+	// 深色底：跟主界面同一套 surface-0，缩略图边上留深色比浅灰耐看
+	procFillRect.Call(hdc, uintptr(unsafe.Pointer(&full)), wallBgBrush)
 
 	if wallFont != 0 {
 		procSelectObject.Call(hdc, wallFont)
 	}
 	procSetBkMode.Call(hdc, bkTransparent)
-	procSetTextColor.Call(hdc, 0x003A3A3A) // 深灰（COLORREF 是 BGR）
+	procSetTextColor.Call(hdc, colTextOn)
 
 	if len(wallTiles) == 0 {
 		hint, _ := syscall.UTF16PtrFromString("没有正在运行的客户端——从主界面启动游戏后，这里会出现它们的实时画面")
+		procSetTextColor.Call(hdc, colTextDim)
 		var r windowRect
 		procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
 		procDrawTextW.Call(hdc, uintptr(unsafe.Pointer(hint)), ^uintptr(0),
 			uintptr(unsafe.Pointer(&r)), dtCenter|dtVCenter|dtSingleLine)
-		paintWallMenu(hdc)
+		paintWallMenu(hdc, hwnd)
 		return
 	}
+	procSetTextColor.Call(hdc, colTextOn)
 	for i, t := range wallTiles {
 		if t.label == "" {
 			continue
@@ -787,34 +1072,291 @@ func paintWall(hwnd uintptr) {
 		procLineTo.Call(hdc, uintptr(lx), uintptr(by))
 		procSelectObject.Call(hdc, old)
 	}
-	paintWallMenu(hdc)
+	paintWallMenu(hdc, hwnd)
 }
 
-// paintWallMenu 画顶栏快捷菜单按钮：圆角胶囊底 + 主题配色，
-// 危险按钮（全部停止）红调与排列按钮区分开。
-func paintWallMenu(hdc uintptr) {
+// 顶栏配色（深色主题，COLORREF 是 BGR，注释写 RGB 便于对照）
+const (
+	colTextOn   = 0x00EFF2F4 // RGB(244,242,239) 主文字
+	colTextDim  = 0x009CA2A5 // RGB(165,162,156) 次级文字
+	colAccent   = 0x007CB4D8 // RGB(216,180,124) 当前项（金）
+	colDanger   = 0x003A5AE0 // RGB(224,90,58)   危险动作
+	colDangerOn = 0x00F0E0E8 // RGB(232,224,240) 危险动作悬停
+)
+
+// insetRect 四边各收 px（悬停底比 tab 略小一圈，不顶到相邻项）。
+func insetRect(r windowRect, px int32) windowRect {
+	return windowRect{left: r.left + px, top: r.top + px, right: r.right - px, bottom: r.bottom - px}
+}
+
+// fillRect 用画刷填一块矩形（FillRect 只要画刷，不需要画笔）。
+func fillRect(hdc uintptr, r windowRect, brush uintptr) {
+	procFillRect.Call(hdc, uintptr(unsafe.Pointer(&r)), brush)
+}
+
+// drawGlyphText 用字体画一个图标字符，居中填满 box。
+// 图标字体（Segoe MDL2 Assets）自带抗锯齿，比 GDI 手绘线条干净。
+func drawGlyphText(hdc, font uintptr, s string, box windowRect, col uintptr) {
+	if font == 0 {
+		return
+	}
+	old, _, _ := procSelectObject.Call(hdc, font)
+	procSetTextColor.Call(hdc, col)
+	p, err := syscall.UTF16PtrFromString(s)
+	if err == nil {
+		procDrawTextW.Call(hdc, uintptr(unsafe.Pointer(p)), ^uintptr(0),
+			uintptr(unsafe.Pointer(&box)), dtCenter|dtVCenter|dtSingleLine)
+	}
+	procSelectObject.Call(hdc, old)
+}
+
+// strokeRect 用当前画笔描一个方框（LineTo 会连着画，最后回到起点）。
+func strokeRect(hdc uintptr, l, t, r, b int32) {
+	procMoveToEx.Call(hdc, uintptr(l), uintptr(t), 0)
+	procLineTo.Call(hdc, uintptr(r), uintptr(t))
+	procLineTo.Call(hdc, uintptr(r), uintptr(b))
+	procLineTo.Call(hdc, uintptr(l), uintptr(b))
+	procLineTo.Call(hdc, uintptr(l), uintptr(t))
+}
+
+// drawSysGlyph 画窗口控制按钮的符号（最小化 / 最大化-还原 / 关闭），
+// 同样走图标字体：ChromeMinimize / ChromeMaximize / ChromeRestore / ChromeClose。
+func drawSysGlyph(hdc, hwnd uintptr, id string, r windowRect) {
+	glyph := "\uE921"
+	switch id {
+	case "min":
+		glyph = "\uE921"
+	case "max":
+		if z, _, _ := procIsZoomed.Call(hwnd); z != 0 {
+			glyph = "\uE923" // ChromeRestore
+		} else {
+			glyph = "\uE922" // ChromeMaximize
+		}
+	case "close":
+		glyph = "\uE8BB" // ChromeClose
+	}
+	drawGlyphText(hdc, wallIconFont, glyph, r, colTextOn)
+}
+
+// paintWallMenu 画顶栏快捷菜单。
+//
+// 深色顶栏 + 金色当前项：排列方案是一排文字 tab，选中的那项金色文字、
+// 底下压一条 2px 金线；工具按钮是纯文字（悬停才浮出淡底），危险动作用红。
+// 没有边框、没有胶囊——顶栏是导航条，不是一组并列的按钮，画成一排
+// 同样的圆角块只会显得像工具栏。
+func paintWallMenu(hdc, hwnd uintptr) {
+	barH := wallBarH
+	if barH <= 0 {
+		return
+	}
+	var full windowRect
+	procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&full)))
+	fillRect(hdc, windowRect{left: 0, top: 0, right: full.right, bottom: barH}, wallBarBrush)
+	// 底边 1px 分隔线，把顶栏和格子区分开
+	old, _, _ := procSelectObject.Call(hdc, wallHairlinePen)
+	procMoveToEx.Call(hdc, 0, uintptr(barH-1), 0)
+	procLineTo.Call(hdc, uintptr(full.right), uintptr(barH-1))
+	// 分组之间的竖线：高 16、居中
+	for _, dx := range wallMenuDivs {
+		procMoveToEx.Call(hdc, uintptr(dx), uintptr(barH/2-8), 0)
+		procLineTo.Call(hdc, uintptr(dx), uintptr(barH/2+8))
+	}
+	procSelectObject.Call(hdc, old)
+
 	for i, b := range wallMenu {
 		if i >= len(wallMenuRects) {
 			break
 		}
 		r := wallMenuRects[i]
-		fill, frame := wallBtnBrush, wallBtnFrame
-		textColor := uintptr(0x00443EBE) // 主题金棕 RGB(190,62,68)
-		if b.danger {
-			fill, frame, textColor = wallBtnDanger, wallBtnFrame, uintptr(0x002A50D8) // 红 RGB(216,80,42)
+		if r.right <= r.left {
+			continue
 		}
-		// 圆角胶囊：先底色再描边（RoundRect 用当前画笔画轨、画刷填充）
-		oldBr, _, _ := procSelectObject.Call(hdc, fill)
-		oldPen, _, _ := procSelectObject.Call(hdc, frame)
-		procRoundRect.Call(hdc, uintptr(r.left), uintptr(r.top), uintptr(r.right), uintptr(r.bottom),
-			uintptr(r.bottom-r.top)/2, uintptr(r.bottom-r.top)/2)
-		procSelectObject.Call(hdc, oldPen)
+		hot := i == wallHoverMenu
+
+		// 窗口控制按钮：无边框后系统不再画这些，自己来
+		if b.group == menuGroupSys {
+			if hot {
+				if b.danger {
+					fillRect(hdc, insetRect(r, 3), wallRedBrush)
+				} else {
+					fillRect(hdc, insetRect(r, 3), wallHoverBrush)
+				}
+			}
+			drawSysGlyph(hdc, hwnd, b.id, r)
+			continue
+		}
+
+		// 图标按钮：灰 → 悬停白 → 当前项/开关打开 金；危险动作恒为红
+		active := b.id == wallMenuActive || wallMenuOn[b.id]
+		brush := wallGlyphBrush
+		col := uintptr(colTextDim)
+		switch {
+		case active:
+			brush, col = wallAccentBrush, uintptr(colAccent)
+		case hot:
+			brush, col = wallGlyphHotBrush, uintptr(colTextOn)
+		}
+		if b.danger {
+			col = uintptr(colDanger)
+			if hot {
+				col = uintptr(colDangerOn)
+			}
+		}
+		if hot {
+			fillRect(hdc, insetRect(r, 2), wallHoverBrush)
+		}
+		box := glyphBox(r)
+		// 打码：睁眼 = 显示中，眼睛压一条斜线 = 隐藏中。
+		// 图标字体里没有"闭眼"，斜线是最省事又一眼能懂的画法。
+		if b.id == "mask" {
+			drawGlyphText(hdc, wallIconFont, "\uE7B3", box, col)
+			if wallMenuOn["mask"] {
+				pen := wallGlyphPen
+				switch {
+				case active:
+					pen = wallAccentPen
+				case hot:
+					pen = wallGlyphHotPen
+				}
+				// 斜线只压在眼睛身上：图标字符四周有留白，画满整个 box
+				// 会拖出一条比眼睛还长的尾巴。内缩 3/14 正好贴着瞳孔到眼角。
+				bw, bh := box.right-box.left, box.bottom-box.top
+				old, _, _ := procSelectObject.Call(hdc, pen)
+				procMoveToEx.Call(hdc,
+					uintptr(box.left+bw*3/14), uintptr(box.bottom-bh*3/14), 0)
+				procLineTo.Call(hdc,
+					uintptr(box.right-bw*3/14), uintptr(box.top+bh*3/14))
+				procSelectObject.Call(hdc, old)
+			}
+			continue
+		}
+		drawMenuGlyph(hdc, b.id, box, brush, col, active || hot)
+		// 排列组：当前项在按钮下方压一条 2px 金线
+		if b.group == menuGroupArrange && active {
+			fillRect(hdc, windowRect{left: r.left + 6, top: r.bottom - 2, right: r.right - 6, bottom: r.bottom},
+				wallAccentBrush)
+		}
+	}
+	// 最后画悬停提示（要压在所有东西上面）
+	paintTooltip(hdc, hwnd, full)
+}
+
+// paintTooltip 在悬停按钮下方画一条文字提示（GDI 窗口没有系统 tooltip）。
+// 位置按按钮居中，靠边时夹回窗口内；上方放不下就翻到按钮上方。
+func paintTooltip(hdc, hwnd uintptr, full windowRect) {
+	if wallTooltipIdx < 0 || wallTooltipIdx >= len(wallMenuRects) || wallTooltipIdx >= len(wallMenu) {
+		return
+	}
+	r := wallMenuRects[wallTooltipIdx]
+	if r.right <= r.left {
+		return
+	}
+	scale := func(v int32) int32 { return v * wallDPI / 96 }
+	text := wallMenu[wallTooltipIdx].text
+	// 打码是开关：提示直接说"现在是什么状态、点下去会怎样"
+	if wallMenu[wallTooltipIdx].id == "mask" {
+		if wallMenuOn["mask"] {
+			text = "隐藏中，点击显示"
+		} else {
+			text = "显示中，点击隐藏"
+		}
+	}
+	w := int32(len([]rune(text)))*scale(13) + scale(20)
+	h := scale(26)
+	x := (r.left+r.right)/2 - w/2
+	y := r.bottom + scale(6)
+	if x < scale(6) {
+		x = scale(6)
+	}
+	if x+w > full.right-scale(6) {
+		x = full.right - scale(6) - w
+	}
+	if y+h > full.bottom-scale(6) {
+		y = r.top - h - scale(6)
+	}
+	box := windowRect{left: x, top: y, right: x + w, bottom: y + h}
+
+	oldBr, _, _ := procSelectObject.Call(hdc, wallTipBrush)
+	oldPen, _, _ := procSelectObject.Call(hdc, wallTipPen)
+	rad := scale(8)
+	procRoundRect.Call(hdc, uintptr(box.left), uintptr(box.top),
+		uintptr(box.right), uintptr(box.bottom), uintptr(rad), uintptr(rad))
+	procSelectObject.Call(hdc, oldPen)
+	procSelectObject.Call(hdc, oldBr)
+
+	s, err := syscall.UTF16PtrFromString(text)
+	if err != nil {
+		return
+	}
+	procSetTextColor.Call(hdc, colTextOn)
+	procDrawTextW.Call(hdc, uintptr(unsafe.Pointer(s)), ^uintptr(0),
+		uintptr(unsafe.Pointer(&box)), dtCenter|dtVCenter|dtSingleLine)
+}
+func glyphBox(r windowRect) windowRect {
+	side := (r.right - r.left) * 14 / 30
+	if h := r.bottom - r.top; side > h*14/26 {
+		side = h * 14 / 26
+	}
+	cx, cy := (r.left+r.right)/2, (r.top+r.bottom)/2
+	return windowRect{left: cx - side/2, top: cy - side/2, right: cx + side/2, bottom: cy + side/2}
+}
+
+// drawMenuGlyph 在 box 里画按钮图标。
+//
+// 动作类图标（打码 / 全屏 / 窗口控制）用系统图标字体 Segoe MDL2 Assets
+// 画——GDI 手绘的线条在 14px 下锯齿明显，字体渲染自带抗锯齿，干净得多。
+// 排列方案用实心方块示意（田字格 = 平铺、错层 = 堆叠），方块对齐像素就清晰。
+func drawMenuGlyph(hdc uintptr, id string, box windowRect, brush, col uintptr, strong bool) {
+	bw, bh := box.right-box.left, box.bottom-box.top
+	if bw <= 0 || bh <= 0 {
+		return
+	}
+	switch id {
+	case "stopall":
+		// 空心红方块：字体里的 □ 太细、太小，看着像个标点符号；
+		// 用 Rectangle 画闭合矩形（4 条独立线拐角会不齐），3px 红笔够粗，
+		// 小尺寸下反而比细线干净。
+		pen := wallStopGlyphPen
+		if strong {
+			pen = wallStopGlyphHotPen
+		}
+		hollow, _, _ := procGetStockObj.Call(5) // NULL_BRUSH
+		oldPen, _, _ := procSelectObject.Call(hdc, pen)
+		oldBr, _, _ := procSelectObject.Call(hdc, hollow)
+		procRectangle.Call(hdc,
+			uintptr(box.left+bw/6), uintptr(box.top+bh/6),
+			uintptr(box.right-bw/6), uintptr(box.bottom-bh/6))
 		procSelectObject.Call(hdc, oldBr)
-		text, _ := syscall.UTF16PtrFromString(b.text)
-		procSetTextColor.Call(hdc, textColor)
-		procDrawTextW.Call(hdc, uintptr(unsafe.Pointer(text)), ^uintptr(0),
-			uintptr(unsafe.Pointer(&r)), dtCenter|dtVCenter|dtSingleLine)
-		procSetTextColor.Call(hdc, 0x003A3A3A)
+		procSelectObject.Call(hdc, oldPen)
+		return
+	case "full":
+		// 全屏（四个箭头向外）
+		drawGlyphText(hdc, wallIconFont, "\uE740", box, col)
+		return
+	}
+
+	var parts []windowRect
+	switch id {
+	case "tile":
+		parts = []windowRect{{0, 0, 6, 6}, {8, 0, 14, 6}, {0, 8, 6, 14}, {8, 8, 14, 14}}
+	case "dual":
+		parts = []windowRect{{0, 5, 5, 10}, {2, 2, 7, 7}, {7, 5, 12, 10}, {9, 2, 14, 7}}
+	case "rows":
+		parts = []windowRect{{0, 1, 14, 6}, {0, 8, 14, 13}}
+	case "cols":
+		parts = []windowRect{{1, 0, 6, 14}, {8, 0, 13, 14}}
+	case "fan":
+		parts = []windowRect{{0, 9, 6, 14}, {4, 5, 10, 10}, {8, 1, 14, 6}}
+	default:
+		return
+	}
+	for _, p := range parts {
+		fillRect(hdc, windowRect{
+			left:   box.left + bw*p.left/14,
+			top:    box.top + bh*p.top/14,
+			right:  box.left + bw*p.right/14,
+			bottom: box.top + bh*p.bottom/14,
+		}, brush)
 	}
 }
 
@@ -864,10 +1406,41 @@ func wallClick(x, y int32) {
 	in := func(r windowRect) bool { return ptInRect(point{x, y}, r) }
 	// 快捷菜单：动作放后台跑（重排/停止都可能要几秒），墙线程不等
 	for i, r := range wallMenuRects {
-		if !in(r) {
+		if r.right <= r.left || !in(r) {
 			continue
 		}
-		if act := wallHooks.Actions[wallMenu[i].id]; act != nil {
+		if i >= len(wallMenu) {
+			break
+		}
+		b := wallMenu[i]
+		// 窗口控制：最小化 / 最大化-还原 / 关闭
+		if b.group == menuGroupSys {
+			h := hwndOfWall()
+			if h == 0 {
+				return
+			}
+			switch b.id {
+			case "min":
+				procShowWindow.Call(h, swMinimize)
+			case "max":
+				if z, _, _ := procIsZoomed.Call(h); z != 0 {
+					procShowWindow.Call(h, swRestore)
+				} else {
+					procShowWindow.Call(h, swMaximize)
+				}
+			case "close":
+				procPostMessageW.Call(h, wmClose, 0, 0)
+			}
+			return
+		}
+		if act := wallHooks.Actions[b.id]; act != nil {
+			// 排列方案记住选中态（纯视觉：点哪个亮哪个）
+			if b.group == menuGroupArrange {
+				wallMenuActive = b.id
+				if h := hwndOfWall(); h != 0 {
+					procInvalidate.Call(h, 0, 1)
+				}
+			}
 			go act()
 		}
 		return
@@ -923,6 +1496,22 @@ func makeWallFont(dpi int) uintptr {
 		0, 0, 0, 1, // DEFAULT_CHARSET
 		0, 0, 5, // CLEARTYPE_QUALITY
 		0, uintptr(unsafe.Pointer(face)))
+	return f
+}
+
+// makeGlyphFont 图标字体。face 传 "Segoe MDL2 Assets" 画线条图标，
+// 传 "Microsoft YaHei UI" 画 □ 这类几何符号。
+func makeGlyphFont(face string, px, dpi int) uintptr {
+	h := -px * dpi / 96
+	if h >= 0 {
+		h = -px
+	}
+	name, _ := syscall.UTF16PtrFromString(face)
+	f, _, _ := procCreateFontW.Call(
+		uintptr(h), 0, 0, 0, 400,
+		0, 0, 0, 1, // DEFAULT_CHARSET
+		0, 0, 5, // CLEARTYPE_QUALITY
+		0, uintptr(unsafe.Pointer(name)))
 	return f
 }
 

@@ -98,7 +98,7 @@ const expired = computed(() => cur.value?.cred === "expired");
   --badbg: rgba(224, 141, 124, 0.1);
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
   background: var(--bg);
   color: var(--tx);
 }

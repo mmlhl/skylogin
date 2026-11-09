@@ -100,7 +100,7 @@ function toggle(a: Account) {
   --badbg: rgba(187, 90, 69, 0.09);
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
   background: var(--bg);
   color: var(--tx);
 }

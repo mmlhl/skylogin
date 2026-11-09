@@ -274,7 +274,7 @@ type multiSlot struct {
 	ticket     string
 	channel    string
 	pid        uint32
-	seq        int64 // 启动顺序（窗口排列按这个顺序铺格子）
+	seq        int64 // 启动顺序（窗口排列按这个顺序铺格子；-1 = 由 registerClient 按注册顺序分配）
 	createdAt  time.Time
 	firstReply time.Time // 本轮应答窗口起点（超过 replyWindow 重新计数）
 	ticketSent time.Time // 首张票成功发出的时间（排列时机的业务信号：发票=凭证链路通）
@@ -403,14 +403,16 @@ func launchMany(ids []string, ovMode string, ovFps int) (string, error) {
 	var wg sync.WaitGroup
 	for i, acc := range picked {
 		wg.Add(1)
-		go func(acc Account, path string) {
+		go func(acc Account, path string, order int64) {
 			defer wg.Done()
-			_, err := launchAt(acc, dev, "", "", path, ovMode, ovFps)
+			// order 用勾选顺序（picked 的顺序），不用进程启动完成的先后：
+			// 并发拉起时谁先注册是不确定的，同样的账号组合每次排出来都不一样
+			_, err := launchAt(acc, dev, "", "", path, ovMode, ovFps, order)
 			if err == nil {
 				markAccountLaunched(accountKey(acc), "")
 			}
 			out <- launchResult{name: displayName(acc), err: err}
-		}(acc, installs[i])
+		}(acc, installs[i], int64(i))
 	}
 	wg.Wait()
 	close(out)

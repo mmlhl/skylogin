@@ -74,9 +74,37 @@ export async function refresh() {
   }
 }
 
-/** 启动轮询；返回停止函数 */
+/** 启动轮询；返回停止函数。
+ *
+ * 窗口不可见（最小化 / 切到后台）时把间隔拉到 10 秒：这时候没人看界面，
+ * 每秒一次请求纯属白烧 CPU。可见时立刻恢复并补一次刷新，切回来不会看到旧数据。
+ */
 export function startPolling(intervalMs = 1000): () => void {
+  const idleMs = Math.max(intervalMs * 10, 10000);
+  let timer = 0;
+  let current = intervalMs;
+
+  const schedule = (ms: number) => {
+    if (timer) window.clearInterval(timer);
+    current = ms;
+    timer = window.setInterval(refresh, ms);
+  };
+
+  const onVisibility = () => {
+    if (document.visibilityState === "hidden") {
+      schedule(idleMs);
+    } else {
+      void refresh(); // 立刻补一次，别让用户看到过期状态
+      schedule(intervalMs);
+    }
+  };
+
   void refresh();
-  const timer = window.setInterval(refresh, intervalMs);
-  return () => window.clearInterval(timer);
+  timer = window.setInterval(refresh, intervalMs);
+  document.addEventListener("visibilitychange", onVisibility);
+
+  return () => {
+    window.clearInterval(timer);
+    document.removeEventListener("visibilitychange", onVisibility);
+  };
 }

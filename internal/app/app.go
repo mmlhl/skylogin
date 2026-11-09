@@ -126,6 +126,18 @@ func defaultDataDir() string {
 func RunUI(title string) error {
 	logf("光遇账号登录器 %s 启动", Version)
 
+	// 窗口排列/全屏切换的诊断走日志：这些动作用户看不见过程，
+	// 失败时只表现为"窗口没动"，日志里得能查到卡在哪一步。
+	win.Diag = func(s string) { logf("%s", s) }
+
+	// 标题栏配色取决于系统主题：深色主题交给系统画（拖动不变色），
+	// 浅色主题才强制深色（拖动时 DWM 可能闪一下浅色，无解）
+	if win.SystemDarkTheme() {
+		logf("系统主题：深色（标题栏由系统绘制）")
+	} else {
+		logf("系统主题：浅色（标题栏强制深色）")
+	}
+
 	// 非 op13 的 IPC 包：原样记进日志。游戏登录失败时若会上报结果
 	// （带错误状态的其它操作码），靠这个才能看见，否则包被静默丢弃。
 	fever.SetPacketLogHook(func(op int32, body []byte) {
@@ -166,6 +178,9 @@ func RunUI(title string) error {
 			return err
 		},
 		WallToggle:      ToggleWall,
+		WindowControl:   win.ControlMainWindow,
+		WindowDrag:      win.StartWindowDrag,
+		WindowSuspend:   win.SuspendMainWebview,
 		StopAccount:     stopAccount,
 		Status:          gameStatus,
 		Select:          setCurrent,

@@ -191,8 +191,13 @@ func handleTicket(h *fever.Host, req fever.TicketRequest) bool {
 func registerClient(pid uint32, slot *multiSlot) {
 	clientsMu.Lock()
 	slot.pid = pid
-	slot.seq = launchSeq
-	launchSeq++
+	// 多开时顺序号已经按用户勾选顺序预设好了，这里不能覆盖——
+	// 并发启动的进程谁先完成注册是不确定的，按注册顺序排会导致
+	// 同样的账号组合每次排列顺序都不一样。
+	if slot.seq < 0 {
+		slot.seq = launchSeq
+		launchSeq++
+	}
 	slot.createdAt = time.Now()
 	clients[pid] = slot
 	runningByAccount[accountKey(*slot.acc)] = pid
@@ -339,16 +344,18 @@ func startClient(acc Account, dev *device.ClientProfile, ticket, channel string)
 	if err != nil {
 		return "", err
 	}
-	return launchAt(acc, dev, ticket, channel, launchExe, "", 0)
+	return launchAt(acc, dev, ticket, channel, launchExe, "", 0, -1)
 }
 
 // launchAt 用指定目录启动并登记（多开时目录已提前建好，这里只管拉进程）。
-func launchAt(acc Account, dev *device.ClientProfile, ticket, channel, launchExe string, ovMode string, ovFps int) (string, error) {
+// order 是窗口排列用的顺序号（多开按用户勾选的先后传入），-1 表示不指定、
+// 由 registerClient 按注册顺序补。
+func launchAt(acc Account, dev *device.ClientProfile, ticket, channel, launchExe string, ovMode string, ovFps int, order int64) (string, error) {
 	p, err := startSkyPidFn(launchExe)
 	if err != nil {
 		// 直接启动失败（通常是权限），退回提权启动；这种方式拿不到 pid
 		if elevated, e2 := startSkyFn(launchExe); e2 == nil {
-			slot := &multiSlot{acc: &acc, dev: dev, ticket: ticket, channel: channel, createdAt: time.Now()}
+			slot := &multiSlot{acc: &acc, dev: dev, ticket: ticket, channel: channel, createdAt: time.Now(), seq: order}
 			clientsMu.Lock()
 			fellback = slot
 			clientsMu.Unlock()
@@ -360,7 +367,7 @@ func launchAt(acc Account, dev *device.ClientProfile, ticket, channel, launchExe
 		return "", fmt.Errorf("启动光遇失败: %w", err)
 	}
 
-	slot := &multiSlot{acc: &acc, dev: dev, ticket: ticket, channel: channel}
+	slot := &multiSlot{acc: &acc, dev: dev, ticket: ticket, channel: channel, seq: order}
 	if ticket == "" {
 		// 没带预签票：启动后立刻并行签一张，等游戏来要时直接回，
 		// 避免 op13→op14 这段走网络导致游戏超时弹错误页。

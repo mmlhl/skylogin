@@ -11,6 +11,11 @@ import (
 	webview2 "github.com/jchv/go-webview2"
 )
 
+// SuspendMainWebview 预留：WebView2 的挂起接口（ICoreWebView2_3.TrySuspend）
+// 在 go-webview2 里没有暴露，反射拿内部指针会导致访问冲突（进程直接崩），
+// 已放弃。保留这个空实现，接口调用方不用改。
+func SuspendMainWebview(bool) {}
+
 // OpenWebView 用一个 WebView2 窗口打开本地页面，阻塞直到窗口关闭。
 // dataPath 用于存放 WebView2 的缓存与本地存储（放在我们自己的目录里，避免污染系统）。
 //
@@ -79,6 +84,9 @@ func OpenWebView(url, title, dataPath string, width, height uint, hooks WebViewH
 		procShowWindow.Call(hwnd, swMaximize)
 	}
 	applyDarkFrame(hwnd)
+	// 去系统标题栏：标题栏由前端自绘（拖动/窗口按钮走 /api/window/*），
+	// 这样就不存在"DWM 在拖动时把深色标题栏刷回浅色"的问题。
+	MakeBorderless(hwnd)
 	if exe, err := os.Executable(); err == nil {
 		SetWindowIcon(hwnd, exe)
 	}
@@ -87,6 +95,8 @@ func OpenWebView(url, title, dataPath string, width, height uint, hooks WebViewH
 	tracker := &winGeoTracker{hooks: hooks}
 	stop := make(chan struct{})
 	go tracker.run(hwnd, stop)
+
+
 
 	wv.Navigate(url)
 

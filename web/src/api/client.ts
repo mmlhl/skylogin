@@ -44,6 +44,21 @@ export const api = {
   /** 拉取整个界面状态（左栏账号、扫码进度、设置、提示） */
   state: () => request<AppState>("/api/state"),
 
+  /** 主窗口按钮：min / max（最大化与还原切换）/ close。
+   *  窗口是无边框的，系统不再画标题栏，这三个动作由前端标题条触发。 */
+  windowControl: (action: "min" | "max" | "close") =>
+    request("/api/window", { method: "POST", body: JSON.stringify({ action }) }),
+
+  /** 让窗口进入系统拖动循环（标题条 mousedown 时调）。
+   *  WebView2 的客户区被 Chromium 吃掉鼠标事件，页面里的拖拽不会变成窗口拖动。 */
+  windowDrag: () =>
+    request("/api/window", { method: "POST", body: JSON.stringify({ action: "drag" }) }),
+
+  /** 挂起/恢复 WebView 渲染进程（窗口不可见时省内存）。
+   *  挂起后页面状态保留，恢复不用重新加载。 */
+  windowSuspend: (on: boolean) =>
+    request("/api/window", { method: "POST", body: JSON.stringify({ action: on ? "suspend" : "resume" }) }),
+
   /** 启动游戏：Go 会关掉发烧平台、取票、冒充平台窗口 */
   launch: () => request("/api/launch", { method: "POST" }),
 

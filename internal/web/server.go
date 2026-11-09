@@ -49,6 +49,13 @@ type Hooks struct {
 	StartManyLayout func(ids []string, cols, rows, w, h int, display string, ovMode string, ovFps int) (string, error)
 	Arrange         func(cols, rows, w, h int) error
 	WallToggle      func() (string, error)
+	// WindowControl 主窗口按钮动作：min / max（最大化与还原切换）/ close。
+	// 窗口是无边框的，标题栏由前端自绘，系统不再提供这三个按钮。
+	WindowControl func(action string) error
+	// WindowDrag 让主窗口进入系统拖动循环（前端标题栏 mousedown 时调）。
+	WindowDrag func()
+	// WindowSuspend 挂起/恢复主界面 WebView（窗口不可见时省内存）。
+	WindowSuspend func(on bool)
 	StopAccount     func(id string) error
 	Status          func() string
 	Select          func(string) error
@@ -284,6 +291,41 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		writeJSON(w, map[string]any{"ok": true, "message": msg})
+	})
+
+	// 主窗口控制：无边框后系统不再画标题栏按钮，前端的自绘标题条走这里
+	mux.HandleFunc("/api/window", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, map[string]any{"ok": false, "message": "用 POST"})
+			return
+		}
+		var body struct {
+			Action string `json:"action"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.Action == "drag" {
+			if s.hooks.WindowDrag != nil {
+				s.hooks.WindowDrag()
+			}
+			writeJSON(w, map[string]any{"ok": true})
+			return
+		}
+		if body.Action == "suspend" || body.Action == "resume" {
+			if s.hooks.WindowSuspend != nil {
+				s.hooks.WindowSuspend(body.Action == "suspend")
+			}
+			writeJSON(w, map[string]any{"ok": true})
+			return
+		}
+		if s.hooks.WindowControl == nil {
+			writeJSON(w, map[string]any{"ok": false, "message": "不支持窗口控制"})
+			return
+		}
+		if err := s.hooks.WindowControl(body.Action); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
 	})
 
 	// 界面壳偏好（控制台 / 账号库…）：WebView2 端口随机，localStorage 记不住，存后端
