@@ -164,16 +164,12 @@ func saveList(list []Account) error {
 func saveAccount(a Account) error {
 	list, _ := loadAccounts()
 	replaced := false
-	// 保存前的旧凭证：用来判断"这次是不是换了新 token"，
-	// 只有换了凭证才值得把号重新喂给 mpay.dll（见 remember.go）
-	var oldToken string
 	if a.CopyKey != "" {
 		for i := range list {
 			if list[i].CopyKey != a.CopyKey {
 				continue
 			}
 			a = mergeCredMeta(a, list[i])
-			oldToken = list[i].MpayToken
 			list[i] = a
 			replaced = true
 			break
@@ -187,7 +183,6 @@ func saveAccount(a Account) error {
 				continue
 			}
 			a = mergeCredMeta(a, list[i])
-			oldToken = list[i].MpayToken
 			list[i] = a
 			replaced = true
 			break
@@ -195,7 +190,6 @@ func saveAccount(a Account) error {
 	} else {
 		if idx := loginTarget(list, a); idx >= 0 {
 			a = mergeCredMeta(a, list[idx])
-			oldToken = list[idx].MpayToken
 			list[idx] = a
 			replaced = true
 		}
@@ -225,10 +219,6 @@ func saveAccount(a Account) error {
 	// 新登录/更新的账号自动设为当前（按行键）
 	if err := setCurrent(accountKey(a)); err != nil {
 		return err
-	}
-	// 换了新凭证的网易号：顺手把它写进游戏本地 mpay.db（后台、尽力而为）
-	if a.Channel == "netease" && a.MpayToken != "" && a.MpayToken != oldToken {
-		syncNetEaseToMpayDB(a)
 	}
 	return nil
 }

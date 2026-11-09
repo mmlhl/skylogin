@@ -67,3 +67,7 @@ __pycache__/
 # 替换正在运行的 exe 时留下的旧文件/备份
 *.exe.old*
 *.exe.bak
+
+# 提交信息临时文件（git commit -F msg.txt 的惯例产物）
+msg.txt
+

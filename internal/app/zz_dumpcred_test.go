@@ -1,6 +1,6 @@
 package app
 
-// 临时：导出某账号凭证给 mpaydb 变体扫描（默认跳过）。
+// 临时：导出某账号凭证给离线探针扫描（默认跳过）。
 import (
 	"os"
 	"path/filepath"
