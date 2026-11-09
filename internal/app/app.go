@@ -200,6 +200,7 @@ func RunUI(title string) error {
 		// 网页登录：打开子进程窗口，用网易官方 H5 SDK 拿 token
 		SMSSend:        SendSMS,
 		SMSLogin:       CompleteSMSLogin,
+		Relogin:        ReloginAccount,
 		WebLoginStart:  StartWebLogin,
 		WebLoginStatus: WebLoginStatus,
 		// 账号密码登录：交给官方 mpay.dll 的登录窗（和上网页那套并存，界面先只露出这个）

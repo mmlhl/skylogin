@@ -78,6 +78,10 @@ export interface AccountView {
   hosted?: boolean;
   /** 提供槽位的宿主账号 id（UserID == PlayerID）；空 = 没被寄宿 */
   hostedBy?: string;
+  /** 存过账号密码：凭证过期能静默自动重登 */
+  hasPassword?: boolean;
+  /** 上次登录用的账号名（邮箱 / 手机号），刷新时预填 */
+  loginUser?: string;
 
   /** 是否是当前选中的账号 */
   current: boolean;

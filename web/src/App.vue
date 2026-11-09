@@ -78,14 +78,14 @@ const askKind = ref("");
 const askMethod = ref("password");
 
 /** 刷新凭证时的目标账号（空表示新增账号） */
-const refreshTarget = ref<{ accountId: string; name: string } | null>(null);
+const refreshTarget = ref<{ accountId: string; name: string; loginUser?: string } | null>(null);
 
 /**
  * 打开某个来源的登录方式列表。
  * mode "add" = 添加账号（渠道 + 网易全在一个弹窗里选）；
  * acc 非空表示"给这个账号刷新凭证"，登录时会校验账号是否一致。
  */
-function openPicker(mode: string, acc?: { accountId: string; name: string }) {
+function openPicker(mode: string, acc?: { accountId: string; name: string; loginUser?: string }) {
   refreshTarget.value = acc || null;
   pickerMode.value = mode;
   showChannelPicker.value = true;
@@ -167,7 +167,7 @@ const realStore = createRealStore({
   onRefresh: (acc) => {
     // 账号的 channel 与后端登录入口的 action 是同一套取值，
     // 所以"刷新哪个渠道"直接把 channel 当 mode 传下去
-    openPicker(acc.channel, { accountId: acc.accountId, name: acc.name });
+    openPicker(acc.channel, { accountId: acc.accountId, name: acc.name, loginUser: acc.loginUser });
   },
   onOpenSettings: () => {
     showSettings.value = true;
@@ -215,7 +215,7 @@ onUnmounted(() => {
           @update:show="(v: boolean) => !v && (askKind = '')"
         />
         <MpayLoginDialog v-model:show="showMpayLogin" />
-        <HeadlessLoginDialog v-model:show="showHeadless" />
+        <HeadlessLoginDialog v-model:show="showHeadless" :default-user="refreshTarget?.loginUser || ''" />
         <SMSLoginDialog v-model:show="showSMS" :target-user-id="refreshTarget?.accountId || ''" :default-mobile="refreshTarget?.name || ''" />
         <ScanDialog v-model:show="showScan" />
         <HuaweiDialog v-model:show="showHuawei" />

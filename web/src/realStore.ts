@@ -21,8 +21,8 @@ import {
 export interface RealStoreHooks {
   /** 添加账号：打开渠道/登录方式选择（真实登录流程从那里走） */
   onAdd?: () => void;
-  /** 刷新凭证：按账号打开对应的登录方式列表 */
-  onRefresh?: (acc: { accountId: string; name: string; channel: Channel }) => void;
+  /** 刷新凭证：存过密码的号直接静默重登，没存密码的才按渠道打开登录方式 */
+  onRefresh?: (acc: { accountId: string; name: string; channel: Channel; loginUser?: string }) => void;
   /** 打开设置面板 */
   onOpenSettings?: () => void;
 }
@@ -71,6 +71,9 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
         // 这两个字段以前漏了透传，界面上就一直是"可选区"的样子。
         hosted: a.hosted,
         hostedBy: a.hostedBy,
+        // 存过密码 → 「刷新凭证」可以静默重登；loginUser 用来预填输入框
+        hasPassword: a.hasPassword,
+        loginUser: a.loginUser,
         regionBlocked: a.regionBlocked,
         playerId: a.playerId,
         copyKey: a.copyKey,
@@ -157,7 +160,25 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
 
     refreshCred(id) {
       const a = find(id);
-      if (a) hooks.onRefresh?.({ accountId: a.id, name: a.name, channel: a.channel });
+      if (!a) return;
+      const openPicker = () =>
+        hooks.onRefresh?.({ accountId: a.id, name: a.name, channel: a.channel, loginUser: a.loginUser });
+
+      // 存过密码的号：直接静默重登，不用再让用户输一遍账号密码。
+      // 密码已经不对了（在别处改过）时后端会顺手清掉它，这里退回手动登录。
+      if (!a.hasPassword) {
+        openPicker();
+        return;
+      }
+      toast(`${a.name} 正在刷新凭证…`);
+      void api.reloginAccount(a.id).then((r) => {
+        if (r.ok === false) {
+          toast(r.message || "刷新失败，请手动登录一次");
+          openPicker();
+          return;
+        }
+        toast(`${a.name} 凭证已刷新`);
+      });
     },
 
     rename(id, name) {

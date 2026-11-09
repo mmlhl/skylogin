@@ -145,6 +145,16 @@ export const api = {
     }),
 
   /**
+   * 刷新凭证：用存下来的账号密码静默重登。
+   * 没存密码（扫码 / 官方登录窗进来的）会返回 ok:false，调用方改成弹输入框。
+   */
+  reloginAccount: (id: string) =>
+    request<{ ok?: boolean; message?: string; result?: { name?: string; canHost?: boolean } }>(
+      "/api/accounts/relogin",
+      { method: "POST", body: JSON.stringify({ id }) }
+    ),
+
+  /**
    * 寄宿池状态：哪些账号能当宿主、槽里现在记着谁、还有没有空槽。
    *
    * 一个平台账号只能带一个扫码号（服务端一对一），槽满了要用新号就会顶掉旧号。

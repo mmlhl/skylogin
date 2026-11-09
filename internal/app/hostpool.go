@@ -139,7 +139,9 @@ func HostPoolStatus() HostPool {
 		}
 		slot := HostSlot{AccountID: a.PlayerID, Name: displayName(a)}
 		if a.A50Token == "" {
-			slot.Reason = "还没有平台凭证：用手机号或账号密码登录一次就会补上"
+			// 只有「账号密码登录」会连登两次（ma75 + a50），手机验证码那条路
+			// 只换 ma75 一份凭证（见 sms.go），补不上平台凭证，别写进提示里误导人。
+			slot.Reason = "还没有平台凭证：用「账号密码登录」重登一次就会补上"
 		} else {
 			hosted, herr := readHostSlot(a)
 			if herr != nil {

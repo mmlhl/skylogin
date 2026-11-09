@@ -225,8 +225,22 @@ func HeadlessLoginAccount(user, password, region, name string) (map[string]any, 
 	if user == "" || password == "" {
 		return nil, fmt.Errorf("账号和密码都不能为空")
 	}
+	// 第一份：游戏身份（ma75），启动游戏、按渠道签发都靠它。
+	//
+	// 两份凭证是**严格串行**的：必须等这一份拿到手（确认成功）才登第二份。
+	//
+	// 串行不是为了防顶号——两个上下文互不影响（2026-11-09 实测：先登 ma75 再登
+	// a50，回头用 ma75 的 token 签票依然成功，两边设备号也各自独立）。串行是为了
+	// 防**密码错时连发两次失败请求**：连续的错误尝试更容易触发风控。所以第一份
+	// 失败就直接返回，不再去试第二份。
 	res, err := HeadlessPasswordLogin(user, password, profile.LongGameID)
 	if err != nil {
+		// 密码不对时，如果这次输的和存的那份一样，说明存的那份也废了，清掉
+		// 免得以后每次自动重登都拿错密码去撞接口。
+		if looksLikeWrongPassword(err.Error()) {
+			clearPasswordIfMatches(user, password)
+			return nil, fmt.Errorf("账号或密码不正确（%v）", err)
+		}
 		return nil, err
 	}
 	if res.Platform {
@@ -282,7 +296,11 @@ func HeadlessLoginAccount(user, password, region, name string) (map[string]any, 
 	logf("网易账号已就绪：%s（无头登录，凭证 %d 字符%s）", displayName(acc), len(res.Token),
 		map[bool]string{true: "，已更新", false: "，新增"}[existed])
 
-	// 第二份：平台身份。失败不影响这次登录，只是这个号暂时当不了宿主。
+	// 第二份：平台身份（a50），当寄宿宿主用。
+	//
+	// 走到这里说明第一份已经成功、而且已经落盘了。顺序不能反过来：游戏身份
+	// 是主凭证，它都拿不到就没必要再登一次——那只会多一次可能触发风控的失败请求。
+	// 这一份失败不影响这次登录，只是这个号暂时当不了宿主。
 	hostOK := false
 	hostRes, hostErr := HeadlessPasswordLogin(user, password, profile.HostedGameID)
 	switch {

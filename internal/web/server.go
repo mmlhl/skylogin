@@ -71,6 +71,9 @@ type Hooks struct {
 	// HeadlessLogin 用账号密码无头添加/更新网易账号（不弹网易登录窗）。
 	// 返回给界面用的结果（id / name / existed / region）。
 	HeadlessLogin func(user, password, region, name string) (map[string]any, error)
+	// Relogin 用保存的密码自动重登某个账号（界面「刷新凭证」用）。
+	// 没存密码时返回错误，界面据此转成弹输入框。
+	Relogin func(id string) (map[string]any, error)
 	// HostPool 返回寄宿池状态：哪些账号能当宿主、槽里记着谁。
 	HostPool     func() any
 	Settings     func() map[string]any
@@ -444,6 +447,25 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		writeJSON(w, map[string]any{"ok": true})
+	})
+
+	// 刷新凭证：存过密码的号直接静默重登，不打扰用户。
+	// 没存密码（扫码 / 官方登录窗进来的）会返回错误，界面改成弹输入框。
+	mux.HandleFunc("/api/accounts/relogin", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, map[string]any{"ok": false, "message": "只支持 POST"})
+			return
+		}
+		var body struct {
+			ID string `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		res, err := s.hooks.Relogin(body.ID)
+		if err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "result": res})
 	})
 
 	// 无头账号密码登录：自己收账号密码，调 mpay.dll 的无界面接口登录，

@@ -16,7 +16,7 @@ import { api } from "../api/client";
 // 漏一个就是"点了没反应"（组件未注册，整块渲染不出来）。
 import { NButton, NInput, NModal, NRadioButton, NRadioGroup, useMessage } from "naive-ui";
 
-const props = defineProps<{ show: boolean }>();
+const props = defineProps<{ show: boolean; defaultUser?: string }>();
 const emit = defineEmits<{ (e: "update:show", v: boolean): void }>();
 const message = useMessage();
 
@@ -30,7 +30,9 @@ const done = ref<null | { name: string; canHost: boolean; existed: boolean }>(nu
 const canSubmit = computed(() => !busy.value && user.value.trim() !== "" && password.value !== "");
 
 function reset() {
-  user.value = "";
+  // 刷新已有账号时把登录名预填进去：用户只需要补密码。
+  // 之前这里一律清空，改过一次密码的用户得先把邮箱重新敲一遍。
+  user.value = props.defaultUser || "";
   password.value = "";
   region.value = "";
   busy.value = false;

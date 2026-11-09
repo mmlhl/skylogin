@@ -15,8 +15,9 @@ package app
 import (
 	"encoding/base64"
 	"errors"
-	"time"
 	"fmt"
+	"strings"
+	"time"
 
 	"skylogin/internal/profile"
 	"skylogin/internal/secretfile"
@@ -69,6 +70,73 @@ func hasSavedPassword(acc Account) bool {
 	return acc.SavedUser != "" && acc.SavedPass != ""
 }
 
+// clearSavedPassword 忘掉存下来的账号密码。
+//
+// 什么时候该清：登录时服务端明确说密码不对。留着它只会让每次自动重登
+// 都拿同一个错密码去打接口——既白跑一轮，又可能触发风控。
+// 用 saveList 而不是 saveAccount：后者会连带做凭证同步、设当前账号，
+// 而这里只想改两个字段。
+func clearSavedPassword(target string) error {
+	list, err := loadAccounts()
+	if err != nil {
+		return err
+	}
+	acc, ok := findAccount(list, target)
+	if !ok {
+		return fmt.Errorf("没找到账号（%s）", target)
+	}
+	if !hasSavedPassword(acc) {
+		return nil
+	}
+	acc.SavedUser = ""
+	acc.SavedPass = ""
+	acc.UpdatedAt = time.Now().Unix()
+	return saveList(list)
+}
+
+// clearPasswordIfMatches 登录失败后调用：只有当"这次输的密码"和"存下来的密码"
+// 完全一样时，才认定存的那份也错了并清掉它。
+//
+// 区分两种情况很重要：
+//   - 存的密码过期（用户在别处改了密码）→ 清掉，别再自动重试；
+//   - 用户手输错了一次 → 旧的密码可能还是对的，清掉等于白丢一份能自动续期的凭据。
+func clearPasswordIfMatches(loginUser, password string) {
+	if loginUser == "" || password == "" {
+		return
+	}
+	list, err := loadAccounts()
+	if err != nil {
+		return
+	}
+	for i := range list {
+		a := list[i]
+		if a.SavedUser != loginUser || !hasSavedPassword(a) {
+			continue
+		}
+		if _, saved, perr := accountPassword(a); perr != nil || saved != password {
+			return
+		}
+		if cerr := clearSavedPassword(a.PlayerID); cerr == nil {
+			logf("%s：保存的密码登录失败，已清掉，下次刷新需要重新输入", displayName(a))
+		}
+		return
+	}
+}
+
+// looksLikeWrongPassword 判断无头登录失败是不是"账号密码不对"。
+//
+// DLL 的原话不固定，见过 decrypt fail / 账号或密码错误 / password 这几种。
+// 宁可漏判也不要误判：误判会把一份好密码删掉，用户下次还得重新输一遍。
+func looksLikeWrongPassword(msg string) bool {
+	m := strings.ToLower(msg)
+	for _, kw := range []string{"密码", "password", "decrypt fail"} {
+		if strings.Contains(m, kw) {
+			return true
+		}
+	}
+	return false
+}
+
 // autoRelogin 用保存的密码无头重登一次，成功后把新凭证写回账号。
 //
 // 用的是**游戏身份**（ma75）上下文：这样拿到的凭证既能启动游戏，也能按渠道签发，
@@ -81,6 +149,13 @@ func autoRelogin(acc Account) (HeadlessResult, error) {
 	logf("%s：凭证不可用，用保存的账号密码自动重登", displayName(acc))
 	res, err := HeadlessPasswordLogin(user, pass, profile.LongGameID)
 	if err != nil {
+		// 存的那份密码已经不对了（多半是在别处改过密码）：清掉它，
+		// 否则每轮凭证巡检都会拿同一个错密码去撞接口。
+		if looksLikeWrongPassword(err.Error()) {
+			if cerr := clearSavedPassword(acc.PlayerID); cerr == nil {
+				logf("%s：保存的密码已失效，已清掉，请重新输入一次", displayName(acc))
+			}
+		}
 		logf("%s：自动重登失败（%v）", displayName(acc), err)
 		return res, err
 	}

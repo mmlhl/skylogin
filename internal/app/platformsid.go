@@ -39,6 +39,16 @@ func rememberedTicket(acc Account) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// 先补一次：账本里记着"这个号住在谁的槽里"，如果那个宿主缺平台凭证
+	// （或凭证被顶号了），而它存过密码，就顺手补一份——否则这个槽等于废了，
+	// 被寄宿的号只能提示用户重扫。
+	if b, ok := slotBindingOf(acc.UserID); ok {
+		if host, hok := findAccountByUserID(b.HostUserID); hok && ensureHostCred(host) {
+			if l2, e2 := loadAccounts(); e2 == nil {
+				list = l2
+			}
+		}
+	}
 	var lastErr error
 	for i := range list {
 		src := list[i]

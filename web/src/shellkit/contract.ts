@@ -37,6 +37,10 @@ export interface Account {
   hosted?: boolean;
   /** 提供槽位的宿主账号 id（UserID == playerId）；空 = 没被寄宿 */
   hostedBy?: string;
+  /** 存过账号密码：凭证过期能静默自动重登（「刷新凭证」不再弹输入框） */
+  hasPassword?: boolean;
+  /** 上次登录用的账号名（邮箱 / 手机号），刷新时预填 */
+  loginUser?: string;
   /** 远程身份 id（同一账号的原始行与副本相同） */
   playerId: string;
   /** 这行账号自己的游戏画质档位（空 = 跟随游戏） */

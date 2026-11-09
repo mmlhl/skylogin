@@ -562,6 +562,12 @@ func accountView(a Account) map[string]any {
 		// 直接拿它去账号列表里认人。
 		"hosted":   hosted,
 		"hostedBy": hostedBy,
+		// hasPassword = 存过账号密码，凭证过期能自动重登（界面据此把
+		// 「刷新凭证」做成静默重登，而不是又弹一次输入框）。
+		"hasPassword": hasSavedPassword(a),
+		// loginUser = 上次登录用的账号名（邮箱 / 手机号），刷新时预填进输入框。
+		// 用 Username 而不是 SavedUser：后者是加密存的，没必要为了预填解密一次。
+		"loginUser": a.Username,
 		// regionBlocked 非空 = 虽然选了渠道，但当前凭证用不了（界面要提示原因）
 		"regionBlocked": regionBlockReason(a),
 		"name":          displayName(a),
