@@ -26,7 +26,7 @@ type loginMethod struct {
 
 // loginEntry 「添加账号」列表里的一项。
 //
-// Group 为 true 表示点进去还有二级（目前只有「网易账号」：扫码 / 账号密码）。
+// Group 为 true 表示点进去还有二级（目前只有「网易账号」：扫码 / 账号密码 / 手机验证码）。
 // OnlyRefresh 为 true 表示只在"刷新已有账号凭证"时出现，不进添加列表。
 type loginEntry struct {
 	ID          string        `json:"id"`
@@ -101,7 +101,7 @@ func LoginEntries() []loginEntry {
 		Methods: []loginMethod{{Kind: "channelscan", Label: "渠道服扫码", Hint: scanChannelHelp()}},
 	})
 
-	// 网易账号：二级菜单，扫码 / 账号密码（官方 DLL 窗自带手机号登录）
+	// 网易账号：二级菜单，扫码 / 账号密码 / 手机号验证码
 	//
 	// 这里的扫码走**纯 Go 建码**（Kind=scan，见 scan.go），不用官方登录窗：
 	//   - 只有自己建码才拿得到 login_info.code，才能带平台会话去加载湾换票，
@@ -109,16 +109,23 @@ func LoginEntries() []loginEntry {
 	//   - 官方窗那条路 DLL 内部就把换票做完了，我们手上没有 code，补不了写槽。
 	// 渠道服扫码仍然走官方窗（Kind=channelscan）：它要的是 DLL 回调里的渠道整包，
 	// 纯 Go 扫码给不出那种形态。
+	//
+	// 账号密码和手机号验证码都走本工具自己的输入框，不弹官方登录窗：
+	//   - 官方窗的密码我们看不到、存不下来，换不出续期要用的账号级凭证；
+	//   - 自己登录还能顺手落一份平台（a50）凭证，这个号才当得了寄宿宿主。
+	// 两条路的区别只在换票方式：密码走 users/login（密码加密在 DLL 里，由子进程
+	// 无头完成），验证码走 get_sms / verify_sms / mobile/finish（纯 HTTP，见 sms.go）。
 	entries = append(entries, loginEntry{
 		ID:      "netease",
 		Action:  "netease",
 		Label:   "网易账号",
-		Hint:    "扫码 / 账号密码（含手机号）",
+		Hint:    "扫码 / 账号密码 / 手机验证码",
 		Initial: "网",
 		Group:   true,
 		Methods: []loginMethod{
 			{Kind: "scan", Label: "扫码登录", Hint: "用光遇手游 / 网易大神扫码，过期后免扫"},
-			{Kind: "password", Label: "账号密码登录", Hint: "网易官方登录窗：账号密码 / 手机号"},
+			{Kind: "password", Label: "账号密码登录", Hint: "网易账号或手机号 + 密码"},
+			{Kind: "sms", Label: "手机验证码登录", Hint: "输入手机号收短信，不用记密码"},
 		},
 	})
 

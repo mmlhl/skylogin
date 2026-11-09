@@ -48,7 +48,10 @@ function loginLabel(a?: { loginMethod?: string; source?: string }): string {
     case "qrcode":
       return "扫码（手机）";
     case "password":
-      return "账号密码（官方窗）";
+      // 网易账号密码现在走本工具自己的输入框（无头登录），不再弹官方窗。
+      // 但历史上用官方窗登录的号还在（source=mpaydll），那种号的密码没存下来、
+      // 以后不能自动重登，所以详情里仍然分开标，免得用户以为它也能自动续期。
+      return a?.source === "mpaydll" ? "账号密码（官方窗）" : "账号密码";
     case "sms":
       return "手机验证码";
     case "channelscan":

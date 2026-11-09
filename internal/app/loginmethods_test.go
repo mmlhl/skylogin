@@ -50,7 +50,7 @@ func TestNeteaseIsGrouped(t *testing.T) {
 		t.Fatal("网易账号应当是二级分组")
 	}
 	if len(e.Methods) < 2 {
-		t.Fatalf("网易账号应当有扫码与账号密码两种方式，实际 %d 种", len(e.Methods))
+		t.Fatalf("网易账号应当有扫码与账号密码等方式，实际 %d 种", len(e.Methods))
 	}
 }
 
@@ -110,5 +110,26 @@ func TestLoginMethodsWrapperShape(t *testing.T) {
 	m := LoginChannels()
 	if _, ok := m["entries"]; !ok {
 		t.Fatal("LoginChannels 必须返回 entries 字段")
+	}
+}
+
+// 网易账号的手机验证码登录必须出现在清单里。
+//
+// 后端 sms.go 早就通了（ma75 上下文走 get_sms / verify_sms / mobile/finish，
+// 换出账号级凭证 sa=-99），前端 SMSLoginDialog 与 App.vue 的 case "sms" 也现成。
+// 唯独清单漏了这一项，界面就少一个入口——而这类缺失不会有任何报错，只能靠测试钉住。
+func TestNeteaseOffersSMS(t *testing.T) {
+	e, ok := findEntry(LoginEntries(), "netease")
+	if !ok {
+		t.Fatal("网易账号入口缺失")
+	}
+	var hasSMS bool
+	for _, m := range e.Methods {
+		if m.Kind == "sms" {
+			hasSMS = true
+		}
+	}
+	if !hasSMS {
+		t.Fatal("网易账号缺少手机验证码登录（kind=sms），界面上不会有这个入口")
 	}
 }

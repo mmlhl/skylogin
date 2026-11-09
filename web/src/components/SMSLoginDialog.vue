@@ -77,7 +77,10 @@ watch(
   () => props.show,
   (v) => {
     if (v) {
-      mobile.value = props.defaultMobile || "";
+      // 只回填合法的手机号：网易账号的显示名常常是昵称或脱敏号（138****1234），
+      // 直接塞进去会一直卡在"手机号不合法"，用户还得先手动清空
+      const pre = props.defaultMobile || "";
+      mobile.value = /^1\d{10}$/.test(pre) ? pre : "";
       code.value = "";
       stopTimer();
       countdown.value = 0;

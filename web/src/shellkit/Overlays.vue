@@ -26,7 +26,7 @@ const methods = computed<{ v: AddMethod; label: string; desc: string; icon: unkn
     : [
         { v: "qrcode", label: "扫码登录", desc: "用光遇手游扫码", icon: QrCode },
         { v: "sms", label: "手机号登录", desc: "手机号 + 短信验证码", icon: MessageSquare },
-        { v: "mpay", label: "账号密码登录", desc: "网易官方登录窗", icon: KeyRound },
+        { v: "mpay", label: "账号密码登录", desc: "账号 / 手机号 + 密码", icon: KeyRound },
       ]
 );
 function confirmAdd() {
