@@ -163,43 +163,13 @@ body {
   }
 }
 
-/* ---- 标题栏（各壳通用骨架） ---- */
-.tbar {
-  display: flex;
-  align-items: center;
-  flex: none;
-  height: 46px;
-  padding: 0 10px 0 18px;
-  border-bottom: 1px solid var(--line);
-}
-.brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12.5px;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-  color: var(--dim);
-}
-.brand svg {
-  width: 14px;
-  height: 14px;
-  color: var(--acc);
-}
-.wc {
-  margin-left: auto;
-  display: flex;
-  gap: 2px;
-  color: var(--faint);
-}
-.wc svg {
-  width: 13px;
-  height: 13px;
-}
-.wc i {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 24px;
-  font-style: normal;
-}
+/* ---- 假窗口标题栏（已移除） ----
+ *
+ * 这里原来有一行模拟 Windows 窗口的装饰：左边「光遇登录器」+ 右边最小化/最大化/
+ * 关闭三个假按钮。真正的外壳是 WebView2 嵌在系统窗口里，系统标题栏本来就在，
+ * 这一行纯属多出来的一层，还白占 46px 高度。控制台壳（ConsoleShell）从一开始
+ * 就没有它，现在四个壳统一，CSS 一并删掉。
+ *
+ * 如果哪天要做无边框窗口（自绘标题栏），再把它加回来——那时候这行才真的有用，
+ * 并且需要配合 -webkit-app-region: drag。
+ */

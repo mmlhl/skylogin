@@ -4,7 +4,7 @@
  * 一屏只有一个动作，账号切换收进底部 chips。
  */
 import { computed } from "vue";
-import { Flame, Minus, Square, X, Layers, Eye, EyeOff, Settings, Pencil, Play, Plus, RefreshCw, LayoutDashboard, SlidersHorizontal } from "lucide-vue-next";
+import { Square, Layers, Eye, EyeOff, Settings, Pencil, Play, Plus, RefreshCw, LayoutDashboard, SlidersHorizontal } from "lucide-vue-next";
 import type { LauncherStore } from "../contract";
 
 const props = defineProps<{ store: LauncherStore }>();
@@ -19,11 +19,6 @@ const expired = computed(() => cur.value?.cred === "expired");
 
 <template>
   <div class="win">
-    <div class="tbar">
-      <span class="brand"><Flame />光遇登录器</span>
-      <span class="wc" aria-hidden="true"><i><Minus /></i><i><Square /></i><i><X /></i></span>
-    </div>
-
     <div class="stage">
       <!-- 监控墙 / 设置并排：之前两个都是绝对定位同一坐标，互相盖住 -->
       <div class="c2row">

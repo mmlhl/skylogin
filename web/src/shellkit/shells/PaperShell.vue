@@ -4,7 +4,7 @@
  * 每个账号一条全宽横幅，展开的那条露出操作，运行 / 过期内联处理。
  */
 import { ref, watch } from "vue";
-import { Flame, Minus, Square, X, Layers, Plus, Eye, EyeOff, Settings, Pencil, Play, RefreshCw, ChevronDown, LayoutDashboard, SlidersHorizontal } from "lucide-vue-next";
+import { Square, Layers, Plus, Eye, EyeOff, Settings, Pencil, Play, RefreshCw, ChevronDown, LayoutDashboard, SlidersHorizontal } from "lucide-vue-next";
 import type { LauncherStore } from "../contract";
 
 const props = defineProps<{ store: LauncherStore }>();
@@ -25,11 +25,6 @@ function toggle(a: Account) {
 
 <template>
   <div class="win">
-    <div class="tbar">
-      <span class="brand"><Flame />光遇登录器</span>
-      <span class="wc" aria-hidden="true"><i><Minus /></i><i><Square /></i><i><X /></i></span>
-    </div>
-
     <div class="toolbar">
       <h2>账号</h2>
       <div class="tools">

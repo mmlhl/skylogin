@@ -4,7 +4,7 @@
  * 卡片即账号，启动 / 停止 / 刷新都在卡上，多账号时最直观。
  */
 import { ref } from "vue";
-import { Flame, Minus, Square, X, Layers, Plus, Eye, EyeOff, Settings, MoreHorizontal, Play, RefreshCw, LayoutDashboard, SlidersHorizontal } from "lucide-vue-next";
+import { Square, Layers, Plus, Eye, EyeOff, Settings, MoreHorizontal, Play, RefreshCw, LayoutDashboard, SlidersHorizontal } from "lucide-vue-next";
 import type { LauncherStore } from "../contract";
 
 const props = defineProps<{ store: LauncherStore }>();
@@ -24,11 +24,6 @@ function cardAction(a: Account) {
 
 <template>
   <div class="win">
-    <div class="tbar">
-      <span class="brand"><Flame />光遇登录器</span>
-      <span class="wc" aria-hidden="true"><i><Minus /></i><i><Square /></i><i><X /></i></span>
-    </div>
-
     <div class="toolbar">
       <h2>账号库<span class="count mono">{{ store.accounts.length }}</span></h2>
       <div class="tools">
