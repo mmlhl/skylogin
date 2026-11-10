@@ -658,6 +658,9 @@ func setAccountCredState(userID, state, reason string) {
 	// （签票路径），有的传 PlayerID（凭证查看路径），清横幅时必须两个都试，
 	// 否则会出现"状态已经 ok 了，横幅还挂着"。
 	var hitKeys []string
+	// 顺手记下第一个命中行的显示名：横幅是全局一条，只写"登录信息已过期"，
+	// 用户根本不知道点刷新会刷哪个号（2026-11-11 反馈）。
+	hitName := ""
 	for i := range list {
 		if !managedChannel(list[i].Channel) {
 			continue
@@ -669,6 +672,9 @@ func setAccountCredState(userID, state, reason string) {
 		list[i].LastError = reason
 		list[i].LastCheck = time.Now().Unix()
 		hitKeys = append(hitKeys, list[i].UserID, list[i].PlayerID)
+		if hitName == "" {
+			hitName = displayName(list[i])
+		}
 		changed = true
 	}
 	if !changed {
@@ -680,7 +686,11 @@ func setAccountCredState(userID, state, reason string) {
 	}
 	switch state {
 	case "expired":
-		setAuthHint("netease_expired", "登录凭证已过期", "登录信息已过期，请刷新凭证", "", userID)
+		msg := "登录信息已过期，请刷新凭证"
+		if hitName != "" {
+			msg = fmt.Sprintf("「%s」的登录凭证已过期，请刷新凭证", hitName)
+		}
+		setAuthHint("netease_expired", "登录凭证已过期", msg, hitName, userID)
 	case "ok":
 		// 凭证恢复了就把这个号的横幅撤掉，否则用户会一直看到过期的提示。
 		for _, k := range hitKeys {

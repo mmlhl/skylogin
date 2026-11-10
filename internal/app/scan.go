@@ -391,7 +391,7 @@ func persistNetEase(ticket, devID string) (newTicket, userID string, existed boo
 	} else {
 		logf("网易账号已保存: %s (id=%s) 凭证等级: %s", name, id, tokenGrade(token))
 	}
-	clearAuthHint()
+	clearAuthHintForAccount(acc)
 
 	// 现签一张票给游戏（我们自己那张已经被 login/ticket 消耗掉了）
 	nt, _, terr := c.CreateTicket(token, id, devID)

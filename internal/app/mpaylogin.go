@@ -431,7 +431,7 @@ func watchMpayLogin(cmd *exec.Cmd, outPath, targetUserID, tmpDataDir string) {
 		return
 	}
 	_ = setCurrent(acc.PlayerID)
-	clearAuthHint()
+	clearAuthHintForAccount(acc)
 	// 诊断开关：把这次登录回调的原始槽位落盘（setuser 注入实验的模板）。
 	// 标记文件：%APPDATA%\SkyLogin\dump_slots.txt 存在才写，平时不落盘。
 	if _, err := os.Stat(filepath.Join(dataDir(), "dump_slots.txt")); err == nil {

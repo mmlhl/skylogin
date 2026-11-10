@@ -167,7 +167,7 @@ func watchWebLogin(cmd *exec.Cmd, outPath, targetUserID string) {
 		return
 	}
 	_ = setCurrent(acc.PlayerID)
-	clearAuthHint()
+	clearAuthHintForAccount(acc)
 	setState("done", "登录成功，已保存", account, userID)
 }
 

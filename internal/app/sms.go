@@ -131,7 +131,7 @@ func CompleteSMSLogin(mobile, code, targetUserID string) error {
 		return fmt.Errorf("保存账号失败: %w", err)
 	}
 	_ = setCurrent(acc.PlayerID)
-	clearAuthHint()
+	clearAuthHintForAccount(acc)
 	logf("手机号登录成功并已保存: %s 凭证等级: %s", acc.Name, tokenGrade(token))
 	return nil
 }
