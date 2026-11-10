@@ -27,6 +27,11 @@ import PromptDialog from "./PromptDialog.vue";
 const props = defineProps<{ show: boolean }>();
 const emit = defineEmits<{ (e: "update:show", v: boolean): void }>();
 
+// 开发者调试（mpay.dll / game id / 数据目录）默认隐藏。
+// 这几项会直接改变官方登录窗的行为，选错了登录窗就打不开，普通玩家不该看到；
+// 需要时在地址后面加 ?dev=1 打开（设置页只在本机 127.0.0.1 上跑）。
+const devMode = new URLSearchParams(location.search).has("dev");
+
 const message = useMessage();
 const dialog = useDialog();
 const working = ref(false);
@@ -365,7 +370,9 @@ async function openLogs() {
           <button class="act" @click="copyGroup">复制群号</button>
         </div>
 
-        <!-- 开发者调试：官方登录窗用哪份 DLL / 哪个 game id（以前是 .on 开关文件，容易搞混） -->
+        <!-- 开发者调试：默认隐藏，地址带 ?dev=1 才显示（见 script 里的 devMode）。
+             这几项会直接改官方登录窗的行为，普通玩家误设会导致窗口打不开。 -->
+        <template v-if="devMode">
         <p class="sect">开发者调试</p>
         <div class="row">
           <span class="key">mpay.dll</span>
@@ -406,6 +413,7 @@ async function openLogs() {
             <span v-if="debugSaved" class="dim">已保存</span>
           </span>
         </div>
+        </template>
 
         <p class="sect">数据</p>
         <div class="row">
