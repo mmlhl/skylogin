@@ -9,6 +9,7 @@ package app
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"skylogin/internal/launcher"
@@ -25,13 +26,20 @@ func TestZZFullChain(t *testing.T) {
 	}
 
 	// 第 1 步：DLL 无头登录（RSA 加密），拿回调 a50 token + 设备号
+	//
+	// 路径全部走环境变量：以前写死成本机的 D:\FeverApps\sky 之类，换个机器
+	// 就跑不起来，而且会把开发机的目录结构带进仓库。
+	skyDir, skinZip := os.Getenv("SKY_DIR"), os.Getenv("SKIN_ZIP")
+	if skyDir == "" || skinZip == "" {
+		t.Fatal("需要 SKY_DIR（游戏安装目录）/ SKIN_ZIP（skin.zip 路径）")
+	}
 	res := mpayhost.ProbeUILess(mpayhost.UILessOptions{
 		Options: mpayhost.Options{
-			SkyDir:  "D:\\FeverApps\\sky",
-			SkinZip: "D:\\FeverGames\\1.18.45.8\\skin.zip",
+			SkyDir:  skyDir,
+			SkinZip: skinZip,
 			GameID:  "aecglf6ee4aaaarz-g-a50",
 			Channel: "a50_sdk_cn",
-			LogPath: "E:\\skytest\\tmp\\fullchain-urs.txt",
+			LogPath: filepath.Join(os.TempDir(), "fullchain-urs.txt"),
 		},
 		Action: mpayhost.ActionUrs,
 		UID:    user,
