@@ -47,6 +47,8 @@ export interface Account {
   qualityMode?: string;
   /** 这行账号自己的帧率（0 = 跟随游戏） */
   qualityFps?: number;
+  /** 单开时的显示方式："" 跟随游戏 / "windowed" 窗口 / "fullscreen" 全屏 */
+  displayMode?: string;
   /** 副本键（"PlayerID-2" 样式）；空 = 原始行 */
   copyKey?: string;
 
@@ -75,14 +77,31 @@ export interface Account {
   lastError?: string;
 }
 
+/** 一条待处理的账号提示（一个账号一条） */
+export interface AuthHintItem {
+  kind: string;
+  /** 短原因，清单里用它（message 是整句） */
+  title?: string;
+  message: string;
+  account?: string;
+  /** 相关账号的 ID：界面按它精确回跳到该账号（重名也不会串） */
+  accountId?: string;
+}
+
 /** 后端推给界面的「需要用户处理」提示（目前是网易凭证过期） */
 export interface AuthHint {
   kind?: string;
+  /** 短标题（后端给了就用，界面上一般显示 message） */
+  title?: string;
   message?: string;
   /** 相关账号（用户名 / 手机号），仅展示用 */
   account?: string;
   /** 相关账号的 ID：一键刷新按它精确回跳到该账号 */
   accountId?: string;
+  /** 一共几条待处理；>1 时界面给清单 */
+  count?: number;
+  /** 全部待处理提示，按发生时间排序 */
+  items?: AuthHintItem[];
 }
 
 export interface NewAccountDraft {
@@ -179,7 +198,8 @@ export interface LauncherStore {
     ovFps?: number,
   ): void;
   /** 保存某行账号自己的画质/帧率（账号级就是具体档位，无"跟随"项）。 */
-  setAccountQuality(id: string, mode: string, fps: number): void;
+  /** 保存账号级游戏设置：画质 / 帧率 / 显示方式（空/0 = 跟随游戏） */
+  setAccountQuality(id: string, mode: string, fps: number, display?: string): void;
   /** 保存账号列表宽度（分界线拖拽结束）。 */
   setRailWidth(width: number): void;
 

@@ -28,6 +28,8 @@ export interface AccountView {
   qualityMode?: string;
   /** 这行账号自己的帧率（0 = 跟随游戏） */
   qualityFps?: number;
+  /** 单开时的显示方式："" 跟随游戏 / "windowed" 窗口 / "fullscreen" 全屏 */
+  displayMode?: string;
   masked: string;
   level: string;
   updated: string;
@@ -178,12 +180,28 @@ export interface Settings {
   protocol: string;
 }
 
+/** 一条待处理的账号提示（一个账号一条） */
+export interface AuthHintItem {
+  kind: string;
+  /** 短原因，清单里用它（message 是整句） */
+  title?: string;
+  message: string;
+  account?: string;
+  /** 相关账号的 ID：界面按它精确回跳到该账号（重名也不会串） */
+  accountId?: string;
+}
+
 /** 需要用户处理的问题（比如网易凭证过期），空对象表示没有 */
 export interface AuthHint {
   kind?: string;
   title?: string;
   message?: string;
   account?: string;
+  accountId?: string;
+  /** 一共几条待处理；>1 时界面给清单 */
+  count?: number;
+  /** 全部待处理提示，按发生时间排序 */
+  items?: AuthHintItem[];
 }
 
 /** 一种登录方式，由后端声明，前端只负责渲染 */

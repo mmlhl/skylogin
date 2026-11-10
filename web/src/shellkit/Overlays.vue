@@ -195,23 +195,36 @@ function confirmDup() {
   demoUi.dupId = "";
 }
 
-/* ---- 游戏设置（账号级画质/帧率，四种壳共用这一个弹窗） ---- */
+/* ---- 游戏设置（账号级画质/帧率/显示方式，四种壳共用这一个弹窗） ---- */
 const qAccount = computed(() => store.accounts.find((a) => a.id === demoUi.qualityId));
 const qModeRow = ref("");
 const qFpsRow = ref(0);
-// 账号级就是具体配置，没有"跟随"项；未设置过的默认落到 默认/60
-const accountQualityOpts = qualityOpts.filter((o) => o.v !== "");
-const accountFpsOpts = fpsOpts.filter((o) => o.v !== 0);
+const qDisplayRow = ref("");
+// 三项都保留「跟随游戏」：没设过的号不该被我们按一个默认档位钉死
+// （以前默认落到 Default/60，等于用户点一下保存就把游戏里的最高画质降级了）
+const accountQualityOpts = qualityOpts;
+const accountFpsOpts = [
+  { v: 0, label: "跟随游戏", tip: "不写帧率，用游戏里的设置" },
+  { v: 30, label: "30" },
+  { v: 60, label: "60" },
+  { v: 120, label: "120" },
+];
+const displayOpts = [
+  { v: "", label: "跟随游戏", tip: "不动游戏的窗口 / 全屏状态" },
+  { v: "windowed", label: "窗口", tip: "启动前写成窗口模式" },
+  { v: "fullscreen", label: "全屏", tip: "启动前写成全屏" },
+];
 watch(
   () => demoUi.qualityId,
   () => {
-    qModeRow.value = qAccount.value?.qualityMode || "Default";
-    qFpsRow.value = qAccount.value?.qualityFps || 60;
+    qModeRow.value = qAccount.value?.qualityMode ?? "";
+    qFpsRow.value = qAccount.value?.qualityFps ?? 0;
+    qDisplayRow.value = qAccount.value?.displayMode ?? "";
   },
 );
 function confirmQuality() {
   if (!demoUi.qualityId) return;
-  store.setAccountQuality(demoUi.qualityId, qModeRow.value, qFpsRow.value);
+  store.setAccountQuality(demoUi.qualityId, qModeRow.value, qFpsRow.value, qDisplayRow.value);
   demoUi.qualityId = "";
 }
 
@@ -453,8 +466,18 @@ function confirmRename() {
             @click="qFpsRow = o.v">{{ o.label }}</button>
         </div>
       </div>
+      <div class="qsec">
+        <div class="qlabel2">显示</div>
+        <div class="qpills">
+          <button v-for="o in displayOpts" :key="'qd' + o.v" :class="{ on: qDisplayRow === o.v }" :title="o.tip"
+            @click="qDisplayRow = o.v">{{ o.label }}</button>
+        </div>
+      </div>
 
-      <p class="qnote">启动（单开 / 多开）前写入这台客户端；多开弹窗选「跟随游戏」时也按这里的设置。</p>
+      <p class="qnote">
+        启动前写进这台客户端（单开直接写游戏目录，多开写每个镜像）。
+        「显示」只对单开生效：多开的窗口 / 全屏由多开弹窗统一决定。
+      </p>
       <div class="mfoot">
         <button class="btn primary" @click="confirmQuality">保存</button>
       </div>

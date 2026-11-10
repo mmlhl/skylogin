@@ -25,7 +25,14 @@ async function request<T = ApiResult>(path: string, init?: RequestInit): Promise
   try {
     data = text ? JSON.parse(text) : {};
   } catch {
-    throw new Error(`接口返回不是 JSON：${path}`);
+    // 非 JSON（典型是路由不存在时的 404 纯文本）：不要抛给调用方去猜，
+    // 统一转成 { ok:false } —— 抛错的话调用方没 catch 就会**静默失败**，
+    // 用户看到的就是"设了没反应"（2026-11-11 画质保存就是这么丢的）。
+    return { ok: false, message: `接口返回异常（HTTP ${res.status}）：${path}` } as T;
+  }
+  if (!res.ok) {
+    const msg = (data as { message?: string })?.message || `请求失败（HTTP ${res.status}）`;
+    return { ok: false, message: msg, ...(data as object) } as T;
   }
   return data as T;
 }
@@ -135,8 +142,12 @@ export const api = {
   deleteAccount: (id: string) => request(`/api/accounts/delete${qs({ id })}`, { method: "POST" }),
 
   /** 保存某行账号的画质/帧率（账号级 = 具体档位） */
-  setAccountQuality: (id: string, mode: string, fps: number) =>
-    request("/api/accounts/quality", { method: "POST", body: JSON.stringify({ id, mode, fps }) }),
+  /** 保存账号级游戏设置：画质 / 帧率 / 显示方式（空/0 = 跟随游戏） */
+  setGameSettings: (id: string, mode: string, fps: number, display: string) =>
+    request("/api/accounts/gamesettings", {
+      method: "POST",
+      body: JSON.stringify({ id, mode, fps, display }),
+    }),
 
   /** 创建一条账号的副本（name 为空时后端自动起名，region 为空表示副本先不选区） */
   duplicateAccount: (id: string, name: string, region = "") =>

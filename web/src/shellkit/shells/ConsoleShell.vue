@@ -228,7 +228,7 @@ const lastCheckText = computed(() => {
         <p class="regionnote" :class="{ warn: expired }">
           {{
             expired
-              ? `票来自「${hostName}」的寄宿槽；槽位票跟着宿主的平台凭证走，先去刷新「${hostName}」`
+              ? `票来自「${hostName}」的寄宿槽；点「刷新凭证」会用这个槽自动续期（不用重扫），只有宿主自己也失效时才需要去刷新「${hostName}」`
               : `寄宿在「${hostName}」的槽位里，渠道由扫码时的手机决定，启动不再询问`
           }}
         </p>

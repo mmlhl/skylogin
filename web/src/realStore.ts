@@ -126,7 +126,10 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
     },
     get authHint() {
       const h = state.authHint;
-      return h && h.kind ? { kind: h.kind, message: h.message, account: h.account } : {};
+      // 整条原样透传：items 里每条都带 accountId，横幅按它精确定位账号。
+      // 早先只传了 account 名字，于是点刷新会落到"当前选中"的号上——
+      // 刷错了账号还看不出错（2026-11-11 反馈）。
+      return h && h.kind ? h : {};
     },
     get toasts() {
       return st.toasts;
@@ -165,8 +168,10 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
         hooks.onRefresh?.({ accountId: a.id, name: a.name, channel: a.channel, loginUser: a.loginUser });
 
       // 存过密码的号：直接静默重登，不用再让用户输一遍账号密码。
+      // 被寄宿的号连密码都不用：它的票来自宿主的平台槽，槽位票能换回一条新凭证
+      // （后端 /api/accounts/relogin 会走寄宿续期）。两样都没有才让用户动手。
       // 密码已经不对了（在别处改过）时后端会顺手清掉它，这里退回手动登录。
-      if (!a.hasPassword) {
+      if (!a.hasPassword && !a.hosted) {
         openPicker();
         return;
       }
@@ -194,8 +199,10 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
       });
     },
 
-    setAccountQuality(id, mode, fps) {
-      void api.setAccountQuality(id, mode, fps).then((r) => {
+    setAccountQuality(id, mode, fps, display = "") {
+      // 画质 / 帧率 / 显示方式一起存：三项都是"这行账号的游戏设置"，
+      // 分三次请求只会多出两次半写状态。
+      void api.setGameSettings(id, mode, fps, display).then((r) => {
         if (r.ok === false) toast(r.message || "保存失败");
       });
     },
