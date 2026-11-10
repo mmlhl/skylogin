@@ -11,6 +11,7 @@ import (
 	"skylogin/internal/device"
 	"skylogin/internal/fever"
 	"skylogin/internal/huawei"
+	"skylogin/internal/netdns"
 	"skylogin/internal/netsec"
 	"skylogin/internal/profile"
 	"skylogin/internal/protocol"
@@ -124,7 +125,17 @@ func defaultDataDir() string {
 
 // RunUI 启动本地控制面板，并用 WebView2 窗口显示（没有 WebView2 时退回默认浏览器）。
 func RunUI(title string) error {
-	logf("光遇账号登录器 %s 启动", Version)
+	// 先维护日志：老版本写下的日志是明文 token / 邮箱，升级后第一次启动
+	// 就地脱敏一次，超过 2 MB 的顺手滚动归档。必须在第一条 logf 之前。
+	maintainLogs()
+
+	// 日志里带上 commit：2026-11-10 的反馈里同一台机器上跑了 1.6.0、1.1.1、1.6.1
+	// 三个版本，光看版本号根本分不清"这次到底跑的是哪份代码"，排查全靠猜。
+	logf("光遇账号登录器 %s 启动%s", Version, buildStamp())
+
+	// 让 DNS 兜底把"系统解析失败、改用公共 DNS"写进同一个日志，
+	// 否则下次再遇到解析问题，只能从"no such host"猜是网络还是代码。
+	netdns.SetLogf(logf)
 
 	// 窗口排列/全屏切换的诊断走日志：这些动作用户看不见过程，
 	// 失败时只表现为"窗口没动"，日志里得能查到卡在哪一步。

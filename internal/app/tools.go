@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"runtime/debug"
 	"strconv"
@@ -53,7 +54,7 @@ func applyBuildInfo(version, build, buildTime string, info *debug.BuildInfo) (st
 		return version, build, buildTime
 	}
 	if version == "1.0.0" && info.Main.Version != "" && info.Main.Version != "(devel)" {
-		version = info.Main.Version
+		version = normalizeVersion(info.Main.Version)
 	}
 	for _, s := range info.Settings {
 		switch s.Key {
@@ -69,6 +70,59 @@ func applyBuildInfo(version, build, buildTime string, info *debug.BuildInfo) (st
 		}
 	}
 	return version, build, buildTime
+}
+
+// Go 伪版本的两种形态：
+//
+//	1.6.2-0.20261110110731-f342dcfbcae5    tag 之后构建（带预发布号 0.）
+//	0.0.0-20261110110731-f342dcfbcae5      仓库里一个 tag 都没有
+var (
+	pseudoWithPre = regexp.MustCompile(`^(.+?)-0\.\d{14}-[0-9a-f]{12}$`)
+	pseudoNoPre   = regexp.MustCompile(`^(.+?)-\d{14}-[0-9a-f]{12}$`)
+)
+
+// normalizeVersion 把 Go 的模块版本整理成给人看的形式。
+//
+// 本地构建时 Main.Version 是 Go 算出来的伪版本：
+//
+//	v1.6.2-0.20261110110731-f342dcfbcae5
+//
+// 又长又难读，而且 commit 在 Build 里已经有了（dev-f342dcf），
+// 日志里会重复两遍。整理成：
+//
+//	1.6.2+dev      tag 之后的自定义构建
+//	1.6.1          正好在 tag 上
+//	dev            仓库里一个 tag 都没有
+func normalizeVersion(v string) string {
+	v = strings.TrimPrefix(v, "v")
+	// Go 会在工作区不干净时追加 +dirty。先摘掉，否则正则匹配不到结尾的哈希。
+	dirty := strings.Contains(v, "+dirty")
+	if i := strings.Index(v, "+"); i >= 0 {
+		v = v[:i]
+	}
+	base := ""
+	switch {
+	case pseudoWithPre.MatchString(v):
+		base = pseudoWithPre.FindStringSubmatch(v)[1]
+	case pseudoNoPre.MatchString(v):
+		base = pseudoNoPre.FindStringSubmatch(v)[1]
+	default:
+		// 不是伪版本（正好在 tag 上）：原样返回
+		if dirty {
+			return v + "+dirty"
+		}
+		return v
+	}
+	if base == "0.0.0" {
+		if dirty {
+			return "dev.dirty"
+		}
+		return "dev"
+	}
+	if dirty {
+		return base + "+dev.dirty"
+	}
+	return base + "+dev"
 }
 
 // setReleaseState 记录公告已读序号 / 被忽略的更新构建号 / 待更新的构建号。

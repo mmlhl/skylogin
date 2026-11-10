@@ -63,3 +63,24 @@ func TestBuildNumber(t *testing.T) {
 		t.Fatalf("开发版构建号应为 0，实际 %d", n)
 	}
 }
+
+// TestNormalizeVersion 本地构建的版本号要能给人看。
+//
+// Go 在 tag 之后构建时给的是伪版本 v1.6.2-0.<时间>-<哈希>，
+// 直接显示又长又难读，而且 commit 在 Build 里已经有了。
+func TestNormalizeVersion(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"v1.6.1", "1.6.1"},
+		{"1.6.1", "1.6.1"},
+		{"v1.6.2-0.20261110110731-f342dcfbcae5", "1.6.2+dev"},
+		{"v0.0.0-20261110110731-f342dcfbcae5", "dev"},
+		{"v1.6.2-0.20261110110731-f342dcfbcae5+dirty", "1.6.2+dev.dirty"},
+		{"v0.0.0-20261110110731-f342dcfbcae5+dirty", "dev.dirty"},
+		{"v1.6.1+dirty", "1.6.1+dirty"},
+	}
+	for _, c := range cases {
+		if got := normalizeVersion(c.in); got != c.want {
+			t.Errorf("normalizeVersion(%q) = %q，期望 %q", c.in, got, c.want)
+		}
+	}
+}
