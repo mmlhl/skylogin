@@ -28,6 +28,16 @@ func ReloginAccount(accountID string) (map[string]any, error) {
 		return nil, fmt.Errorf("这个渠道不支持自动重登")
 	}
 	if !hasSavedPassword(acc) {
+		// 被寄宿的号没存密码也能静默续期：槽位票不需要它自己的 token
+		// （2026-11-11 实测，见 rolltoken.go 的 rollHostedToken）。
+		// 这比让用户重新扫一次省事得多，所以先试寄宿，再谈弹输入框。
+		if healHostedCred(acc) {
+			fresh, _ := findAccountByUserID(acc.UserID)
+			return map[string]any{
+				"name":   displayName(fresh),
+				"hosted": true,
+			}, nil
+		}
 		return nil, errNoSavedPassword
 	}
 

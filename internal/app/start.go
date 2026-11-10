@@ -33,6 +33,9 @@ var (
 	newTicketSource = func() ticketSource { return hostedTicket{} }
 	buildPayloadFn  = buildPayload
 	hostClassFn     = func() string { return fever.DefaultClassName }
+	// mintOnceFn 是"单轮签票"的入口，多开预检用它判断能不能出票。
+	// 单独抽成变量是为了让测试能在不联网的情况下验证"被寄宿的号不该被踢掉"。
+	mintOnceFn = mintTicketOnce
 )
 
 // ticketSource 抽象"取一次性票据"，便于测试注入。
@@ -159,16 +162,17 @@ func launchGame() (string, error) {
 		if terr != nil {
 			logf("现签票据失败（已重试）: %v", terr)
 			setAuthHint("netease_expired", "网易账号凭证已过期",
-				"登录信息已过期，请在账号菜单里刷新凭证", acc.Username, acc.UserID)
+				fmt.Sprintf("「%s」的登录凭证已过期，请在账号菜单里刷新凭证", displayName(acc)),
+				displayName(acc), acc.UserID)
 			// 没有票就别启动游戏了，否则玩家只会看到一次失败
-			return "", fmt.Errorf("网易账号凭证已过期，请在账号菜单里点「刷新凭证」")
+			return "", fmt.Errorf("网易账号「%s」凭证已过期，请在账号菜单里点「刷新凭证」", displayName(acc))
 		}
 		ticket, channel = t, ch
 		logf("已拿到票据（channel=%s，网易账号 %s）", ch, acc.Username)
 		refreshNetEaseTicketTime(acc)
 		// 拿票成功说明凭证有效，把之前可能的 expired 标记清掉
 		setAccountCredState(acc.UserID, "ok", "")
-		clearAuthHint()
+		clearAuthHintForAccount(acc)
 		// 会话级凭证顺手滚一次：把 lt 推到现在，长期不用重扫（见 rolltoken.go）
 		go rollAccountToken(acc.UserID)
 	} else {
@@ -361,40 +365,9 @@ func launchMany(ids []string, ovMode string, ovFps int) (string, error) {
 	if derr != nil {
 		return "", derr
 	}
-	// 逐个验证 / 刷新凭证：网易账号先验 token 活性（失效的签出的是废票，
-	// 游戏里只会看到网络错误），华为账号刷新 ST
-	alive := picked[:0]
-	unverified := 0
-	for _, a := range picked {
-		if a.Channel == channel.KeyBili || a.Channel == channel.KeyM4399 || a.Channel == channel.KeyVivo {
-			// 渠道账号：凭证保活，失败的这个多开就不带
-			if err := ensureChannelCredential(&a); err != nil {
-				logf("多开：%s 的凭证校验未通过，跳过（%v）", displayName(a), err)
-				continue
-			}
-		} else if canUseNetEase(a) {
-			if verr := validateNetEaseToken(a); verr != nil {
-				// 没问到服务端（DNS / 超时）不等于凭证失效：不写状态、不弹横幅。
-				// 旧代码在这里一律判 expired，用户那边一断网，所有号瞬间全变"已失效"。
-				if credUnverified(verr) {
-					unverified++
-					logf("多开：%s 凭证状态暂未确认，跳过（%v）", displayName(a), verr)
-					continue
-				}
-				setAccountCredState(a.UserID, "expired", verr.Error())
-				logf("多开：%s 凭证已失效，跳过（%v）", displayName(a), verr)
-				continue
-			}
-		} else {
-			if refreshed, rerr := refreshFn(a); rerr == nil {
-				a = refreshed
-			} else {
-				logf("多开：华为账号 %s 刷新凭证失败，用缓存: %v", a.NickName, rerr)
-			}
-		}
-		alive = append(alive, a)
-	}
-	if len(alive) < 2 {
+	// 逐个验证 / 刷新凭证：判据是"现在真能出一张票"，顺手把票留作预签票
+	picked, tickets, channels, unverified := precheckLaunchable(picked, dev)
+	if len(picked) < 2 {
 		// 分清是"凭证真的坏了"还是"网络连不上"：两种情况的处理完全不同，
 		// 让用户去刷新凭证解决不了 DNS 问题。
 		if unverified > 0 {
@@ -402,7 +375,6 @@ func launchMany(ids []string, ovMode string, ovFps int) (string, error) {
 		}
 		return "", fmt.Errorf("凭证有效的账号不足两个，无法多开（失效的请先刷新凭证）")
 	}
-	picked = alive
 
 	if err := ensureHostLocked(); err != nil {
 		return "", err
@@ -413,14 +385,17 @@ func launchMany(ids []string, ovMode string, ovFps int) (string, error) {
 	// 再几乎同时把游戏拉起来：建目录要几十毫秒，夹在启动之间会让
 	// 第一个客户端的窗口先弹出来，后面的就被单实例检测拦下。
 	installs := make([]string, len(picked))
+	inMultiBatch.Store(true)
 	for i := range picked {
 		m, err := prepareMirror(exe, picked[i], ovMode, ovFps)
 		if err != nil {
+			inMultiBatch.Store(false)
 			logf("多开：准备镜像失败: %v", err)
 			return "", fmt.Errorf("准备镜像目录失败: %w", err)
 		}
 		installs[i] = m
 	}
+	inMultiBatch.Store(false)
 
 	type launchResult struct {
 		name string
@@ -430,16 +405,16 @@ func launchMany(ids []string, ovMode string, ovFps int) (string, error) {
 	var wg sync.WaitGroup
 	for i, acc := range picked {
 		wg.Add(1)
-		go func(acc Account, path string, order int64) {
+		go func(acc Account, path, tk, ch string, order int64) {
 			defer wg.Done()
 			// order 用勾选顺序（picked 的顺序），不用进程启动完成的先后：
 			// 并发拉起时谁先注册是不确定的，同样的账号组合每次排出来都不一样
-			_, err := launchAt(acc, dev, "", "", path, ovMode, ovFps, order)
+			_, err := launchAt(acc, dev, tk, ch, path, ovMode, ovFps, order)
 			if err == nil {
 				markAccountLaunched(accountKey(acc), "")
 			}
 			out <- launchResult{name: displayName(acc), err: err}
-		}(acc, installs[i], int64(i))
+		}(acc, installs[i], tickets[i], channels[i], int64(i))
 	}
 	wg.Wait()
 	close(out)
@@ -455,8 +430,31 @@ func launchMany(ids []string, ovMode string, ovFps int) (string, error) {
 	if len(names) < 2 {
 		return "", fmt.Errorf("可用账号不足两个（启动失败）")
 	}
+	// 启动成功后顺手滚一次会话凭证（和单开一致）。被寄宿的号如果自己那份
+	// 已经失效，这里会走寄宿续期把它养回来，下次就不用再靠槽位票。
+	rollAfterMultiLaunch(picked)
 	ArmMouseArbiter()
 	return fmt.Sprintf("已启动 %d 个客户端：%s", len(names), strings.Join(names, "、")), nil
+}
+
+// rollAfterMultiLaunch 给刚启动的网易账号逐个滚一次会话凭证（后台串行）。
+//
+// 串行而不是每个号一个协程：滚动的写账号文件没有加锁，并发写会互相覆盖。
+func rollAfterMultiLaunch(list []Account) {
+	ids := make([]string, 0, len(list))
+	for _, a := range list {
+		if a.Channel == "netease" && a.UserID != "" {
+			ids = append(ids, a.UserID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	go func() {
+		for _, uid := range ids {
+			rollAccountToken(uid)
+		}
+	}()
 }
 
 // launchManyLayout 多开。display = "fullscreen" 预写全屏、不做窗口排列，
@@ -484,6 +482,65 @@ func launchManyLayout(ids []string, cols, rows, w, h int, display string, ovMode
 		msg = fmt.Sprintf("%s（将按 %d×%d 平铺）", msg, cols, rows)
 	}
 	return msg, nil
+}
+
+// precheckLaunchable 判断这批账号现在能不能启动，并把能出票的票带回来当预签票。
+//
+// 判据必须是"现在真能出一张票"，不能只看"自己那份 token 还活着"：
+//
+//   - 被寄宿的号，票是从宿主的平台槽出的，自己 token 过期也照样能启动
+//     （单开一直就是这样）。2026-11-11 的日志里多开只验自己的 token，
+//     于是把这种明明能启动的号判成"凭证已失效"踢掉——用户看到的就是
+//     "单开正常、多开说凭证过期"。
+//   - 反过来，token 查资料没报错也不代表票能用：扫码号有"半死"状态
+//     （create_ticket 能签、签出来是废票），只有真签一次票才认。
+//
+// 顺手把票留着：每张票都要现签，预检签完丢掉、启动后再签一次纯属浪费，
+// 而且多开时几个客户端同时要票，预签票能把 op13→op14 的等待压到 0。
+// 返回值 tickets/channels 与 alive 一一对应；渠道账号为空（启动后由 preMint 现签）。
+func precheckLaunchable(picked []Account, dev *device.ClientProfile) (alive []Account, tickets, channels []string, unverified int) {
+	alive = make([]Account, 0, len(picked))
+	tickets = make([]string, 0, len(picked))
+	channels = make([]string, 0, len(picked))
+	for _, a := range picked {
+		var tk, ch string
+		switch {
+		case a.Channel == channel.KeyBili || a.Channel == channel.KeyM4399 || a.Channel == channel.KeyVivo:
+			// 渠道账号：凭证保活，失败的这个多开就不带
+			if err := ensureChannelCredential(&a); err != nil {
+				logf("多开：%s 的凭证校验未通过，跳过（%v）", displayName(a), err)
+				continue
+			}
+		case canUseNetEase(a):
+			t, c, terr := mintOnceFn(a, dev)
+			if terr != nil {
+				// 没问到服务端（DNS / 超时）不等于凭证失效：不写状态、不弹横幅。
+				// 旧代码在这里一律判 expired，用户那边一断网，所有号瞬间全变"已失效"。
+				if credUnverified(terr) {
+					unverified++
+					logf("多开：%s 凭证状态暂未确认，跳过（%v）", displayName(a), terr)
+					continue
+				}
+				setAccountCredState(a.UserID, "expired", terr.Error())
+				logf("多开：%s 出不了票，跳过（%v）", displayName(a), terr)
+				continue
+			}
+			tk, ch = t, c
+			// 出票成功 = 这个号现在能用（靠寄宿槽出的票同样算能用），
+			// 顺手把上次留下的"凭证过期"清掉，界面才不会误导人。
+			setAccountCredState(a.UserID, "ok", "")
+		default:
+			if refreshed, rerr := refreshFn(a); rerr == nil {
+				a = refreshed
+			} else {
+				logf("多开：华为账号 %s 刷新凭证失败，用缓存: %v", a.NickName, rerr)
+			}
+		}
+		alive = append(alive, a)
+		tickets = append(tickets, tk)
+		channels = append(channels, ch)
+	}
+	return alive, tickets, channels, unverified
 }
 
 // validateNetEaseToken 用 MPay 的用户资料接口验证 token 是否还活着。
