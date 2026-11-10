@@ -8,7 +8,7 @@
  * 壳本身对用哪套实现毫无感知。
  */
 
-export type Channel = "huawei" | "netease" | "bilibili" | "m4399" | "vivo" | "uc_platform";
+export type Channel = "huawei" | "netease" | "bilibili" | "m4399" | "vivo" | "uc_platform" | "myapp";
 export type CredState = "ok" | "expired";
 
 export interface Account {
@@ -225,3 +225,4 @@ export function fmtRun(seconds: number): string {
   if (m < 60) return `${m} 分钟`;
   return `${Math.floor(m / 60)} 小时 ${String(m % 60).padStart(2, "0")} 分`;
 }
+

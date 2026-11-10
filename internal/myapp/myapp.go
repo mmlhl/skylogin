@@ -18,6 +18,7 @@
 package myapp
 
 import (
+	"context"
 	"crypto/md5"
 	"encoding/base64"
 	"encoding/hex"
@@ -270,3 +271,69 @@ func getRaw(u string) ([]byte, error) {
 	defer resp.Body.Close()
 	return io.ReadAll(io.LimitReader(resp.Body, 1<<18))
 }
+
+// WxNickname 拉微信昵称（拉不到返回空串，不影响登录）。
+//
+// 单独导出是因为 channel 层要把昵称填进 Cred.Nickname，
+// 而 myappNickname 是包内私有实现。
+// WxNickname 拉微信昵称（拉不到返回空串，不影响登录）。
+//
+// 单独导出是因为 channel 层要把昵称填进 Cred.Nickname。
+// 微信的 userinfo 接口偶尔会回 gzip 或 errcode，失败一律当"没昵称"处理。
+func WxNickname(atk, openID string) string {
+	var out struct {
+		Nickname string `json:"nickname"`
+		ErrCode  int    `json:"errcode"`
+	}
+	u := "https://api.weixin.qq.com/sns/userinfo?access_token=" +
+		url.QueryEscape(atk) + "&openid=" + url.QueryEscape(openID)
+	if err := getJSON(u, &out); err != nil {
+		return ""
+	}
+	if out.ErrCode != 0 {
+		return ""
+	}
+	return out.Nickname
+}
+
+// PollCtx 带 ctx 的轮询：用户取消时能立刻断开长轮询，不用干等 15 秒。
+//
+// 微信的轮询端点是长轮询（没人扫时挂 15 秒才回 408），
+// 不带 ctx 的话"取消"要等这次请求自己超时才生效，体验很差。
+func (s *Session) PollCtx(ctx context.Context) (ScanState, string, error) {
+	var out struct {
+		WxErrCode int    `json:"wx_errcode"`
+		WxCode    string `json:"wx_code"`
+	}
+	u := weixinPoll + "?f=json&uuid=" + url.QueryEscape(s.UUID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return Waiting, "", err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return Waiting, "", err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<18))
+	if err != nil {
+		return Waiting, "", err
+	}
+	if json.Unmarshal(b, &out) != nil {
+		return Waiting, "", fmt.Errorf("轮询响应不是 JSON: %s", truncate(string(b), 200))
+	}
+	if out.WxCode != "" {
+		return Scanned, out.WxCode, nil
+	}
+	switch out.WxErrCode {
+	case 405:
+		return Scanned, "", nil
+	case 403:
+		return Canceled, "", nil
+	case 402:
+		return Expired, "", nil
+	}
+	return Waiting, "", nil
+}
+

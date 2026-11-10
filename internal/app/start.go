@@ -63,8 +63,12 @@ func launchGame() (string, error) {
 
 	// 已经有一个客户端在跑时，不要动它的宿主窗口
 	firstClient := host == nil
-	if acc.Channel == "bilibili" || acc.Channel == "m4399" || acc.Channel == "vivo" {
-		// 渠道账号：启动前做凭证保活（能静默续期就续期，全失败才拦下）
+	// 渠道账号：启动前做凭证保活（能静默续期就续期，全失败才拦下）
+	//
+	// 应用宝（myapp）也走这条路：它没有华为的 ST，硬走 refreshFn 只会报
+	// "账号没有保存 ST"，然后拿空凭证去组登录包，启动必然失败。
+	if acc.Channel == channel.KeyBili || acc.Channel == channel.KeyM4399 ||
+		acc.Channel == channel.KeyVivo || acc.Channel == channel.KeyMyapp {
 		if err := ensureChannelCredential(&acc); err != nil {
 			return "", err
 		}

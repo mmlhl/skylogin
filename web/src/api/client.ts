@@ -215,6 +215,15 @@ export const api = {
   answerChannelAsk: (key: string, values: Record<string, string>) =>
     request("/api/channel/login/answer", { method: "POST", body: JSON.stringify({ channel: key, values }) }),
 
+  /**
+   * 取消正在进行的协议登录。
+   *
+   * 扫码类流程（应用宝）会一直阻塞等用户扫，关掉对话框必须立刻取消，
+   * 否则后端 tracker 会占着 5 分钟，用户再点就是"没反应"。
+   */
+  cancelChannelLogin: (key: string) =>
+    request("/api/channel/login/cancel", { method: "POST", body: JSON.stringify({ channel: key }) }),
+
   /** 保存设置（只传要改的字段） */
   saveSettings: (payload: {
     skyExe?: string;
@@ -302,6 +311,7 @@ export const api = {
   smsLogin: (mobile: string, code: string, targetUserId = "") =>
     request("/api/sms/login", { method: "POST", body: JSON.stringify({ mobile, code, targetUserId }) }),
 };
+
 
 
 

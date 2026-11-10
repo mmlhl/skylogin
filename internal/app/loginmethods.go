@@ -14,6 +14,8 @@ package app
 // 特殊入口才在下面手工补。
 
 import (
+	"strings"
+
 	"skylogin/internal/channel"
 )
 
@@ -22,6 +24,11 @@ type loginMethod struct {
 	Kind  string `json:"kind"`  // web | qr | sms | password | channelscan | package
 	Label string `json:"label"` // 「扫码登录」
 	Hint  string `json:"hint"`  // 一句话副标题
+	// Method 是渠道 Method 的标识，前端点选后原样回传给后端。
+	//
+	// 为什么需要它：同一个渠道可以有两种同类方式（应用宝的微信扫码和 QQ 扫码
+	// 都是 KindQR），只靠 kind 分不开。空表示"用第一个同类方式"，兼容旧调用。
+	Method string `json:"method,omitempty"`
 }
 
 // loginEntry 「添加账号」列表里的一项。
@@ -62,11 +69,7 @@ func LoginEntries() []loginEntry {
 		}
 		methods := make([]loginMethod, 0, len(p.Methods()))
 		for _, m := range p.Methods() {
-			methods = append(methods, loginMethod{
-				Kind:  string(m.Kind()),
-				Label: m.Label(),
-				Hint:  m.Hint(),
-			})
+			methods = append(methods, loginMethod{Kind: string(m.Kind()), Label: m.Label(), Hint: m.Hint(), Method: m.Label()})
 		}
 		if len(methods) == 0 {
 			continue
@@ -75,7 +78,7 @@ func LoginEntries() []loginEntry {
 			ID:      item.key,
 			Action:  item.action,
 			Label:   p.Label() + "账号",
-			Hint:    methods[0].Hint,
+			Hint:    entryHint(methods),
 			Initial: item.initial,
 			Methods: methods,
 		})
@@ -134,15 +137,36 @@ func LoginEntries() []loginEntry {
 	if p, ok := channel.Lookup(channel.KeyUC); ok && len(p.Methods()) > 0 {
 		methods := make([]loginMethod, 0, len(p.Methods()))
 		for _, m := range p.Methods() {
-			methods = append(methods, loginMethod{Kind: string(m.Kind()), Label: m.Label(), Hint: m.Hint()})
+			methods = append(methods, loginMethod{Kind: string(m.Kind()), Label: m.Label(), Hint: m.Hint(), Method: m.Label()})
 		}
 		entries = append(entries, loginEntry{
 			ID:      channel.KeyUC,
 			Action:  channel.KeyUC,
 			Label:   p.Label() + "账号",
-			Hint:    methods[0].Hint,
+			Hint:    entryHint(methods),
 			Initial: "九",
 			// 有两种方式，先让用户选，不要点了就直接走第一个
+			Group:   true,
+			Methods: methods,
+		})
+	}
+
+	// 应用宝（YSDK）：微信 / QQ 两条扫码链路都是纯 HTTP，不开窗、不需要浏览器。
+	//
+	// 微信有 refresh_token 可以一直续；QQ 的 YSDK 实现里没有续期接口，
+	// 60 天到期要重扫——这个差异写在 channel/myapp.go 的包注释里。
+	if p, ok := channel.Lookup(channel.KeyMyapp); ok && len(p.Methods()) > 0 {
+		methods := make([]loginMethod, 0, len(p.Methods()))
+		for _, m := range p.Methods() {
+			methods = append(methods, loginMethod{Kind: string(m.Kind()), Label: m.Label(), Hint: m.Hint(), Method: m.Label()})
+		}
+		entries = append(entries, loginEntry{
+			ID:      channel.KeyMyapp,
+			Action:  channel.KeyMyapp,
+			Label:   p.Label() + "账号",
+			Hint:    entryHint(methods),
+			Initial: "应",
+			// 微信 / QQ 两种扫码，先让用户选
 			Group:   true,
 			Methods: methods,
 		})
@@ -155,3 +179,37 @@ func LoginEntries() []loginEntry {
 func LoginChannels() map[string]any {
 	return map[string]any{"entries": LoginEntries()}
 }
+
+
+
+// entryHint 生成入口的副标题。
+//
+// 只有一种方式时直接用它的说明；同类方式有多个时（比如应用宝的微信扫码和
+// QQ 扫码都是 qr），把方式名全列出来——否则用户只看到第一个，会以为这个
+// 渠道只能用微信。
+func entryHint(methods []loginMethod) string {
+	if len(methods) == 0 {
+		return ""
+	}
+	if len(methods) == 1 {
+		return methods[0].Hint
+	}
+	sameKind := true
+	for _, m := range methods[1:] {
+		if m.Kind != methods[0].Kind {
+			sameKind = false
+			break
+		}
+	}
+	if !sameKind {
+		// 不同类型（九游：密码 / 验证码 / 整包）用第一个的说明，二级菜单里能看全
+		return methods[0].Hint
+	}
+	labels := make([]string, 0, len(methods))
+	for _, m := range methods {
+		labels = append(labels, m.Label)
+	}
+	return strings.Join(labels, " / ")
+}
+
+

@@ -7,7 +7,9 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"skylogin/internal/channel"
@@ -27,7 +29,10 @@ func StartChannelMethodLogin(key, method string) error {
 	}
 	var m channel.Method
 	for _, x := range pv.Methods() {
-		if x.Kind() == want {
+		// method 既可以是 Kind（"qr"），也可以是方式名（"微信扫码"）。
+		// 后者用来区分同类方式：应用宝的微信扫码和 QQ 扫码都是 KindQR，
+		// 只按 Kind 取会永远落到第一个。
+		if x.Kind() == want || (method != "" && x.Label() == method) {
 			m = x
 			break
 		}
@@ -37,7 +42,7 @@ func StartChannelMethodLogin(key, method string) error {
 	}
 
 	tr := trackerOf(key)
-	if !tr.begin("等待填写账号…") {
+	if !tr.begin(m.Hint()) {
 		return fmt.Errorf("%s 登录已经在进行中", pv.Label())
 	}
 
@@ -56,12 +61,22 @@ func StartChannelPasswordLogin(key string) error {
 func runChannelMethod(key string, tr *loginTracker, m channel.Method) {
 	defer tr.finish()
 
-	// 用户可能一直不填表单，给个上限，别让 goroutine 永久挂着
+	// 用户可能一直不填表单（或扫完码不确认），给个上限，别让 goroutine 永久挂着
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
+	// 注册取消入口：界面关掉对话框时要能立刻结束，否则 tracker 一直占着，
+	// 用户在 5 分钟内既不能重新登录、也看不到新的二维码。
+	registerChannelCancel(key, cancel)
+	defer unregisterChannelCancel(key)
 
 	cred, err := m.Login(ctx, &channelProgress{tr: tr, ask: askOf(key)})
 	if err != nil {
+		// 用户主动关掉对话框：这不是"失败"，别把 context canceled 甩给用户看
+		if errors.Is(err, context.Canceled) {
+			tr.set("idle", "已取消登录", "", "")
+			logf("%s 登录已取消", channel.LabelOf(key))
+			return
+		}
 		tr.set("failed", err.Error(), "", "")
 		logf("%s 登录失败: %v", channel.LabelOf(key), err)
 		return
@@ -88,6 +103,8 @@ func finalizeChannelCred(key string, cred channel.Cred) (Account, error) {
 	switch key {
 	case channel.KeyUC:
 		return finalizeUC(key, cred)
+	case channel.KeyMyapp:
+		return finalizeMyapp(key, cred)
 	}
 	return Account{}, fmt.Errorf("渠道 %s 还没有接协议登录的落库逻辑", channel.LabelOf(key))
 }
@@ -128,3 +145,42 @@ func finalizeUC(key string, cred channel.Cred) (Account, error) {
 		UpdatedAt:    time.Now().Unix(),
 	}, nil
 }
+
+
+
+// ── 协议登录的取消入口 ──────────────────────────────────────────
+//
+// 扫码类流程（应用宝微信 / QQ）会一直阻塞等用户扫，最长 5 分钟。
+// 用户关掉对话框必须能立刻结束，否则 tracker.begin 会一直拦着，
+// 表现为"点了没反应"。
+
+var (
+	channelCancelsMu sync.Mutex
+	channelCancels   = map[string]context.CancelFunc{}
+)
+
+func registerChannelCancel(key string, cancel context.CancelFunc) {
+	channelCancelsMu.Lock()
+	channelCancels[key] = cancel
+	channelCancelsMu.Unlock()
+}
+
+func unregisterChannelCancel(key string) {
+	channelCancelsMu.Lock()
+	delete(channelCancels, key)
+	channelCancelsMu.Unlock()
+}
+
+// StopChannelMethodLogin 取消正在进行的协议登录（关对话框时调）。
+func StopChannelMethodLogin(key string) {
+	channelCancelsMu.Lock()
+	cancel := channelCancels[key]
+	channelCancelsMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+
+
+

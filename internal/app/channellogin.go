@@ -164,6 +164,10 @@ func ChannelLoginStatus(key string) map[string]any {
 		"account": s.Account,
 		"uid":     s.UID,
 	}
+	// 应用宝扫码：把二维码带给界面（空表示当前不需要）
+	if s.QR != "" {
+		out["qr"] = s.QR
+	}
 	if ask := PendingChannelAsk(key); ask != nil {
 		out["ask"] = ask
 	}
@@ -346,6 +350,15 @@ func saveChannelAccount(acc Account) error {
 // channelSAUTH 用渠道身份走一次 uni_sauth：验证渠道凭证真的能换到光遇
 // 登录态。三个渠道落库前都要过这一关。
 func channelSAUTH(key, uid, secret string) error {
+	return channelSAUTHWithExtra(key, uid, secret, "")
+}
+
+// channelSAUTHWithExtra 同上，但允许额外塞一份 extra_data。
+//
+// 应用宝是唯一需要它的渠道：uni_sauth 的 extra_data 里必须带
+// login_type / session_id / session_type / openid / openkey / pf / pfkey，
+// 服务端靠它识别"这是应用宝的微信/QQ 账号"。其它渠道传空即可。
+func channelSAUTHWithExtra(key, uid, secret, extraData string) error {
 	dev, err := device.LoadOrCreateClient(filepath.Join(dataDir(), "sdk_device.json"))
 	if err != nil {
 		return fmt.Errorf("设备标识不可用")
@@ -366,6 +379,9 @@ func channelSAUTH(key, uid, secret string) error {
 		"get_access_token": info.GetAccessToken,
 		"realname":         info.Realname,
 	}
+	if extraData != "" {
+		custom["extra_data"] = extraData
+	}
 	resp, err := netsec.PostSigned(netsec.NewSAUTH(uid, secret, profile.ShortGameID, custom, dev), profile.ShortGameID)
 	if err != nil {
 		// 必须用 %w：用 %s 会把错误链断掉，上层就分不清"网络不通"和
@@ -385,6 +401,16 @@ func channelSAUTH(key, uid, secret string) error {
 // 供探针与诊断使用：能验证“这个 sid 到底能不能换到光遇登录态”，
 // 跟 sid 本身好不好用（那个看 getUserSimpleInfo）是两回事。
 func VerifyChannelCredential(key, uid, secret string) error {
+	// 应用宝的 uni_sauth 必须带 extra_data（openid / openkey / pf / pfkey 那一坨），
+	// 只给 uid + secret 会被服务端拒。这里按 uid 找回账号，用存着的那份材料。
+	if key == channel.KeyMyapp {
+		if acc, ok := findAccountByUserID(uid); ok && acc.MyappCred != "" {
+			var d myappCredData
+			if json.Unmarshal([]byte(acc.MyappCred), &d) == nil && d.ATK != "" {
+				return channelSAUTHWithExtra(key, d.OpenID, d.ATK, myappExtraData(d))
+			}
+		}
+	}
 	return channelSAUTH(key, uid, secret)
 }
 
@@ -505,6 +531,8 @@ func ensureChannelCredential(acc *Account) error {
 		return ensureM4399Credential(acc)
 	case channel.KeyUC:
 		return ensureUCCredential(acc)
+	case channel.KeyMyapp:
+		return ensureMyappCredential(acc)
 	case channel.KeyVivo:
 		// openToken 没有独立校验接口；uni_sauth（buildPayload 里）就是验证，
 		// 失败时在那边翻译成"重新登录"提示
@@ -633,3 +661,5 @@ func expireChannelCredential(acc *Account, reason, hintKind, hintTitle, hintTail
 	setAuthHint(hintKind, hintTitle,
 		fmt.Sprintf("%s 的%s，%s", displayName(*acc), hintTitle, hintTail), acc.Username, acc.PlayerID)
 }
+
+

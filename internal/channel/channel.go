@@ -22,12 +22,15 @@ const (
 	// 以及「游戏内扫码」整包导入。
 	// 扫完拿到的是整包，直接能用；没有网页登录，所以下面没有专门的登录脚本。
 	KeyUC = "uc_platform"
+	// KeyMyapp 是腾讯应用宝（YSDK）。微信 / QQ 两条扫码链路都是纯 HTTP，
+	// 不需要浏览器，也不开窗。
+	KeyMyapp = "myapp"
 )
 
 // Known 判断是不是本工具管理的渠道服账号。
 func Known(key string) bool {
 	switch key {
-	case KeyBili, KeyM4399, KeyVivo, KeyUC:
+	case KeyBili, KeyM4399, KeyVivo, KeyUC, KeyMyapp:
 		return true
 	}
 	return false
@@ -44,6 +47,8 @@ func LabelOf(key string) string {
 		return "vivo"
 	case KeyUC:
 		return "九游"
+	case KeyMyapp:
+		return "应用宝"
 	}
 	return key
 }
@@ -83,6 +88,8 @@ func InfoOf(key string) (netsec.ChannelInfo, bool) {
 		return vivoInfo, true
 	case KeyUC:
 		return ucInfo, true
+	case KeyMyapp:
+		return myappInfo, true
 	}
 	return netsec.ChannelInfo{}, false
 }
@@ -115,6 +122,15 @@ var (
 	vivoInfo = netsec.ChannelInfo{
 		Login:          "nearme_vivo",
 		SDKVersion:     "4.7.2.0",
+		GetAccessToken: "1",
+		Realname:       `{"realname_type": 0, "age": 22}`,
+	}
+	// myappInfo 是应用宝（YSDK）的渠道参数。
+	// login_channel 必须是 "myapp"（YSDK 的渠道名），sdk_version 是 YSDK 协议版本 2.2.2，
+	// 与服务端下发插件时的 host 版本一致。
+	myappInfo = netsec.ChannelInfo{
+		Login:          "myapp",
+		SDKVersion:     "2.2.2",
 		GetAccessToken: "1",
 		Realname:       `{"realname_type": 0, "age": 22}`,
 	}

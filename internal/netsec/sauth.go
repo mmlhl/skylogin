@@ -29,6 +29,16 @@ type ChannelInfo struct {
 	SDKVersion     string
 	GetAccessToken string
 	Realname       string
+
+	// ExtraData 是 uni_sauth 的 extra_data 原文，空表示用调用方给的默认值。
+	//
+	// 只有应用宝（myapp）需要：它的 extra_data 是一整段渠道会话 JSON
+	// （login_type / session_id / session_type / openid / openkey / pf / pfkey），
+	// 而且必须和 SessionOverride 是同一枚 atk。为空时服务端直接回
+	// code=400 "invalid param: extra_data"，票据签不出来。
+	ExtraData string
+	// SessionOverride 覆盖 SAUTH 的 sessionid（应用宝用 atk）。
+	SessionOverride string
 }
 
 // HuaweiChannelInfo 华为渠道（存量账号，默认值）。
@@ -150,10 +160,20 @@ func NewLoginPayloadChan(authResp map[string]any, sauthSession, payloadToken, pl
 		return nil, err
 	}
 
+	// 应用宝的 extra_data 来自渠道会话（ch.ExtraData），不是 playerLevel 那个字段。
+	// 这里以前写死 playerLevel，导致票据里的 extra_data 恒为空，游戏拿到票也不认。
+	extraData := playerLevel
+	if ch.ExtraData != "" {
+		extraData = ch.ExtraData
+	}
+	if ch.SessionOverride != "" {
+		sauthSession = ch.SessionOverride
+		payloadToken = ch.SessionOverride
+	}
 	custom := map[string]any{
 		"anonymous":          "",
 		"get_access_token":   ch.GetAccessToken,
-		"extra_data":         playerLevel,
+		"extra_data":         extraData,
 		"timestamp":          ts,
 		"realname":           ch.Realname,
 		"login_channel":      ch.Login,
@@ -161,7 +181,7 @@ func NewLoginPayloadChan(authResp map[string]any, sauthSession, payloadToken, pl
 		"source_app_channel": ch.Login,
 		"sdk_version":        ch.SDKVersion,
 	}
-	extraUnisdk := buildExtraUnisdk(NewSAUTH(playerID, sauthSession, profile.ShortGameID, custom, dev), userName, playerLevel, ts, dev, ch)
+	extraUnisdk := buildExtraUnisdk(NewSAUTH(playerID, sauthSession, profile.ShortGameID, custom, dev), userName, extraData, ts, dev, ch)
 	extraJSON, _ := json.Marshal(extraUnisdk)
 
 	body := map[string]string{
@@ -252,3 +272,4 @@ func NeteaseChannelInfo() ChannelInfo {
 		Realname:       `{"realname_type": 0, "duration": 0}`,
 	}
 }
+

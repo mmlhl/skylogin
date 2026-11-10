@@ -211,3 +211,35 @@ vivo 的静默续期（`refreshVivoCredential`）失败仍会标过期。那条�
 `Test-NetConnection www.baidu.com -Port 443`：
 通了是代理问题，不通是本地拦截（hosts / 安全软件 / TUN 残留）。
 注意 10061 是"对方回 RST"，10060 才是超时，两者含义完全不同。
+
+## 应用宝渠道（2026-11-10 接入）
+
+**链路**：微信 / QQ 两条扫码，都是纯 HTTP，不开窗、不需要浏览器。
+
+- 微信：`wx_scan_code_login` → 微信二维码 → 长轮询 → `wx_verify_code` → atk/rtk
+- QQ：`m_authorize` → `xlogin` → `ptqrshow` → `ptqrlogin`（**必须带 `pt_openlogin_data`**）→ `QQCodeLogin`
+
+**代码位置**
+
+| 想改什么 | 去哪个文件 |
+|---|---|
+| QQ 扫码协议 | `internal/myapp/qq.go` |
+| 微信续期 | `internal/myapp/refresh.go` |
+| 渠道注册与两个扫码方式 | `internal/channel/myapp.go` |
+| 落库、extra_data 拼装、续期 | `internal/app/myappaccount.go` |
+| 取票时的身份参数 | `internal/app/app.go` 的 `buildSauth` |
+
+**寿命**
+
+| 渠道 | 凭证 | 续期 |
+|---|---|---|
+| 微信 | atk 2h / rtk 30 天可滚动 | 有，能永久续 |
+| QQ | atk 60 天 | **无**（YSDK 没实现，反编译确认） |
+
+**二维码怎么到界面**：后端生成后存进 `loginProgress.QR`，经
+`/api/myapp/login/status` 的 `qr` 字段（PNG base64）下发，
+前端 `ChannelAskDialog` 显示。`loginProgress.set()` 会保留 QR，否则文案更新会冲掉。
+
+**关对话框必须调 `/api/channel/login/cancel`**：扫码最长阻塞 5 分钟，
+不取消的话 `tracker.begin` 一直拦着，用户再点就是"没反应"。
+轮询用 `PollCtx` / `PollQQCtx`，取消能立刻断开长轮询。

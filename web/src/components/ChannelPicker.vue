@@ -17,7 +17,7 @@
  */
 import { computed, ref, watch } from "vue";
 import { ChevronLeft, X } from "lucide-vue-next";
-import type { LoginEntryView } from "../api/types";
+import type { LoginEntryView, LoginMethodView } from "../api/types";
 
 /** 渲染用的扁平项 */
 interface Item {
@@ -27,6 +27,8 @@ interface Item {
   hint: string;
   initial: string;
   kind: string;
+  /** 方式标识（应用宝的微信/QQ 都是 kind=qr，靠它区分） */
+  method: string;
 }
 
 const props = defineProps<{
@@ -37,7 +39,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "update:show", v: boolean): void;
-  (e: "pick", v: { action: string; kind: string }): void;
+  (e: "pick", v: { action: string; kind: string; method: string }): void;
 }>();
 
 /** 展开中的二级分组 id（弹窗内部状态，不惊动父层） */
@@ -50,7 +52,7 @@ watch(
 );
 
 /** 把一个入口的某个方式转成可点项 */
-function toItem(entry: LoginEntryView, m: { kind: string; label: string; hint: string }): Item {
+function toItem(entry: LoginEntryView, m: LoginMethodView): Item {
   return {
     id: `${entry.id}:${m.kind}`,
     action: entry.action,
@@ -58,6 +60,7 @@ function toItem(entry: LoginEntryView, m: { kind: string; label: string; hint: s
     hint: m.hint,
     initial: entry.initial,
     kind: m.kind,
+    method: m.method || m.label,
   };
 }
 
@@ -85,6 +88,7 @@ const items = computed<Item[]>(() => {
       hint: e.hint,
       initial: e.initial,
       kind: e.group ? "group" : (e.methods[0]?.kind ?? ""),
+      method: e.group ? "" : (e.methods[0]?.method || e.methods[0]?.label || ""),
     }));
 });
 
@@ -113,7 +117,7 @@ function onPick(item: Item) {
     groupId.value = item.id;
     return;
   }
-  emit("pick", { action: item.action, kind: item.kind });
+  emit("pick", { action: item.action, kind: item.kind, method: item.method });
 }
 
 function close() {
@@ -275,3 +279,7 @@ function close() {
   color: var(--faint);
 }
 </style>
+
+
+
+

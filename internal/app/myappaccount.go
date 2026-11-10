@@ -20,7 +20,9 @@ import (
 	"fmt"
 	"time"
 
+	"skylogin/internal/channel"
 	"skylogin/internal/device"
+	"skylogin/internal/myapp"
 	"skylogin/internal/profile"
 )
 
@@ -195,3 +197,233 @@ func TryMyAppVariants(c myappCred, dev *device.ClientProfile, log func(string, .
 	}
 	return Account{}, false
 }
+
+// ── 应用宝：新框架（channel.Provider）的落库与续期 ──────────────────
+//
+// 与上面的 SaveMyAppAccount / TryMyAppVariants 是两条路：
+// 那两个是老入口（DLL 扫码拿整包），下面这套是 channel 层扫码拿凭证后统一落库。
+// 共用同一个 Account.MyappCred 字段，结构一致，互不影响。
+
+// myappCredData 是 MyappCred 里存的 JSON，字段与 channel 层 Cred.Extra["cred"] 对齐。
+type myappCredData struct {
+	Platform  string `json:"platform"` // wechat / qq
+	OpenID    string `json:"openid"`
+	ATK       string `json:"atk"`
+	PTK       string `json:"ptk,omitempty"`
+	RTK       string `json:"rtk,omitempty"`
+	PF        string `json:"pf,omitempty"`
+	PFKey     string `json:"pfkey,omitempty"`
+	ATKExpire int64  `json:"atk_expire,omitempty"`
+	IssuedAt  int64  `json:"issued_at,omitempty"`
+	NickName  string `json:"nickname,omitempty"`
+	// LastCheck 是最后一次成功保活（qq_verify_login）的时间。
+	// 用来观察"服务端是否在每次校验时滑动续期"——如果 60 天后 atk 还能用，
+	// 说明能续，QQ 也能做成永久免密。
+	LastCheck int64 `json:"last_check,omitempty"`
+}
+
+// myappExtraData 拼 uni_sauth 的 extra_data。
+//
+// 微信和 QQ 的三元组不一样，这是实测抓包确认的（见 .ai/04 踩坑记录）：
+//
+//	微信 login_type=8 session_id=hy_gameid session_type=wc_actoken
+//	QQ   login_type=2 session_id=openid    session_type=kp_actoken
+//
+// 拿 QQ 的三元组去喂微信的 atk 会直接失败，且报错不会提到三元组，很难排查。
+func myappExtraData(d myappCredData) string {
+	loginType := 8
+	sessionID := "hy_gameid"
+	sessionType := "wc_actoken"
+	if d.Platform == "qq" {
+		loginType = 2
+		sessionID = "openid"
+		sessionType = "kp_actoken"
+	}
+	extra, _ := json.Marshal(map[string]any{
+		"login_type":   loginType,
+		"session_id":   sessionID,
+		"session_type": sessionType,
+		"openid":       d.OpenID,
+		"openkey":      d.ATK,
+		"pf":           d.PF,
+		"pfkey":        d.PFKey,
+		"zoneid":       "1",
+	})
+	return string(extra)
+}
+
+// finalizeMyapp 应用宝落库：先过一遍 uni_sauth，再组装 Account。
+//
+// uni_sauth 是"这份凭证真能换到光遇登录态"的唯一证据，光拿到 atk 不算数。
+func finalizeMyapp(key string, cred channel.Cred) (Account, error) {
+	raw := cred.Extra["cred"]
+	var d myappCredData
+	if err := json.Unmarshal([]byte(raw), &d); err != nil {
+		return Account{}, fmt.Errorf("应用宝登录材料损坏: %w", err)
+	}
+	if d.OpenID == "" || d.ATK == "" {
+		return Account{}, fmt.Errorf("应用宝登录材料不完整（缺 openid / atk）")
+	}
+	if cred.UID != "" && d.OpenID != cred.UID {
+		return Account{}, fmt.Errorf("应用宝登录的账号与凭证不一致，已取消保存")
+	}
+
+	if err := channelSAUTHWithExtra(key, d.OpenID, d.ATK, myappExtraData(d)); err != nil {
+		// 网络不通时保留登录结果：凭证是刚扫码拿到的，启动时还会再验一次。
+		// 让用户白扫一遍是最伤的。
+		if channel.IsNetwork(err) {
+			logf("应用宝凭证在线验证暂时失败（%v），保留本次登录结果", err)
+		} else {
+			return Account{}, err
+		}
+	}
+
+	name := d.NickName
+	if name == "" {
+		name = "应用宝 " + tailOf(d.OpenID, 6)
+	}
+	a50dev, _ := ensureA50DeviceID()
+	now := time.Now().Unix()
+	return Account{
+		Name:         name,
+		NickName:     name,
+		Username:     name,
+		Channel:      key,
+		UserID:       d.OpenID,
+		PlayerID:     d.OpenID,
+		GameAuthSign: d.ATK,
+		DeviceID:     a50dev,
+		Source:       "myapp",
+		LoginMethod:  string(cred.Method),
+		CredState:    "ok",
+		LastCheck:    now,
+		UpdatedAt:    now,
+		MyappCred:    raw,
+	}, nil
+}
+
+
+// myappRefreshLead 距过期不足这么多秒就提前续期，避免卡在临界点上启动失败。
+//
+// 必须小于微信 atk 的实际寿命（7200 秒）。取 30 分钟足够：
+// 官方行为是 atk 未过期时 refresh 返回同一个 atk 但刷新有效期，
+// 所以提前续不会有副作用。
+const myappRefreshLead = 30 * 60
+
+// ensureMyappCredential 应用宝启动前保活。
+//
+// 微信：用 refresh_token 换新 atk，rtk 每次都会滚新，能一直续下去。
+// QQ  ：YSDK 侧根本没有续期接口（反编译确认），60 天到期只能重扫，
+//       所以这里对 QQ 只在**确认过期**时才标失效。
+func ensureMyappCredential(acc *Account) error {
+	if acc.MyappCred == "" {
+		// 没有续期材料：可能是导入时丢了。不能直接判死——
+		// atk 本身可能还有效，交给后面的 uni_sauth 去验。
+		return nil
+	}
+	var d myappCredData
+	if err := json.Unmarshal([]byte(acc.MyappCred), &d); err != nil {
+		expireChannelCredential(acc, "应用宝登录材料损坏", "myapp_expired",
+			"应用宝登录已过期", "请重新扫码添加该账号")
+		return fmt.Errorf("应用宝登录已过期，请重新扫码添加该账号")
+	}
+
+	now := time.Now().Unix()
+	expired := d.ATKExpire > 0 && now >= d.ATKExpire
+
+	// QQ：没有换 token 的接口，但 YSDK 自己有个定时任务 UserTask
+	// （YSDKAutoLogin，默认每 30 分钟）拿本地 atk 重走 qq_verify_login。
+	// 这里模拟它：每次启动校验一次。
+	//
+	// 注意不能放到下面"离到期还远就直接返回"之后——60 天内都算"还远"，
+	// 放后面等于永不执行。失败也不影响启动（本地 atk 照样能用）。
+	if d.Platform == "qq" {
+		if !expired {
+			if pf, pfKey, kerr := myapp.QQKeepAlive(d.ATK, d.OpenID, d.PTK); kerr == nil {
+				if pf != "" {
+					d.PF = pf
+				}
+				if pfKey != "" {
+					d.PFKey = pfKey
+				}
+				d.LastCheck = now
+				if raw, e := json.Marshal(d); e == nil {
+					acc.MyappCred = string(raw)
+					_ = saveAccount(*acc)
+				}
+				logf("应用宝 QQ 账号 %s：atk 保活成功（服务端是否顺延有效期待观察）", displayName(*acc))
+			} else {
+				logf("应用宝 QQ 账号 %s：保活未通过（%v），继续使用本地 atk", displayName(*acc), kerr)
+			}
+			return nil
+		}
+		// 确认已过期：QQ 没有续期手段，只能重扫
+		expireChannelCredential(acc, "应用宝 QQ 登录已失效", "myapp_expired",
+			"应用宝登录已过期", "QQ 登录约 60 天需要重新扫码")
+		return fmt.Errorf("应用宝 QQ 登录已过期，请重新扫码")
+	}
+
+	// 微信：还有效且离到期还远 → 不必打服务器
+	if !expired && (d.ATKExpire == 0 || now < d.ATKExpire-myappRefreshLead) {
+		return nil
+	}
+
+	if d.RTK == "" {
+		if expired {
+			expireChannelCredential(acc, "应用宝微信登录已失效", "myapp_expired",
+				"应用宝登录已过期", "请重新扫码添加该账号")
+			return fmt.Errorf("应用宝微信登录已过期，请重新扫码")
+		}
+		return nil
+	}
+
+	res, err := myapp.RefreshWxToken(d.RTK)
+	if err != nil {
+		if expired {
+			expireChannelCredential(acc, "应用宝微信登录已失效", "myapp_expired",
+				"应用宝登录已过期", "请重新扫码添加该账号")
+			return fmt.Errorf("应用宝微信登录已过期，请重新扫码")
+		}
+		logf("应用宝凭证刷新失败，继续使用本地缓存: %v", err)
+		return nil
+	}
+
+	// 身份不能变：万一 openid 变了说明换号了，别覆盖原账号
+	if res.OpenID != "" && d.OpenID != "" && res.OpenID != d.OpenID {
+		expireChannelCredential(acc, "应用宝账号身份已变更", "myapp_expired",
+			"应用宝登录已过期", "请重新扫码添加该账号")
+		return fmt.Errorf("应用宝登录已过期，请重新扫码添加该账号")
+	}
+
+	d.ATK = res.ATK
+	d.RTK = res.RTK
+	d.ATKExpire = myapp.ExpireAtFrom(res.ExpiresIn)
+	d.IssuedAt = now
+	raw, _ := json.Marshal(d)
+
+	acc.GameAuthSign = d.ATK
+	acc.MyappCred = string(raw)
+	acc.CredState = "ok"
+	acc.LastCheck = now
+	acc.UpdatedAt = now
+	_ = saveAccount(*acc)
+	logf("应用宝账号 %s：微信凭证已静默续期", displayName(*acc))
+	return nil
+}
+
+
+// myappCredOf 从账号里解析应用宝凭证；没有或损坏时返回 false。
+func myappCredOf(acc Account) (myappCredData, bool) {
+	var d myappCredData
+	if acc.MyappCred == "" {
+		return d, false
+	}
+	if json.Unmarshal([]byte(acc.MyappCred), &d) != nil {
+		return d, false
+	}
+	if d.ATK == "" || d.OpenID == "" {
+		return d, false
+	}
+	return d, true
+}
+

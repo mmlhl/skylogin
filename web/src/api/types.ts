@@ -6,7 +6,7 @@
  */
 
 /** 渠道：华为渠道 / 网易官方 / B站渠道 */
-export type Channel = "huawei" | "netease" | "bilibili" | "m4399" | "vivo" | "uc_platform";
+export type Channel = "huawei" | "netease" | "bilibili" | "m4399" | "vivo" | "uc_platform" | "myapp";
 
 /** 左栏里的一个账号（由 Go 侧的 accountView 组装） */
 export interface AccountView {
@@ -192,6 +192,8 @@ export interface LoginMethodView {
   kind: string;
   label: string;
   hint: string;
+  /** 方式的唯一标识（回传给后端）；同一 kind 有多个方式时靠它区分 */
+  method?: string;
 }
 
 /**
@@ -235,3 +237,4 @@ export interface ApiResult {
   message?: string;
   [key: string]: unknown;
 }
+

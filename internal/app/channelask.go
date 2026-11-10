@@ -7,6 +7,7 @@ package app
 // 这里用一个带 channel 的会话把两边接起来，Method 那边看到的就是一个同步阻塞的 Ask。
 
 import (
+	"encoding/base64"
 	"context"
 	"fmt"
 	"sync"
@@ -130,9 +131,16 @@ type channelProgress struct {
 // Method 传进来的细分阶段名不参与状态机，否则界面会显示在一个不存在的状态上。
 func (p *channelProgress) Phase(_, msg string) { p.tr.set("waiting", msg, "", "") }
 
-// QR 密码/短信这两种方式不出二维码，留空实现。
-func (p *channelProgress) QR([]byte, string) {}
+// QR 把二维码交给界面显示。应用宝的微信 / QQ 扫码走这里——
+// 纯协议登录没有窗口，用户只能看我们自己画的二维码。
+func (p *channelProgress) QR(png []byte, _ string) {
+	if len(png) == 0 {
+		return
+	}
+	p.tr.setQR(base64.StdEncoding.EncodeToString(png))
+}
 
 func (p *channelProgress) Ask(ctx context.Context, s channel.Slice) (map[string]string, error) {
 	return p.ask.Ask(ctx, s)
 }
+

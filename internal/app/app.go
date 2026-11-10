@@ -82,6 +82,13 @@ type Account struct {
 	// 华为那种 sdk_info 里带 accessToken 的渠道用不到它；vivo 这类
 	// 只给整包的渠道就靠它登录（见 channelpackage.go）。
 	UnisdkData string `json:"unisdk_data,omitempty"`
+	// MyappCred 是应用宝（YSDK）的完整登录材料：openid / atk / rtk / pf / pfkey…
+	//
+	// 为什么要单独存一份：uni_sauth 的 extra_data 必须用**当前**这份拼
+	// （微信 login_type=8 + hy_gameid + wc_actoken，QQ login_type=2 + openid +
+	// kp_actoken），续期后 atk 会变，拿旧 atk 拼出来的 extra_data 会被服务端拒。
+	// 微信有 rtk 可以一直滚；QQ 没有续期接口，60 天后只能重扫。
+	MyappCred string `json:"myapp_cred,omitempty"`
 	// RowKey 是"同一个玩家、不同来源"要各占一行时的行键。
 	//
 	// 典型场景：同一个 vivo 号，先用网页登录加过（channel=vivo），后来又用
@@ -244,6 +251,7 @@ func RunUI(title string) error {
 		// 协议登录（九游账号密码）：不开窗，直接算凭证
 		ChannelPasswordStart: StartChannelMethodLogin,
 		ChannelAnswer:        AnswerChannelAsk,
+		ChannelCancel:        StopChannelMethodLogin,
 		AuthHint:             authHintView,
 		LaunchAlert:          launchAlertView,
 		Version:              func() string { return Version },
@@ -390,6 +398,26 @@ func buildSauth(acc Account, dev *device.ClientProfile) (sauthParts, error) {
 		"source_app_channel": ch.Login,
 		"sdk_version":        ch.SDKVersion,
 	}
+	// 应用宝：extra_data 必须用**当前**凭证现场拼，不能沿用 PlayerLevel 那个字段。
+	//
+	// 内容随渠道而变（微信 login_type=8 + hy_gameid + wc_actoken，
+	// QQ login_type=2 + openid + kp_actoken），而且续期后 atk 会换新，
+	// 拿旧的拼出来服务端会拒。
+	if acc.Channel == channel.KeyMyapp {
+		if d, ok := myappCredOf(acc); ok {
+			// 三个地方要同时对齐，少一个票据就不对：
+			//   ch.ExtraData        → 票据里的 extra_data（游戏靠它认渠道）
+			//   ch.SessionOverride  → SAUTH 的 sessionid 与票据 token（必须是 atk）
+			//   custom              → uni_sauth 请求体里的 extra_data
+			ch.ExtraData = myappExtraData(d)
+			ch.SessionOverride = d.ATK
+			custom["extra_data"] = ch.ExtraData
+			p.Session = d.ATK
+			p.Token = d.ATK
+			p.UID = d.OpenID
+		}
+	}
+
 	// 整包里 DLL 拼好的字段全部照抄，只保留我们自己生成的那几个随机值
 	if pkg != nil {
 		for k, v := range pkg.Fields {
@@ -464,3 +492,6 @@ func cleanupOnExit() {
 	restoreAllShims(sky, root)
 	fever.RemoveMirrors(sky, root)
 }
+
+
+

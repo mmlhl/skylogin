@@ -36,6 +36,8 @@ const emit = defineEmits<{ (e: "update:show", v: boolean): void; (e: "done"): vo
 const message = ref("");
 const error = ref("");
 const ask = ref<Ask | null>(null);
+/** 后端给的二维码（PNG 的 base64）：应用宝微信/QQ 扫码走这里 */
+const qr = ref("");
 const values = ref<Record<string, string>>({});
 const busy = ref(false);
 let timer: number | undefined;
@@ -52,6 +54,7 @@ async function poll() {
   try {
     const st = (await api.channelLoginStatus(props.kind)) as Record<string, any>;
     message.value = st.message || "";
+    qr.value = st.qr || "";
 
     if (st.ask) {
       const next = st.ask as Ask;
@@ -84,6 +87,7 @@ async function start() {
   error.value = "";
   ask.value = null;
   values.value = {};
+  qr.value = "";
   try {
     await api.startProtocolLogin(props.kind, props.method || "password");
     void poll();
@@ -116,6 +120,8 @@ function pick(v: string) {
 
 function close() {
   clearTimer();
+  // 关掉就取消后端流程：扫码会一直等，不取消的话 tracker 会占着 5 分钟
+  void api.cancelChannelLogin(props.kind).catch(() => {});
   emit("update:show", false);
 }
 
@@ -167,6 +173,11 @@ watch(
       <div class="actions">
         <button type="button" class="ghost" @click="close">取消</button>
       </div>
+    </div>
+
+    <!-- 扫码：二维码由后端生成后经 /status 送过来 -->
+    <div v-else-if="qr" class="qrbox">
+      <img :src="'data:image/png;base64,' + qr" alt="扫码登录" />
     </div>
 
     <!-- 等待后端 -->
@@ -233,6 +244,19 @@ input:focus {
 
 .choice:hover {
   border-color: var(--gold);
+}
+
+.qrbox {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 4px;
+}
+.qrbox img {
+  width: 220px;
+  height: 220px;
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px;
 }
 
 .waiting {
@@ -306,5 +330,7 @@ input:focus {
   cursor: default;
 }
 </style>
+
+
 
 

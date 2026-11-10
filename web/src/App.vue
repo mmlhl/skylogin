@@ -98,7 +98,7 @@ function openPicker(mode: string, acc?: { accountId: string; name: string; login
  * 只认 action + kind，不认识具体渠道名：新增渠道时后端多一项，
  * 这里最多加一个 case（甚至不用改，如果方式已经覆盖）。
  */
-async function onPick(entry: { action: string; kind: string }) {
+async function onPick(entry: { action: string; kind: string; method: string }) {
   showChannelPicker.value = false;
   const target = refreshTarget.value?.accountId || "";
 
@@ -152,7 +152,14 @@ async function onPick(entry: { action: string; kind: string }) {
       showSMS.value = true;
       return;
     case "qr":
-      // 二维码类：目前只有华为（在 WebView 里扫码）
+      // 应用宝（微信 / QQ）：纯 HTTP 扫码，不开窗、不需要浏览器。
+      // 二维码由后端生成后经 /status 送过来，复用协议登录那个对话框。
+      if (entry.action === "myapp") {
+        askKind.value = "myapp";
+        askMethod.value = entry.method || "微信扫码";
+        return;
+      }
+      // 其余二维码类：华为（在 WebView 里扫码）
       showHuawei.value = true;
       return;
     default:
@@ -217,6 +224,7 @@ onUnmounted(() => {
               :show="!!askKind"
               :kind="askKind"
               :method="askMethod"
+              :title="askKind === 'myapp' ? '登录应用宝账号' : undefined"
               @update:show="(v: boolean) => !v && (askKind = '')"
             />
             <MpayLoginDialog v-model:show="showMpayLogin" />
@@ -247,4 +255,6 @@ onUnmounted(() => {
   position: relative;
 }
 </style>
+
+
 

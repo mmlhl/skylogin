@@ -108,6 +108,9 @@ type Hooks struct {
 	// 进度复用 ChannelLoginStatus（其中 ask 非空时要弹表单）。
 	ChannelPasswordStart func(key, method string) error
 	ChannelAnswer        func(key string, vals map[string]string) error
+	// ChannelCancel 取消正在进行的协议登录（用户关掉扫码对话框时调）。
+	// 不取消的话 tracker 会一直占着，5 分钟内无法重新登录。
+	ChannelCancel func(key string)
 	AuthHint             func() map[string]any
 	LaunchAlert          func() map[string]any
 	Version              func() string
@@ -726,7 +729,7 @@ func (s *Server) Handler() http.Handler {
 		})
 	}
 	// 进度查询对所有渠道开放：协议登录（九游账号密码）也查同一份状态
-	for _, ck := range []string{channel.KeyBili, channel.KeyM4399, channel.KeyVivo, channel.KeyUC} {
+	for _, ck := range []string{channel.KeyBili, channel.KeyM4399, channel.KeyVivo, channel.KeyUC, channel.KeyMyapp} {
 		key := ck
 		mux.HandleFunc("/api/"+key+"/login/status", func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, s.hooks.ChannelLoginStatus(key))
@@ -757,6 +760,17 @@ func (s *Server) Handler() http.Handler {
 		if err := s.hooks.ChannelAnswer(body.Channel, body.Values); err != nil {
 			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
 			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
+	})
+
+	mux.HandleFunc("/api/channel/login/cancel", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Channel string `json:"channel"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&body)
+		if body.Channel != "" && s.hooks.ChannelCancel != nil {
+			s.hooks.ChannelCancel(body.Channel)
 		}
 		writeJSON(w, map[string]any{"ok": true})
 	})
@@ -981,3 +995,5 @@ func staticHandler() http.Handler {
 		files.ServeHTTP(w, r2)
 	})
 }
+
+
