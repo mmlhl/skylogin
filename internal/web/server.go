@@ -62,7 +62,9 @@ type Hooks struct {
 	Rename          func(string, string) error
 	SetGameID       func(string, string) error
 	Delete          func(string) error
-	// AccountQuality 保存某行账号的游戏画质/帧率偏好。
+	// GameSettings 保存某行账号的"游戏设置"：画质 / 帧率 / 显示方式。
+	// mode 空 = 跟随游戏，fps 0 = 跟随游戏，display 空 = 跟随游戏。
+	GameSettings func(id, mode string, fps int, display string) error
 	SetMaskTitles func(on bool) bool
 	// GetBuild 返回 CI 注入的构建号（本地构建为 0）。
 	GetBuild func() int
@@ -488,6 +490,34 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/accounts/region", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if err := s.hooks.SetRegion(q.Get("id"), q.Get("region")); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
+	})
+
+	// 账号级"游戏设置"：画质 / 帧率 / 显示方式（窗口还是全屏）。
+	//
+	// 以前前端调的是 /api/accounts/quality，后端**从来没注册过这个路由**，
+	// 请求 404 → 前端 request() 解析失败抛错 → 没有 catch → 静默失败。
+	// 表现就是"在界面里设了画质，关掉窗口再打开又变回去了"。
+	mux.HandleFunc("/api/accounts/gamesettings", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, map[string]any{"ok": false, "message": "只支持 POST"})
+			return
+		}
+		if s.hooks.GameSettings == nil {
+			writeJSON(w, map[string]any{"ok": false, "message": "当前版本不支持保存游戏设置"})
+			return
+		}
+		var body struct {
+			ID      string `json:"id"`
+			Mode    string `json:"mode"`
+			Fps     int    `json:"fps"`
+			Display string `json:"display"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&body)
+		if err := s.hooks.GameSettings(body.ID, body.Mode, body.Fps, body.Display); err != nil {
 			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
 			return
 		}

@@ -350,6 +350,11 @@ func startClient(acc Account, dev *device.ClientProfile, ticket, channel string)
 	if err != nil {
 		return "", err
 	}
+	if launchExe == exe {
+		// 用原目录单开：把账号的"游戏设置"写进游戏自己那份 preferences.sav。
+		// 走镜像的（副本行）由 makeIndependentPrefs 在建镜像时写。
+		applySingleLaunchPrefs(acc, filepath.Dir(exe))
+	}
 	return launchAt(acc, dev, ticket, channel, launchExe, "", 0, -1)
 }
 
@@ -387,7 +392,7 @@ func launchAt(acc Account, dev *device.ClientProfile, ticket, channel, launchExe
 	if exe := resolveSkyPath(); exe != "" {
 		go watchMirrors(exe)
 	}
-	go func(pid uint32, accID, name string) {
+	go func(pid uint32, accID, name, root string) {
 		// 有的游戏会用"已有实例"检测直接退出，这里把这种情况记下来
 		time.Sleep(8 * time.Second)
 		if !fever.ProcessAlive(pid) {
@@ -401,8 +406,12 @@ func launchAt(acc Account, dev *device.ClientProfile, ticket, channel, launchExe
 				fellback = nil
 			}
 			clientsMu.Unlock()
+			return
 		}
-	}(uint32(p.Pid), accountKey(acc), displayName(acc))
+		// 还活着：看看游戏有没有把设置文件按自己的值改回去
+		// （"画质/窗口化写了却不生效"最常见的一种情况）
+		logPrefsState("启动 8 秒后（"+name+"）", root)
+	}(uint32(p.Pid), accountKey(acc), displayName(acc), filepath.Dir(launchExe))
 	return fmt.Sprintf("已启动光遇\n游戏路径: %s", launchExe), nil
 }
 
@@ -460,6 +469,13 @@ func prepareMirror(exe string, acc Account, ovMode string, ovFps int) (string, e
 // 建镜像的时候，读它就知道该写窗口还是全屏。
 var nextFullscreen atomic.Bool
 
+// inMultiBatch 标记"当前正在批量建镜像"。
+//
+// 为什么需要：建镜像这件事单开（副本行）也会走，而显示方式的来源不同——
+// 多开听多开弹窗的，单开听账号自己的。用这个标志区分，避免单开的副本
+// 被"多开默认 = 窗口"覆盖掉。
+var inMultiBatch atomic.Bool
+
 // makeIndependentPrefs 把镜像里 preferences.sav 的硬链接断开成独立副本，
 // 并按设置预写多开默认：显示模式（窗口 / 全屏）+ 画质 / 帧率。
 //
@@ -484,8 +500,15 @@ func makeIndependentPrefs(srcExe, mirrorRoot string, acc Account, ovMode string,
 
 	// 预写默认值：显示模式（平铺 / 堆叠 = 窗口，全屏 = 全屏）+ 画质 / 帧率。
 	// 取值优先级：多开弹窗的本次覆盖 > 账号自己的配置 > 跟随游戏（不写）。
+	//
+	// 显示方式单独处理：多开时一律听多开弹窗的（平铺/堆叠必须窗口模式，
+	// 否则窗口排不动）；只有"副本单开"这种非多开批次才用账号自己的设置。
 	mode, fps := effectiveQuality(acc, ovMode, ovFps)
-	out, err := prefs.ApplyMultiDefaults(b, nextFullscreen.Load(), mode, fps)
+	fullscreen := nextFullscreen.Load()
+	if !inMultiBatch.Load() && acc.DisplayMode != "" {
+		fullscreen = acc.DisplayMode == "fullscreen"
+	}
+	out, err := prefs.ApplyMultiDefaults(b, fullscreen, mode, fps)
 	if err != nil {
 		logf("镜像设置预写失败: %v", err)
 		return
@@ -495,7 +518,7 @@ func makeIndependentPrefs(srcExe, mirrorRoot string, acc Account, ovMode string,
 		return
 	}
 	extra := "窗口模式"
-	if nextFullscreen.Load() {
+	if fullscreen {
 		extra = "全屏"
 	}
 	if mode != "" {
@@ -505,6 +528,40 @@ func makeIndependentPrefs(srcExe, mirrorRoot string, acc Account, ovMode string,
 		extra += fmt.Sprintf("，帧率 %d", fps)
 	}
 	logf("镜像设置已独立并预写（%s）: %s", extra, rel)
+	// 写完再从磁盘回读一遍：日志里"已预写"只说明调用成功，
+	// 万一写的是另一份文件、或被安全软件改回去，回读才能看出来。
+	logPrefsState("镜像预写回读", mirrorRoot)
+}
+
+// prefsPathOf 返回某个安装目录里的设置文件（PREF 格式）路径。
+func prefsPathOf(installRoot string) string {
+	return filepath.Join(installRoot, "data", "ThatGameCompany", "com.netease.sky", "preferences.sav")
+}
+
+// logPrefsState 打一行"这份设置文件现在是什么样"。
+//
+// 排查"画质/窗口化写了却不生效"时，光看"已预写"没用：要分清是
+//
+//	① 文件没写进去 / ② 镜像被清理掉了 / ③ 游戏启动后又按自己的值改回去了。
+//
+// 所以在预写后、启动后、退出前各读一次，日志里一对比就知道是哪一种。
+func logPrefsState(tag, installRoot string) {
+	p := prefsPathOf(installRoot)
+	st, err := os.Stat(p)
+	if err != nil {
+		logf("%s：设置文件不存在（%s）", tag, p)
+		return
+	}
+	b, rerr := os.ReadFile(p)
+	if rerr != nil {
+		logf("%s：设置文件读不了（%v）", tag, rerr)
+		return
+	}
+	fs, _ := prefs.ReadValue(b, prefs.KeyFullscreen)
+	qm, _ := prefs.ReadString(b, prefs.KeyQualityMode)
+	qf, _ := prefs.ReadValue(b, prefs.KeyQualityFps)
+	logf("%s：%d 字节，改于 %s，Fullscreen=%d 画质=%q 帧率=%d",
+		tag, len(b), st.ModTime().Format("15:04:05"), fs, qm, qf)
 }
 
 // effectiveQuality 计算某行账号本次启动实际预写的画质/帧率：
@@ -542,11 +599,16 @@ func stopAccount(accountID string) error {
 // watchMirrors 等所有客户端退出后清理镜像目录。
 func watchMirrors(exe string) {
 	root := fever.MirrorRoot(exe, loadConfig().MirrorDir)
+	// 先给"我这一批"的镜像目录拍个快照：清理协程要等"全部客户端退出"
+	// 之后才动手，慢一点的机器上这个等待可能拖到下一批多开已经开始建目录，
+	// 那时整目录删除会把新镜像删掉——新客户端从半删的目录里启动，
+	// 表现是闪退、或者 preferences.sav 没了（画质/窗口化"不生效"）。
+	known := mirrorDirNames(exe, root)
 	for i := 0; i < 360; i++ { // 最多盯 30 分钟
 		if liveClients() == 0 {
 			time.Sleep(3 * time.Second) // 给游戏收尾留时间
-			restoreAllShims(exe, root)  // 先把浏览器还原，再删目录
-			fever.RemoveMirrors(exe, root)
+			restoreShimsOf(root, known) // 先把浏览器还原，再删目录
+			fever.RemoveMirrorDirs(root, known)
 			// 做一轮清理就收工：仍有游戏在用的镜像会被跳过，它们的
 			// 清理由自己批次的观察者或下次启动的清理兜底。旧观察者
 			// 继续空转只会和新批次的启动赛跑。
@@ -554,6 +616,33 @@ func watchMirrors(exe string) {
 			return
 		}
 		time.Sleep(5 * time.Second)
+	}
+}
+
+// mirrorDirNames 列出某个游戏当前所有的镜像目录名（相对镜像根目录）。
+func mirrorDirNames(exe, root string) []string {
+	prefix := filepath.Base(filepath.Dir(exe)) + "-"
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() && strings.HasPrefix(e.Name(), prefix) {
+			out = append(out, e.Name())
+		}
+	}
+	return out
+}
+
+// restoreShimsOf 只还原指定目录里的浏览器壳（清理协程用快照里的名字）。
+func restoreShimsOf(root string, names []string) {
+	for _, name := range names {
+		dir := filepath.Join(root, name)
+		if len(fever.ProcessesFrom(dir)) > 0 {
+			continue // 还在用的镜像不动（浏览器壳还原会让运行中的游戏找不到文件）
+		}
+		restoreWebviewShim(dir)
 	}
 }
 

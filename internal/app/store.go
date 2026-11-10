@@ -551,6 +551,9 @@ func accountView(a Account) map[string]any {
 		"copyKey":     a.CopyKey,
 		"qualityMode": a.QualityMode,
 		"qualityFps":  a.QualityFps,
+		// displayMode = 单开时的显示方式："" 跟随游戏 / windowed / fullscreen。
+		// 多开不读它（多开的显示方式由多开弹窗决定，平铺必须窗口模式）。
+		"displayMode": a.DisplayMode,
 		"region":      a.Region,
 		"regionLabel": regionLabel(a.Region),
 		// hosted = 这个号住在某个平台账号的寄宿槽里。
@@ -706,3 +709,50 @@ func setAccountCredState(userID, state, reason string) {
 // 没有走这把锁——那些路径写的是整行凭证，语义不同，一起锁会把登录流程
 // 和凭证查看绑死。真要统一得改成读写分离的文件层，那是另一件事。
 var accountsMu sync.Mutex
+
+// saveGameSettings 保存某一行账号的"游戏设置"：画质 / 帧率 / 显示方式。
+//
+// 只改这三个字段、只动这一行：
+//   - 不碰凭证（凭证是按 PlayerID 共享的，改画质不该顺带改它）；
+//   - 不走 saveAccount（它会顺手 setCurrent，改个画质把用户选中的账号挪走很烦）。
+func saveGameSettings(accountID, mode string, fps int, display string) error {
+	if accountID == "" {
+		return fmt.Errorf("缺少账号")
+	}
+	if !validQualityModes[mode] {
+		return fmt.Errorf("不认识的画质档位: %s", mode)
+	}
+	if !validQualityFps[fps] {
+		return fmt.Errorf("不支持的帧率: %d（可选 30 / 60 / 120）", fps)
+	}
+	if !validDisplays[display] {
+		return fmt.Errorf("不认识的显示方式: %s", display)
+	}
+
+	accountsMu.Lock()
+	defer accountsMu.Unlock()
+	list, err := loadAccounts()
+	if err != nil {
+		return fmt.Errorf("读账号失败: %w", err)
+	}
+	found := false
+	for i := range list {
+		if accountKey(list[i]) != accountID {
+			continue
+		}
+		list[i].QualityMode = mode
+		list[i].QualityFps = fps
+		list[i].DisplayMode = display
+		list[i].UpdatedAt = time.Now().Unix()
+		found = true
+		break
+	}
+	if !found {
+		return fmt.Errorf("没找到这个账号")
+	}
+	if err := saveList(list); err != nil {
+		return fmt.Errorf("保存失败: %w", err)
+	}
+	logf("游戏设置已保存: %s（画质=%q 帧率=%d 显示=%q）", accountID, mode, fps, display)
+	return nil
+}

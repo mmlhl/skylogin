@@ -162,3 +162,40 @@ func TestDeviceCustomEndpoint(t *testing.T) {
 		t.Errorf("ok = %v", out["ok"])
 	}
 }
+
+// TestGameSettingsRoute 守住"/api/accounts/gamesettings"这条路由。
+//
+// 之前前端调 /api/accounts/quality，后端压根没注册路由，请求落到单页兜底
+// 返回 HTML，前端解析失败又没人 catch —— 用户看到的就是"设了没反应、
+// 关掉窗口再打开又变回去"。这条测试就是防止再出现"前端在调、后端没这回事"。
+func TestGameSettingsRoute(t *testing.T) {
+	var gotID, gotMode, gotDisplay string
+	var gotFps int
+	called := false
+	srv := New(Hooks{
+		GameSettings: func(id, mode string, fps int, display string) error {
+			called = true
+			gotID, gotMode, gotFps, gotDisplay = id, mode, fps, display
+			return nil
+		},
+	})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/api/accounts/gamesettings", "application/json",
+		strings.NewReader(`{"id":"a1","mode":"Presentation","fps":120,"display":"windowed"}`))
+	if err != nil {
+		t.Fatalf("请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("响应不是 JSON（说明路由没注册，落到了单页兜底）: %v", err)
+	}
+	if out["ok"] != true {
+		t.Fatalf("保存失败: %v", out["message"])
+	}
+	if !called || gotID != "a1" || gotMode != "Presentation" || gotFps != 120 || gotDisplay != "windowed" {
+		t.Fatalf("回调参数不对: id=%q mode=%q fps=%d display=%q", gotID, gotMode, gotFps, gotDisplay)
+	}
+}

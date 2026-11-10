@@ -36,6 +36,12 @@ type Account struct {
 	// QualityFps 0 = 同上。多开预写镜像设置时优先用它，其次才是全局默认。
 	QualityMode string `json:"quality_mode,omitempty"`
 	QualityFps  int    `json:"quality_fps,omitempty"`
+	// DisplayMode 是这一行账号的显示方式：""=跟随游戏（不动游戏自己的设置），
+	// windowed=窗口，fullscreen=全屏。
+	//
+	// 只在**单开**时生效：多开的显示方式由多开弹窗统一决定（平铺/堆叠必须是
+	// 窗口模式，否则窗口排不动），账号这一项不参与。
+	DisplayMode string `json:"display_mode,omitempty"`
 
 	// CopyKey 是副本的本机键（"PlayerID-2" 这样的后缀），允许同一个
 	// PlayerID 存多条记录（典型：同一网易账号再建一个副本在另一个区玩）。
@@ -206,6 +212,7 @@ func RunUI(title string) error {
 		Delete:          deleteAccount,
 		Duplicate:       duplicateAccount,
 		SetRegion:       setAccountRegion,
+		GameSettings:    saveGameSettings,
 		HeadlessLogin:   HeadlessLoginAccount,
 		HostPool:        func() any { return HostPoolStatus() },
 		SetMaskTitles:   setMaskTitlesOn,

@@ -139,28 +139,99 @@ func PatchString(data []byte, key, value string) ([]byte, error) {
 	return out, nil
 }
 
+// addPair 在键值表末尾插入一条空记录（值先留 0），返回新文件和这条记录的偏移。
+//
+// 做法：在 stringsBase 处插 8 字节，stringsBase 相应 +8；键名追加到文件尾。
+// **偏移都是相对 stringsBase 的**，所以字符串区整体后移不会影响已有条目——
+// 这是"安全地加一个新键"的关键。
+func addPair(data []byte, key string) (out []byte, pairOff int, err error) {
+	if len(data) < entries || string(data[:4]) != magic {
+		return nil, 0, errors.New("不是 PREF 格式")
+	}
+	base := int(u32(data, stringsBase))
+	if base < entries || base > len(data) {
+		return nil, 0, fmt.Errorf("字符串区起点异常: %d", base)
+	}
+	newBase := base + pairSize
+
+	out = make([]byte, 0, len(data)+pairSize+len(key)+1)
+	out = append(out, data[:base]...)            // 头 + 已有键值对
+	out = append(out, make([]byte, pairSize)...) // 新记录占位
+	out = append(out, data[base:]...)            // 字符串区整体后移
+	putU32(out, stringsBase, uint32(newBase))
+
+	// 键名追加到文件尾（相对新 base 的偏移）
+	keyRel := len(out) - newBase
+	out = append(out, []byte(key)...)
+	out = append(out, 0)
+	putU32(out, base, uint32(keyRel))
+	putU32(out, base+4, 0)
+	return out, base, nil
+}
+
+// EnsureValue 保证数值键存在：已有就改值，没有就插一条。
+//
+// 为什么需要：真实文件里这些键**不一定有**（引擎只写它当前有的设置）。
+// 以前用 PatchValue，键不存在就返回错误，调用方只好整次预写放弃——
+// 结果是"窗口化"也跟着不生效。现在缺键就地补上。
+func EnsureValue(data []byte, key string, value uint32) ([]byte, error) {
+	if off, err := findPair(data, key); err == nil {
+		out := append([]byte(nil), data...)
+		putU32(out, off, value)
+		return out, nil
+	}
+	out, pairOff, err := addPair(data, key)
+	if err != nil {
+		return nil, err
+	}
+	putU32(out, pairOff+4, value)
+	return out, nil
+}
+
+// EnsureString 保证字符串键存在：值指向字符串区（表里有同值就复用，没有就追加）。
+func EnsureString(data []byte, key, value string) ([]byte, error) {
+	if _, err := findPair(data, key); err == nil {
+		return PatchString(data, key, value)
+	}
+	out, pairOff, err := addPair(data, key)
+	if err != nil {
+		return nil, err
+	}
+	base := int(u32(out, stringsBase))
+	valRel := len(out) - base
+	out = append(out, []byte(value)...)
+	out = append(out, 0)
+	putU32(out, pairOff+4, uint32(valRel))
+	return out, nil
+}
+
 // ApplyMultiDefaults 按多开默认值改写设置：显示模式 + 可选画质 / 帧率。
 // fullscreen=false 写窗口模式（网格排列的前提），true 写全屏（全屏堆叠用）。
 // qualityMode 传空 = 跟随游戏；qualityFps <= 0 = 跟随游戏。
+//
+// 三项的权重不一样：
+//   - 显示模式是**硬需求**（窗口排列的前提），写不进去就整体失败；
+//   - 画质 / 帧率是加分项，缺键会补一条，补不上也不该连累显示模式。
+//
+// 2026-11-11 之前这里是"任何一项失败就整体放弃"，于是老模板（只有 34 个键、
+// 没有 quality_*）上连全屏都写不进去，用户看到的是"窗口化也不生效"。
 func ApplyMultiDefaults(data []byte, fullscreen bool, qualityMode string, qualityFps int) ([]byte, error) {
 	mode := uint32(0) // 0 = 窗口模式，实测 1 = 全屏
 	if fullscreen {
 		mode = 1
 	}
-	out, err := PatchValue(data, KeyFullscreen, mode)
+	out, err := EnsureValue(data, KeyFullscreen, mode)
 	if err != nil {
 		return nil, err
 	}
 	if qualityFps > 0 {
-		out, err = PatchValue(out, KeyQualityFps, uint32(qualityFps))
-		if err != nil {
-			return nil, err
+		if next, e := EnsureValue(out, KeyQualityFps, uint32(qualityFps)); e == nil {
+			out = next
 		}
 	}
 	if qualityMode != "" {
-		out, err = PatchString(out, KeyQualityMode, qualityMode)
-		if err != nil {
-			return nil, err
+		if next, e := EnsureString(out, KeyQualityMode, qualityMode); e == nil {
+			out = next
 		}
 	}
 	return out, nil
