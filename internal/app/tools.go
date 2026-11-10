@@ -200,64 +200,65 @@ func settingsView() map[string]any {
 
 // applySettings 保存界面上改动的设置；传 nil 表示不改这一项。
 func applySettings(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int) error {
-	c := loadConfig()
-	if skyExe != nil {
-		p := *skyExe
-		if p != "" {
-			if _, err := os.Stat(p); err != nil {
-				return fmt.Errorf("这个路径不存在: %s", p)
+	return updateConfig(func(c *Config) error {
+		if skyExe != nil {
+			p := *skyExe
+			if p != "" {
+				if _, err := os.Stat(p); err != nil {
+					return fmt.Errorf("这个路径不存在: %s", p)
+				}
+				if filepath.Base(p) != "sky.exe" {
+					return errors.New("请选择 sky.exe（光遇主程序）")
+				}
 			}
-			if filepath.Base(p) != "sky.exe" {
-				return errors.New("请选择 sky.exe（光遇主程序）")
+			c.SkyExe = p
+		}
+		if deviceID != nil {
+			c.MpayDeviceID = *deviceID
+		}
+		if mirrorDir != nil {
+			v := strings.TrimSpace(*mirrorDir)
+			if v == "" {
+				c.MirrorDir = "" // 空 = 回到默认（游戏盘根目录）
+			} else {
+				sky := c.SkyExe
+				if sky == "" {
+					sky = resolveSkyPath()
+				}
+				if sky == "" {
+					return errors.New("还没设置游戏路径，请先选择 sky.exe")
+				}
+				// 硬链接只能在同一磁盘内建立；跨盘会退化成复制（多占好几 GB）
+				if !fever.SameVolume(v, filepath.Dir(sky)) {
+					return fmt.Errorf("多开目录必须和游戏在同一个磁盘（游戏在 %s）", filepath.VolumeName(filepath.Dir(sky)))
+				}
+				// 只接受空目录或还不存在的目录，避免动到用户已有的文件
+				if entries, err := os.ReadDir(v); err == nil && len(entries) > 0 {
+					return errors.New("多开目录必须是空文件夹（里面已有文件的话请换一个）")
+				}
+				c.MirrorDir = v
 			}
 		}
-		c.SkyExe = p
-	}
-	if deviceID != nil {
-		c.MpayDeviceID = *deviceID
-	}
-	if mirrorDir != nil {
-		v := strings.TrimSpace(*mirrorDir)
-		if v == "" {
-			c.MirrorDir = "" // 空 = 回到默认（游戏盘根目录）
-		} else {
-			sky := c.SkyExe
-			if sky == "" {
-				sky = resolveSkyPath()
-			}
-			if sky == "" {
-				return errors.New("还没设置游戏路径，请先选择 sky.exe")
-			}
-			// 硬链接只能在同一磁盘内建立；跨盘会退化成复制（多占好几 GB）
-			if !fever.SameVolume(v, filepath.Dir(sky)) {
-				return fmt.Errorf("多开目录必须和游戏在同一个磁盘（游戏在 %s）", filepath.VolumeName(filepath.Dir(sky)))
-			}
-			// 只接受空目录或还不存在的目录，避免动到用户已有的文件
-			if entries, err := os.ReadDir(v); err == nil && len(entries) > 0 {
-				return errors.New("多开目录必须是空文件夹（里面已有文件的话请换一个）")
-			}
-			c.MirrorDir = v
+		if closeLauncher != nil {
+			c.CloseLauncher = closeLauncher
 		}
-	}
-	if closeLauncher != nil {
-		c.CloseLauncher = closeLauncher
-	}
-	if multiQuality != nil {
-		c.MultiQualityMode = strings.TrimSpace(*multiQuality)
-	}
-	if mouseArbiter != nil {
-		c.MouseArbiterEnabled = *mouseArbiter
-	}
-	if arbiterMin != nil {
-		c.MouseArbiterMin = *arbiterMin
-	}
-	if multiFps != nil {
-		if *multiFps < 0 {
-			*multiFps = 0
+		if multiQuality != nil {
+			c.MultiQualityMode = strings.TrimSpace(*multiQuality)
 		}
-		c.MultiQualityFps = *multiFps
-	}
-	return saveConfig(c)
+		if mouseArbiter != nil {
+			c.MouseArbiterEnabled = *mouseArbiter
+		}
+		if arbiterMin != nil {
+			c.MouseArbiterMin = *arbiterMin
+		}
+		if multiFps != nil {
+			if *multiFps < 0 {
+				*multiFps = 0
+			}
+			c.MultiQualityFps = *multiFps
+		}
+		return nil
+	})
 }
 
 // cleanupOptions 是"清理工具数据"里勾选的项。

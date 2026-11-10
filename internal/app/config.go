@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"path/filepath"
+	"sync"
 
 	"skylogin/internal/secretfile"
 )
@@ -105,6 +106,25 @@ func (c Config) CloseLauncherEnabled() bool {
 
 func configPath() string { return filepath.Join(dataDir(), "config.json") }
 
+// configMu 串行化配置的"读-改-写"。
+//
+// 为什么必须有：saveConfig 是整文件覆盖，而界面上每个开关都走
+// "loadConfig → 改一个字段 → saveConfig"。两个 goroutine 同时这么做时，
+// 后写的那个会把先写的那份**旧快照**带回去，等于把对方的修改吞掉
+// （典型：拖完左栏宽度立刻关窗，窗口位置没存上）。
+var configMu sync.Mutex
+
+// updateConfig 串行地改配置：mut 里只改需要的字段，返回错误就不落盘。
+func updateConfig(mut func(*Config) error) error {
+	configMu.Lock()
+	defer configMu.Unlock()
+	c := loadConfig()
+	if err := mut(&c); err != nil {
+		return err
+	}
+	return saveConfig(c)
+}
+
 func loadConfig() Config {
 	var c Config
 	b, err := secretfile.ReadFile(configPath())
@@ -141,30 +161,33 @@ func saveRailWidth(w int) error {
 	if w > RailWidthMax {
 		w = RailWidthMax
 	}
-	c := loadConfig()
-	c.RailWidth = w
-	return saveConfig(c)
+	return updateConfig(func(c *Config) error {
+		c.RailWidth = w
+		return nil
+	})
 }
 
 // saveWallRect 保存监控墙窗口的位置尺寸（拖拽结束/关闭时回传）。
 func saveWallRect(x, y, w, h int) error {
-	c := loadConfig()
-	c.WallX, c.WallY, c.WallW, c.WallH = x, y, w, h
-	return saveConfig(c)
+	return updateConfig(func(c *Config) error {
+		c.WallX, c.WallY, c.WallW, c.WallH = x, y, w, h
+		return nil
+	})
 }
 
 // saveWinRect 保存主界面的窗口位置尺寸（物理像素 + 当时的主屏分辨率，
 // 由 win 层停稳后/关窗前回传）。
 func saveWinRect(x, y, w, h, screenW, screenH int, zoomed bool) error {
-	c := loadConfig()
-	c.WinX, c.WinY, c.WinW, c.WinH = x, y, w, h
-	c.WinScreenW, c.WinScreenH = screenW, screenH
-	if zoomed {
-		c.WinMax = 1
-	} else {
-		c.WinMax = 0
-	}
-	return saveConfig(c)
+	return updateConfig(func(c *Config) error {
+		c.WinX, c.WinY, c.WinW, c.WinH = x, y, w, h
+		c.WinScreenW, c.WinScreenH = screenW, screenH
+		if zoomed {
+			c.WinMax = 1
+		} else {
+			c.WinMax = 0
+		}
+		return nil
+	})
 }
 
 // saveShell 保存界面壳偏好。存储用 1-based（0..3 → 1..4）：
@@ -174,9 +197,10 @@ func saveShell(shell int) error {
 	if shell < 0 || shell > 3 {
 		shell = 0
 	}
-	c := loadConfig()
-	c.UiShell = shell + 1
-	return saveConfig(c)
+	return updateConfig(func(c *Config) error {
+		c.UiShell = shell + 1
+		return nil
+	})
 }
 
 // loadShellIndex 读壳偏好；从未设置返回 -1（前端用默认壳=控制台）。
