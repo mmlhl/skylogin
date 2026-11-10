@@ -329,3 +329,25 @@ func KillProcessTree(pid uint32) error {
 	}
 	return nil
 }
+
+// RemoveMirrorDirs 只删指定的镜像目录（名字相对镜像根目录）。
+//
+// 为什么按名字删，而不是"把根目录下所有 sky-* 都删掉"：清理协程要等
+// "全部客户端退出"之后才动手，慢机器上这个等待可能拖到下一批多开已经
+// 把新镜像建好。这时整批删除会把新镜像删掉——新客户端从半删的目录里
+// 启动，表现是批量闪退，或者 preferences.sav 消失（游戏重建默认设置，
+// 用户看到的就是"画质/窗口化不生效"）。
+func RemoveMirrorDirs(root string, names []string) {
+	if root == "" || len(names) == 0 {
+		_ = os.Remove(root)
+		return
+	}
+	for _, name := range names {
+		dir := filepath.Join(root, name)
+		if len(ProcessesFrom(dir)) > 0 {
+			continue
+		}
+		removeDir(dir)
+	}
+	_ = os.Remove(root) // 空了就顺手删掉
+}
