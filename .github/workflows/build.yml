@@ -111,9 +111,12 @@ jobs:
         run: |
           $bt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mmZ")
           $ldflags = "-s -w -H=windowsgui -X skylogin/internal/app.Version=${{ steps.ver.outputs.version }} -X skylogin/internal/app.Build=${{ github.run_number }} -X skylogin/internal/app.BuildTime=$bt"
-          go build -trimpath -ldflags $ldflags -o skylogin.exe ./cmd/skylogin
-          $size = [math]::Round((Get-Item skylogin.exe).Length / 1MB, 1)
-          Write-Host "构建完成: skylogin.exe ($size MB)"
+          # 产物名带版本号：用户下到本地后能一眼看出是哪个版本，反馈问题时
+          # 也不会把两个版本的 exe 混成一个（以前一律叫 skylogin.exe）
+          $out = "skylogin-v${{ steps.ver.outputs.version }}.exe"
+          go build -trimpath -ldflags $ldflags -o $out ./cmd/skylogin
+          $size = [math]::Round((Get-Item $out).Length / 1MB, 1)
+          Write-Host "构建完成: $out ($size MB)"
 
       - name: 登记新版本到更新服务
         if: steps.ver.outputs.release == 'true' && env.APP_KEY != ''
@@ -140,7 +143,7 @@ jobs:
           tag_name: v${{ steps.ver.outputs.version }}
           name: v${{ steps.ver.outputs.version }}
           # 只放 exe；源码压缩包 GitHub 会自动附在 Release 上
-          files: skylogin.exe
+          files: skylogin-v${{ steps.ver.outputs.version }}.exe
           draft: false
           prerelease: false
           # 结构：本次更新置顶，使用说明收在后面
@@ -162,14 +165,14 @@ jobs:
             | **B站** | 🔵 验证码 / 账号密码 | 🔵 |
             | **4399** | 🟢 验证码 / 账号密码 | 🔵 |
             | **九游** | 🔵 手机号 + 密码 / 验证码 | 🔵 |
-            | **应用宝** | ⚪ | ⚪ |
+            | **应用宝** | 🔵 微信 / QQ 扫码 | ⚪ |
 
             🟢 长期可用 · 🟡 临时（约 1 小时，过期后重新扫一次）· 🔵 未知（还没观察到失效，说不准）· ⚪ 不支持
 
             选对应的渠道名进入即可，比如 vivo 账号就点「vivo账号」。
 
             **怎么用**
-            1. 下载 `skylogin.exe`，双击运行（会请求管理员权限，光遇本体需要）
+            1. 下载 `skylogin-v${{ steps.ver.outputs.version }}.exe`，双击运行（会请求管理员权限，光遇本体需要）
             2. 点「添加账号」选登录方式，按提示扫码或登录
             3. 选好账号，点「启动光遇」；多开在「多开」里配置
 
@@ -183,6 +186,6 @@ jobs:
             - 出问题时点界面里的「打开日志」，把 log.txt 发出来
             - 目前仍在开发阶段，遇到问题请到交流群反馈
 
-            **下载**：本页 `skylogin.exe`，或 [123 网盘](https://1822397226.share.123pan.cn/123pan/87OJjv-vhMl?pwd=l5sX)
+            **下载**：本页 `skylogin-v${{ steps.ver.outputs.version }}.exe`，或 [123 网盘](https://1822397226.share.123pan.cn/123pan/87OJjv-vhMl?pwd=l5sX)
 
             **交流群**：QQ `1053415841`（使用问题、反馈都放这里）
