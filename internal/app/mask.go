@@ -71,9 +71,12 @@ func setMaskTitlesOn(on bool) bool {
 	maskLoaded = true
 	maskMu.Unlock()
 
-	c := loadConfig()
-	c.MaskTitles = &on
-	_ = saveConfig(c)
+	// 走 updateConfig：这个开关和窗口尺寸、公告已读等其它字段共用同一份
+	// 配置文件，整份覆盖写会把别处刚写的字段吞掉（见 config.go 的 configMu）。
+	_ = updateConfig(func(c *Config) error {
+		c.MaskTitles = &on
+		return nil
+	})
 
 	applyMaskEverywhere(on)
 	return on

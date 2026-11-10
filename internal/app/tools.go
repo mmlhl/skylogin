@@ -126,12 +126,16 @@ func normalizeVersion(v string) string {
 }
 
 // setReleaseState 记录公告已读序号 / 被忽略的更新构建号 / 待更新的构建号。
+//
+// 走 updateConfig 而不是"读整份 → 改三个字段 → 整份写回"：公告被标记已读
+// 和窗口尺寸被保存常常前后脚发生，整份覆盖会把对方刚写的字段吞掉。
 func setReleaseState(annSeen, dismissedBuild, pendingBuild int) error {
-	c := loadConfig()
-	c.ReleaseAnnSeen = annSeen
-	c.UpdateDismissedBuild = dismissedBuild
-	c.UpdatePendingBuild = pendingBuild
-	return saveConfig(c)
+	return updateConfig(func(c *Config) error {
+		c.ReleaseAnnSeen = annSeen
+		c.UpdateDismissedBuild = dismissedBuild
+		c.UpdatePendingBuild = pendingBuild
+		return nil
+	})
 }
 
 // buildNumber 把注入的构建号转成整数（本地未注入时 0 = 开发版，不做自动检查）。
