@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"skylogin/internal/channel"
@@ -636,15 +637,27 @@ func tokenSaLabel(sa int) string {
 //	ok      凭证可用
 //	stale   可能过期（比如签票失败过一次），下次启动会再试
 //	expired 确认失效，需要用户重新获取凭证
+//
+// 注意：**调用方必须先确认这是"真的失效"**（见 credstate.go 的 credErrFrom）。
+// 网络不通、超时、DNS 失败一律不许走到这里写 expired。
 func setAccountCredState(userID, state, reason string) {
 	if userID == "" {
 		return
 	}
+	// 读-改-写要串行：后台凭证查看、多开预检、用户刷新可能同时改同一个文件，
+	// 不加锁会互相覆盖（典型后果：刚写进去的 ok 被另一路读到的旧快照改回 expired）。
+	accountsMu.Lock()
+	defer accountsMu.Unlock()
+
 	list, err := loadAccounts()
 	if err != nil {
 		return
 	}
 	changed := false
+	// 记下这次命中的行的两种 id：横幅的 AccountID 有的调用方传 UserID
+	// （签票路径），有的传 PlayerID（凭证查看路径），清横幅时必须两个都试，
+	// 否则会出现"状态已经 ok 了，横幅还挂着"。
+	var hitKeys []string
 	for i := range list {
 		if !managedChannel(list[i].Channel) {
 			continue
@@ -655,15 +668,31 @@ func setAccountCredState(userID, state, reason string) {
 		list[i].CredState = state
 		list[i].LastError = reason
 		list[i].LastCheck = time.Now().Unix()
+		hitKeys = append(hitKeys, list[i].UserID, list[i].PlayerID)
 		changed = true
 	}
-	if changed {
-		if err := saveList(list); err != nil {
-			logf("保存账号状态失败: %v", err)
-			return
-		}
-		if state == "expired" {
-			setAuthHint("netease_expired", "登录凭证已过期", "登录信息已过期，请刷新凭证", "", userID)
+	if !changed {
+		return
+	}
+	if err := saveList(list); err != nil {
+		logf("保存账号状态失败: %v", err)
+		return
+	}
+	switch state {
+	case "expired":
+		setAuthHint("netease_expired", "登录凭证已过期", "登录信息已过期，请刷新凭证", "", userID)
+	case "ok":
+		// 凭证恢复了就把这个号的横幅撤掉，否则用户会一直看到过期的提示。
+		for _, k := range hitKeys {
+			clearAuthHintFor(k)
 		}
 	}
 }
+
+// accountsMu 保护账号文件的"读-改-写"序列。
+//
+// 边界：它只串行化 setAccountCredState 之间（最常见的是后台凭证查看
+// 撞上多开预检）。saveAccount / saveList 的其他调用点（登录落盘等）
+// 没有走这把锁——那些路径写的是整行凭证，语义不同，一起锁会把登录流程
+// 和凭证查看绑死。真要统一得改成读写分离的文件层，那是另一件事。
+var accountsMu sync.Mutex

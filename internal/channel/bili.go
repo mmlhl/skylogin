@@ -18,12 +18,17 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+
+	"skylogin/internal/netdns"
 )
+
+// biliHTTP 是 B站接口的 HTTP 客户端：带超时，且系统 DNS 挂了会走公共 DNS 兜底。
+var biliHTTP = netdns.NewClient(15 * time.Second)
 
 const (
 	// BiliGameID 光遇 B站服的 bili game id。
@@ -57,6 +62,13 @@ func biliSign(params map[string]string, appKey string) string {
 }
 
 // Verify 验证 access_key 是否可用，返回 B站 uid 与昵称（请求本身会续期 30 天）。
+//
+// 返回的错误可能有两种性质，调用方必须用 IsNetwork 分开看：
+//   - 网络类（连不上 / 超时 / DNS 失败）：**不能**据此判断凭证好坏
+//   - 业务类（服务端回了 code != 0）：才是凭证真的失效
+//
+// 客户端带 15 秒超时：以前用 http.PostForm（等于 DefaultClient，没有超时），
+// 网络卡住时请求会一直挂着，用户看到的就是"点了没反应"。
 func (c BiliClient) Verify(accessKey string) (uid, uname string, err error) {
 	p := map[string]string{
 		"access_key": accessKey,
@@ -69,8 +81,9 @@ func (c BiliClient) Verify(accessKey string) (uid, uname string, err error) {
 	}
 	q.Set("sign", biliSign(p, c.AppKey))
 
-	resp, err := http.PostForm(biliAutoLoginURL+"?"+q.Encode(), url.Values{})
+	resp, err := biliHTTP.PostForm(biliAutoLoginURL+"?"+q.Encode(), url.Values{})
 	if err != nil {
+		// 原样返回：*url.Error 已经能被 IsNetwork 认出来
 		return "", "", err
 	}
 	defer resp.Body.Close()

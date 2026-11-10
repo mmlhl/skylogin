@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"skylogin/internal/channel"
 	"skylogin/internal/device"
 	"skylogin/internal/huawei"
 	"skylogin/internal/mpayhost"
@@ -135,8 +136,13 @@ func savePackageChannelAccount(res mpayhost.Result, ch scanChannel, dev *device.
 	}
 	// 落库前先真发一次 uni_sauth：整包能不能换出登录态，只有试了才知道。
 	// 失败就别存，免得列表里多一个点了就报错的账号。
+	// 但网络不通时保留：凭证是刚扫出来的，重扫一遍也还是它。
 	if _, _, verr := buildPayloadFn(acc, dev); verr != nil {
-		return "", fmt.Errorf("%s 渠道凭证验证失败（%v）", ch.Label, verr)
+		if channel.IsNetwork(verr) {
+			logf("%s 渠道凭证在线验证暂时失败（%v），保留本次扫码结果", ch.Label, verr)
+		} else {
+			return "", fmt.Errorf("%s 渠道凭证验证失败（%v）", ch.Label, verr)
+		}
 	}
 
 	if err := saveScannedRow(acc, pkg.UID, pkg.Channel); err != nil {

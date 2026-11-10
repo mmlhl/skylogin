@@ -45,6 +45,28 @@ func clearAuthHint() {
 	currentHint.Title = ""
 	currentHint.Message = ""
 	currentHint.Account = ""
+	currentHint.AccountID = ""
+}
+
+// clearAuthHintFor 只撤掉指定账号的横幅。
+//
+// 为什么需要它：横幅是全局一条，但过期是账号级的事实。以前凭证恢复
+// 可用后没人清横幅，用户会一直看到"请刷新凭证"，点进去却什么都正常；
+// 而多个账号先后过期时，后一个又会覆盖前一个的提示。
+func clearAuthHintFor(accountID string) {
+	if accountID == "" {
+		return
+	}
+	currentHint.Mu.Lock()
+	defer currentHint.Mu.Unlock()
+	if currentHint.Active && currentHint.AccountID == accountID {
+		currentHint.Active = false
+		currentHint.Kind = ""
+		currentHint.Title = ""
+		currentHint.Message = ""
+		currentHint.Account = ""
+		currentHint.AccountID = ""
+	}
 }
 
 // authHintView 给界面用的结构；没有提示时返回空 map。

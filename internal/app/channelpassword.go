@@ -99,7 +99,12 @@ func finalizeUC(key string, cred channel.Cred) (Account, error) {
 		return Account{}, fmt.Errorf("九游登录材料不完整（缺 accountId）")
 	}
 	if err := channelSAUTH(key, cred.UID, cred.Secret); err != nil {
-		return Account{}, err
+		// 网络不通时保留登录结果：凭证是刚登录拿到的，启动时还会再验一次
+		if channel.IsNetwork(err) {
+			logf("%s凭证在线验证暂时失败（%v），保留本次登录结果", channel.LabelOf(key), err)
+		} else {
+			return Account{}, err
+		}
 	}
 	name := cred.Nickname
 	if name == "" {

@@ -144,6 +144,12 @@ func handleTicket(h *fever.Host, req fever.TicketRequest) bool {
 			var err error
 			t, ch, err = mintTicket(*slot.acc, slot.dev)
 			if err != nil {
+				// 网络不通时不要往下走恢复链：那些链路（重开登录窗、换票）
+				// 一样过不去，还会把账号误标成"已过期"。
+				if channel.IsNetwork(err) {
+					logf("现签票据失败（%s）: 网络不可达，凭证状态保持不变（%v）", displayName(*slot.acc), err)
+					return
+				}
 				switch slot.acc.Channel {
 				case channel.KeyVivo:
 					// vivo 的 openToken 是短命票，uni_sauth 到取票这一步才会拒。

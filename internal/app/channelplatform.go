@@ -149,6 +149,10 @@ func mintTicketByPlatform(acc Account, dev *device.ClientProfile) (string, strin
 
 	// ① 确认 token 还活着：失效的 token 也能走完一部分接口，等游戏里报错就晚了
 	if err := validateNetEaseToken(acc); err != nil {
+		// 文案要跟着错误性质走：网络问题说成"凭证已失效"会把人引到错的方向
+		if credUnverified(err) {
+			return "", "", fmt.Errorf("暂时无法确认凭证（%w）", err)
+		}
 		return "", "", fmt.Errorf("凭证已失效: %w", err)
 	}
 

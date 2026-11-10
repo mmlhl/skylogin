@@ -43,7 +43,8 @@ func (c *Client) postForm(path string, q url.Values, form url.Values) (map[strin
 
 	var out map[string]any
 	if err := json.Unmarshal(b, &out); err != nil {
-		return nil, fmt.Errorf("响应不是 JSON: %s", truncate(string(b), 200))
+		// 带上真实路径：排障时要能看出是哪一步被中间设备改写了响应
+		return nil, &NotJSONError{Path: path, Body: string(b)}
 	}
 	if code, ok := out["code"].(float64); ok && code != 0 && code != 200 {
 		reason, _ := out["reason"].(string)
@@ -121,6 +122,14 @@ func (c *Client) GetUserInfo(token, userID, deviceID, longGameID, shortGameID st
 	out, err := c.get(path, q)
 	if err != nil {
 		return nil, err
+	}
+	// 这里必须自己看业务码：get 只负责"是不是 JSON"。
+	// token 失效时服务端回的是 {"code":1306,...}，没有 user 字段，
+	// 旧代码会退化成"用户资料里没有 user"——上层就看不出这是鉴权失败，
+	// 只能一律当成"查不到"，日志里全是含糊的"用户资料查询失败"。
+	if code, ok := out["code"].(float64); ok && code != 0 && code != 200 {
+		reason, _ := out["reason"].(string)
+		return nil, &TicketError{Code: int(code), Reason: reason}
 	}
 	user, _ := out["user"].(map[string]any)
 	if user == nil {

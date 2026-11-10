@@ -145,3 +145,69 @@ web UI (Vue, dist 内嵌) ──/api/*──> 登录器 (Go, 管理员运行)
 - **新用户默认控制台界面**：壳偏好存储改 1-based，0=未设置回落默认
 
 监控墙按钮：圆角胶囊 + 主题配色（排列淡金、停止红调）。
+
+## v1.6.2 凭证判定修正（2026-11-10）
+
+起因：用户日志里 9 个网易账号全被判"不可用"，实际是本机解析不出
+`service.mkey.163.com`，凭证本身正常。
+
+**约定（以后改动必须遵守）**
+
+1. **网络失败不等于凭证失效。** 只有服务端明确回 `1306` 才能标 `expired`。
+   DNS 失败、超时、5xx、非 JSON 一律归为"暂时无法确认"：不写状态、不弹横幅、
+   不触发重登。判定入口是 `internal/mpay.Classify` + `internal/app.credErrFrom`。
+2. **6008 不是鉴权错误码。** 它是加载湾"记住槽未命中"的正常回退信号，
+   每个没走过扫码写槽的账号都会拿到。
+3. **自动重登有 10 分钟冷却**（`reloginthrottle.go`）。用户手动刷新凭证不受限。
+4. **DNS 兜底只在系统解析失败后生效**，进程内实现，不改系统配置；
+   兜底生效会写一行日志。
+5. 启动日志带 `vcs.revision`。**CI 构建一定带 `+dirty`**，这不是源码不干净：
+   workflow 里有 `npm run build` 会重新生成 `internal/web/dist`（该目录入库、
+   被 go:embed 使用），git 因此认为工作区被修改。判断"跑的是哪份代码"看
+   commit 哈希，别看 dirty 标记。
+
+**改动文件**
+
+- 新增：`internal/netdns/`、`internal/mpay/errkind.go`、
+  `internal/app/credstate.go`、`internal/app/reloginthrottle.go`、
+  `internal/app/buildinfo.go`
+- 修改：`internal/mpay/{mpay,ticket}.go`（DNS 兜底、NotJSONError、
+  `GetUserInfo` 检查业务码）、`internal/app/{start,credcheck,store,hint,
+  channelplatform,app,relogin}.go`、`internal/launcher/{launcher,session}.go`
+- 测试：`internal/mpay/errkind_test.go`、`internal/app/credstate_test.go`
+
+**未完成 / 待确认**
+
+- `status=1003`（记住账号写库失败，13 次全失败）：只出现在 1.6.0
+  （二进制里有 `游戏账号库` / `wasm invoke`）；1.6.1 已移除该功能
+  （提交 d5fe993「移除 mpay.db 直写功能」），日志里这些失败全部发生在
+  1.6.0 阶段，**不需要再修**。
+- 渠道服（B站/4399/九游/vivo）的过期判定仍按原逻辑，未纳入本轮分类。
+
+## 渠道凭证的网络误判（2026-11-10）
+
+用户反馈：机器上连 baidu / qq / github 全部 10061（连接被拒），B站登录
+因此报"B站凭证验证失败"。凭证是好的，问题在网络。
+
+**约定（渠道链路同样适用）**
+
+1. **网络失败不等于凭证失效。** 判据统一走 `internal/neterr.IsNetwork`
+   （DNS / 拨号 / TLS / 超时），mpay 与 channel 共用同一套。
+2. **`finalize*` 在验证请求网络失败时保留登录结果**，只记一条日志，
+   交给启动时的 `uni_sauth` 再验。让用户白登录一遍是最伤的。
+3. **`channelSAUTH` 包装错误必须用 `%w`。** 用 `%s` 会断开错误链，
+   上层根本分不清网络与凭证——这个坑很隐蔽。
+4. **渠道的 HTTP 客户端必须带超时。** `bili.Verify` 以前用
+   `http.PostForm`（等于 `DefaultClient`，没有超时），网络卡住时请求永久挂起。
+
+**已知未处理**
+
+vivo 的静默续期（`refreshVivoCredential`）失败仍会标过期。那条路是重开
+登录窗，失败原因混着"用户取消"和"网络问题"，暂时无法分类。
+
+**排错口诀**
+
+拿到 `actively refused`（10061）先让用户跑
+`Test-NetConnection www.baidu.com -Port 443`：
+通了是代理问题，不通是本地拦截（hosts / 安全软件 / TUN 残留）。
+注意 10061 是"对方回 RST"，10060 才是超时，两者含义完全不同。

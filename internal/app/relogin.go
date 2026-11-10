@@ -31,6 +31,8 @@ func ReloginAccount(accountID string) (map[string]any, error) {
 		return nil, errNoSavedPassword
 	}
 
+	// 用户主动点了刷新：把自动重登的冷却清掉，别让"刚试过一次"挡住他。
+	resetReloginThrottle(accountKey(acc))
 	if _, err := autoRelogin(acc); err != nil {
 		return nil, err
 	}

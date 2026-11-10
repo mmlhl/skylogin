@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	"skylogin/internal/netdns"
 )
 
 // SessionURL 平台登录接口（用 MPay token 换加载湾会话）。
@@ -35,7 +37,7 @@ func SavedAccount(sid string) (string, error) {
 	req.Header.Set("Accept", "application/json")
 	setPlatformHeaders(req)
 	req.Header.Set("sid", sid)
-	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	resp, err := netdns.NewClient(20 * time.Second).Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -74,7 +76,7 @@ func TicketForAccount(accountID, deviceID, sid string) (*TicketResult, error) {
 	if sid != "" {
 		req.Header.Set("sid", sid)
 	}
-	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	resp, err := netdns.NewClient(20 * time.Second).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +158,7 @@ func LoginExt(uid, token, deviceID, udid string) (string, error) {
 	req.Header.Set("Content-Type", "application/json")
 	setPlatformHeaders(req)
 
-	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	resp, err := netdns.NewClient(20 * time.Second).Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -196,7 +198,7 @@ func TicketForCode(code, sid string) (*TicketResult, error) {
 	if sid != "" {
 		req.Header.Set("sid", sid)
 	}
-	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	resp, err := netdns.NewClient(20 * time.Second).Do(req)
 	if err != nil {
 		return nil, err
 	}

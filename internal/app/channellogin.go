@@ -368,7 +368,9 @@ func channelSAUTH(key, uid, secret string) error {
 	}
 	resp, err := netsec.PostSigned(netsec.NewSAUTH(uid, secret, profile.ShortGameID, custom, dev), profile.ShortGameID)
 	if err != nil {
-		return fmt.Errorf("渠道身份验证失败（%s）", err.Error())
+		// 必须用 %w：用 %s 会把错误链断掉，上层就分不清"网络不通"和
+		// "凭证失效"，只能一律当失败处理（B站登录白费、账号被误标过期）。
+		return fmt.Errorf("渠道身份验证失败（%w）", err)
 	}
 	// 业务失败也是 HTTP 200，必须看响应内容：
 	// 否则失效凭证会被当成「验证通过」存下来，等启动时才炸（用户看到的就是这种）。
@@ -388,9 +390,15 @@ func VerifyChannelCredential(key, uid, secret string) error {
 
 // finalizeBili B站：auto.login 验证 access_key 活性（顺带续期 30 天、拿昵称）。
 func finalizeBili(res CapturedLoginResult) (Account, error) {
-	uid2, uname, err := channel.NewBili().Verify(res.Secret)
-	if err != nil {
-		return Account{}, fmt.Errorf("B站凭证验证失败（%s）", err.Error())
+	uid2, uname, verr := channel.NewBili().Verify(res.Secret)
+	if verr != nil {
+		// 网络原因查不了时不拦：access_key 是刚在网页里登录拿到的，
+		// 后面的 channelSAUTH 会再验一次。让用户白登录一遍最伤。
+		if channel.IsNetwork(verr) {
+			logf("B站凭证在线验证暂时失败（%v），保留本次登录结果，交给 uni_sauth 再验", verr)
+		} else {
+			return Account{}, fmt.Errorf("B站凭证验证失败（%s）", verr.Error())
+		}
 	}
 	if uname == "" {
 		uname = res.Uname
@@ -426,7 +434,12 @@ func finalizeM4399(res CapturedLoginResult) (Account, error) {
 		return Account{}, fmt.Errorf("4399 凭证校验未通过，请重新登录")
 	}
 	if err := channelSAUTH(channel.KeyM4399, res.UID, res.Secret); err != nil {
-		return Account{}, err
+		// 网络不通时保留登录结果，交给启动时再验
+		if channel.IsNetwork(err) {
+			logf("4399凭证在线验证暂时失败（%v），保留本次登录结果", err)
+		} else {
+			return Account{}, err
+		}
 	}
 	uname := res.Uname
 	if uname == "" {
@@ -450,7 +463,12 @@ func finalizeM4399(res CapturedLoginResult) (Account, error) {
 // finalizeVivo vivo：没有独立的在线校验接口，uni_sauth 即验证。
 func finalizeVivo(res CapturedLoginResult) (Account, error) {
 	if err := channelSAUTH(channel.KeyVivo, res.UID, res.Secret); err != nil {
-		return Account{}, err
+		// 网络不通时保留登录结果：openToken 是刚登录拿到的，启动时还会再验一次
+		if channel.IsNetwork(err) {
+			logf("vivo凭证在线验证暂时失败（%v），保留本次登录结果", err)
+		} else {
+			return Account{}, err
+		}
 	}
 	uname := res.Uname
 	if uname == "" {
@@ -473,6 +491,12 @@ func ensureChannelCredential(acc *Account) error {
 	case channel.KeyBili:
 		// auto.login 验证活性即续期
 		if _, _, err := channel.NewBili().Verify(acc.GameAuthSign); err != nil {
+			// 连不上 ≠ 过期。这里以前一律标 expired 并弹"请重新扫码"，
+			// 用户网络一抖，好端端的账号就被写成"已过期"，还得重扫一遍。
+			if channel.IsNetwork(err) {
+				logf("%s：B站凭证暂时无法验证（%v），保持原状态", displayName(*acc), err)
+				return nil
+			}
 			expireChannelCredential(acc, "B站登录已失效", "bili_expired", "B站登录已过期", "请重新扫码添加该账号")
 			return fmt.Errorf("B站登录已过期，请重新添加该账号")
 		}
@@ -493,6 +517,8 @@ func ensureChannelCredential(acc *Account) error {
 // state 兜底，全失败才标记过期。
 func ensureM4399Credential(acc *Account) error {
 	dev := loadM4399Device()
+	// 记下最后一次失败的原始错误：全断时要靠它区分"凭证坏了"和"网络不通"
+	var lastErr error
 
 	// oauth-check 是真值；查不了（网络原因）时继续尝试恢复
 	if valid, err := channel.M4399Check(acc.UserID, acc.GameAuthSign); err == nil && valid {
@@ -500,6 +526,8 @@ func ensureM4399Credential(acc *Account) error {
 		acc.LastCheck = time.Now().Unix()
 		_ = saveAccount(*acc)
 		return nil
+	} else if err != nil {
+		lastErr = err
 	}
 
 	// refresh_token 轮换。成功响应不含 refresh_token，保留旧值
@@ -518,12 +546,22 @@ func ensureM4399Credential(acc *Account) error {
 	if res, err := channel.M4399RefreshByToken(dev, acc.UserID, acc.RefreshToken); err == nil && res.Complete() {
 		rotate(res)
 		return nil
+	} else if err != nil {
+		lastErr = err
 	}
 	if res, err := channel.M4399RefreshByState(dev, acc.GameAuthSign); err == nil && res.Complete() {
 		rotate(res)
 		return nil
+	} else if err != nil {
+		lastErr = err
 	}
 
+	// 三条路全断：只有"服务端明确说无效"才标过期。网络全断时我们对凭证
+	// 一无所知，标过期只会让用户白重登一遍（还可能在网络恢复后显示错的提示）。
+	if lastErr != nil && channel.IsNetwork(lastErr) {
+		logf("4399账号 %s：网络不可达，无法验证凭证，保持原状态（%v）", displayName(*acc), lastErr)
+		return nil
+	}
 	expireChannelCredential(acc, "4399登录已失效", "m4399_expired", "4399登录已过期", "请重新登录该账号")
 	return fmt.Errorf("4399登录已失效，请重新登录该账号")
 }
@@ -561,6 +599,11 @@ func ensureUCCredential(acc *Account) error {
 		// 续不动不一定是过期（也可能是接口临时抽风），
 		// 所以再用 uni_sauth 确认一次，还能过就照常启动。
 		if verr := VerifyChannelCredential(channel.KeyUC, acc.UserID, acc.GameAuthSign); verr != nil {
+			// uni_sauth 也失败：网络不通时同样不能判过期，保持原状态
+			if channel.IsNetwork(verr) {
+				logf("九游账号 %s：网络不可达，无法验证凭证，保持原状态（%v）", displayName(*acc), verr)
+				return nil
+			}
 			expireChannelCredential(acc, "九游登录已失效", "uc_expired", "九游登录已过期", "请重新登录该账号")
 			return fmt.Errorf("九游登录已失效，请重新登录该账号")
 		}

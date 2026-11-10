@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"skylogin/internal/netdns"
 )
 
 // 加载湾（发烧平台自己的服务）的换票接口。
@@ -54,7 +56,7 @@ func ExchangeTicketWithSid(code, deviceID, sid string) (*TicketResult, error) {
 		q.Set("device_id", deviceID)
 	}
 
-	c := &http.Client{Timeout: 20 * time.Second}
+	c := netdns.NewClient(20 * time.Second)
 	req, err := http.NewRequest(http.MethodGet, TicketURL+"?"+q.Encode(), nil)
 	if err != nil {
 		return nil, err

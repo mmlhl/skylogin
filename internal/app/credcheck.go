@@ -73,6 +73,14 @@ func checkAllCredentials() {
 		}
 		checked++
 		if _, _, terr := mintTicket(a, dev); terr != nil {
+			// 没问到服务端（DNS / 超时 / 非 JSON）：凭证好坏未知。
+			// 这里必须原地返回，不能标 expired、不能重登——否则一次断网
+			// 就会把全部账号刷成"不可用"，还会引发连环重登（见 relogin.go）。
+			if credUnverified(terr) {
+				logf("凭证查看：%s 暂时无法确认（%v），保持原状态", displayName(a), terr)
+				time.Sleep(credCheckGap)
+				continue
+			}
 			// 凭证坏了，先试着自己救：有保存的账号密码就无头重登一次。
 			// 一轮最多救 maxReloginPerRound 个，避免密码本身错了还反复打接口。
 			if relogin < maxReloginPerRound && hasSavedPassword(a) {
@@ -106,6 +114,11 @@ const maxReloginPerRound = 2
 // autoReloginAndVerify 自动重登，并用新凭证真的签一次票确认可用。
 // 光看"登录成功"不够：服务端可能给出一个换不了票的凭证。
 func autoReloginAndVerify(acc Account, dev *device.ClientProfile) (Account, error) {
+	// 走同一套冷却：mintTicket 里已经重登过的号，这里不该再来一次。
+	// 两处都重登的话，同一个号一轮里会登录两遍，白打接口还更容易触发风控。
+	if !allowRelogin(accountKey(acc)) {
+		return acc, errors.New("刚自动重登过，本轮不再重试")
+	}
 	if _, err := autoRelogin(acc); err != nil {
 		return acc, err
 	}

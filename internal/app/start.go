@@ -81,9 +81,14 @@ func launchGame() (string, error) {
 		} else if acc.Source == "channelscan" {
 			// 渠道服扫码的号只有 accessToken 一把钥匙，它过期了就只能重扫，
 			// 不能像 ST 那样"先拿旧的凑合"——旧的 ts 只有 10 分钟，必失败。
-			logf("%s：渠道凭证已失效（%v），需要重新扫码", displayName(acc), rerr)
-			expireChannelCredential(&acc, "渠道凭证已失效", "huawei_expired", "需要重新扫码", "请重新扫码添加")
-			return "", rerr
+			// 但网络不通时我们对凭证一无所知，不能据此判它过期。
+			if channel.IsNetwork(rerr) {
+				logf("%s：网络不可达，无法验证渠道凭证，保持原状态（%v）", displayName(acc), rerr)
+			} else {
+				logf("%s：渠道凭证已失效（%v），需要重新扫码", displayName(acc), rerr)
+				expireChannelCredential(&acc, "渠道凭证已失效", "huawei_expired", "需要重新扫码", "请重新扫码添加")
+				return "", rerr
+			}
 		} else {
 			logf("凭证刷新失败，继续使用本地缓存: %v", rerr)
 		}
@@ -109,6 +114,11 @@ func launchGame() (string, error) {
 		// 这不是"凭证过期"，是设计如此——参考客户端每次启动前都换新票。
 		// 用 Cookie 会话静默换一张新票再试一次；Cookie 也失效了才会弹登录页。
 		if perr != nil && acc.Channel == channel.KeyVivo {
+			// 连不上不是"openToken 过期"，别去开登录窗、也别标过期
+			if channel.IsNetwork(perr) {
+				logf("vivo账号 %s：网络不可达，暂时无法验证凭证（%v）", displayName(acc), perr)
+				return "", perr
+			}
 			if rerr := refreshVivoCredential(&acc); rerr != nil {
 				expireChannelCredential(&acc, "vivo登录已失效", "vivo_expired", "vivo登录已过期", "请重新登录该账号")
 				return "", rerr
@@ -350,6 +360,7 @@ func launchMany(ids []string, ovMode string, ovFps int) (string, error) {
 	// 逐个验证 / 刷新凭证：网易账号先验 token 活性（失效的签出的是废票，
 	// 游戏里只会看到网络错误），华为账号刷新 ST
 	alive := picked[:0]
+	unverified := 0
 	for _, a := range picked {
 		if a.Channel == channel.KeyBili || a.Channel == channel.KeyM4399 || a.Channel == channel.KeyVivo {
 			// 渠道账号：凭证保活，失败的这个多开就不带
@@ -359,6 +370,13 @@ func launchMany(ids []string, ovMode string, ovFps int) (string, error) {
 			}
 		} else if canUseNetEase(a) {
 			if verr := validateNetEaseToken(a); verr != nil {
+				// 没问到服务端（DNS / 超时）不等于凭证失效：不写状态、不弹横幅。
+				// 旧代码在这里一律判 expired，用户那边一断网，所有号瞬间全变"已失效"。
+				if credUnverified(verr) {
+					unverified++
+					logf("多开：%s 凭证状态暂未确认，跳过（%v）", displayName(a), verr)
+					continue
+				}
 				setAccountCredState(a.UserID, "expired", verr.Error())
 				logf("多开：%s 凭证已失效，跳过（%v）", displayName(a), verr)
 				continue
@@ -373,6 +391,11 @@ func launchMany(ids []string, ovMode string, ovFps int) (string, error) {
 		alive = append(alive, a)
 	}
 	if len(alive) < 2 {
+		// 分清是"凭证真的坏了"还是"网络连不上"：两种情况的处理完全不同，
+		// 让用户去刷新凭证解决不了 DNS 问题。
+		if unverified > 0 {
+			return "", fmt.Errorf("有 %d 个账号这次没能验证凭证（网络或 DNS 异常），暂时无法多开，请检查网络后重试", unverified)
+		}
 		return "", fmt.Errorf("凭证有效的账号不足两个，无法多开（失效的请先刷新凭证）")
 	}
 	picked = alive
@@ -465,15 +488,30 @@ func launchManyLayout(ids []string, cols, rows, w, h int, display string, ovMode
 // 会话校验很松），游戏拿到才发现是废票——玩家看到的就是游戏里一直
 // "网络错误"，工具侧毫无感知（某个网易账号"签出废票"那个问题）。用户资料接口是
 // 真实验证：token 死了必然报错。两个上下文都试，任一成功即认为活着。
+//
+// 返回值必须用 credErrFrom 分类，**不要**自己拼"token 已失效"：
+// 2026-11-10 的日志里 110 次"token 已失效"全是 DNS 解析失败，
+// 凭证是好的，误判直接引发了一轮重登风暴。
 func validateNetEaseToken(acc Account) error {
 	c := mpay.New()
 	ownLong, ownShort := ticketContextForToken(acc.MpayToken)
+	var lastErr error
 	for _, ctx := range []struct{ long, short string }{{ownLong, ownShort}, {a50Long, a50Short}} {
-		if _, err := c.GetUserInfo(acc.MpayToken, acc.UserID, acc.DeviceID, ctx.long, ctx.short); err == nil {
+		_, err := c.GetUserInfo(acc.MpayToken, acc.UserID, acc.DeviceID, ctx.long, ctx.short)
+		if err == nil {
 			return nil
 		}
+		lastErr = err
+		// 服务端已经明确说这个 token 不认，换上下文问也是一样的答案，
+		// 没必要再打一次接口（网络类失败则继续试第二个上下文，可能是上下文不对）。
+		if mpay.IsAuth(err) {
+			break
+		}
 	}
-	return fmt.Errorf("token 已失效（用户资料查询失败）")
+	if lastErr == nil {
+		return nil
+	}
+	return credErrFrom(lastErr)
 }
 
 // mintTicket 给指定账号现签一张一次性票据。
@@ -500,7 +538,17 @@ func mintTicket(acc Account, dev *device.ClientProfile) (string, string, error) 
 	if err == nil {
 		return t, ch, nil
 	}
+	// 没问到服务端（DNS / 超时）：重登同样过不去，只会白顶掉正在跑的客户端。
+	if credUnverified(err) {
+		return "", "", err
+	}
 	if !hasSavedPassword(acc) {
+		return "", "", err
+	}
+	// 同一个号在冷却窗口内只重登一次：网络故障被误判成过期时，
+	// 这里曾经是"每轮都重登"，单账号 52 秒重登 5 次（见 reloginthrottle.go）。
+	if !allowRelogin(accountKey(acc)) {
+		logf("%s：刚自动重登过，这次不再重试（%v）", displayName(acc), err)
 		return "", "", err
 	}
 	logf("%s：签票失败（%v），尝试无头重登后重试", displayName(acc), err)
@@ -556,6 +604,10 @@ func mintTicketOnce(acc Account, dev *device.ClientProfile) (string, string, err
 		// "网络错误"才知道就太晚了。验证失败当场拦下并推刷新提示。
 		if verr := validateNetEaseToken(acc); verr != nil {
 			logf("%s：免扫续期也没成功（%v）", displayName(acc), verr)
+			if credUnverified(verr) {
+				// 没问到 ≠ 失效：保持原状态，不弹横幅，也不触发重登
+				return "", "", verr
+			}
 			setAccountCredState(acc.UserID, "expired", verr.Error())
 			setAuthHint("netease_expired", "网易账号凭证已过期",
 				fmt.Sprintf("%s 的凭证已失效，请刷新凭证", displayName(acc)),
@@ -599,11 +651,24 @@ func mintTicketOnce(acc Account, dev *device.ClientProfile) (string, string, err
 				tried++
 				lastErr = err
 				logf("签票失败（%s 上下文，第 %d 次）: %v", ctx.name, attempt+1, err)
+				// 网络不可达：换上下文、再重试都是同一个结果，白等 700ms × 3。
+				// 日志里每个号在这上面白耗约 3 秒，9 个号就是半分钟。
+				if mpay.IsNetwork(err) {
+					break
+				}
 				time.Sleep(700 * time.Millisecond)
 			}
+			if mpay.IsNetwork(lastErr) {
+				break
+			}
 		}
-		setAccountCredState(acc.UserID, "expired", lastErr.Error())
-		return "", "", lastErr
+		if credExpired(credErrFrom(lastErr)) {
+			setAccountCredState(acc.UserID, "expired", lastErr.Error())
+		} else {
+			// 网络类失败：不判过期，也不覆盖上一次的 ok 状态
+			logf("%s：签票失败但没能连上服务器，凭证状态保持不变", displayName(acc))
+		}
+		return "", "", credErrFrom(lastErr)
 	}
 	p, _, err := buildPayloadFn(acc, dev)
 	if err != nil {

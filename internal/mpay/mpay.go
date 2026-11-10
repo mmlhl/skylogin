@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"skylogin/internal/netdns"
 	"skylogin/internal/netsec"
 	"skylogin/internal/profile"
 	"skylogin/internal/protocol"
@@ -37,7 +38,9 @@ type Client struct {
 func New() *Client {
 	return &Client{
 		Base: profile.MpayBaseURL,
-		http: &http.Client{Timeout: 25 * time.Second},
+		// 走带 DNS 兜底的客户端：这台机器解析不出 service.mkey.163.com 时
+		// 自动改用公共 DNS，而不是直接把"解析失败"当成凭证过期。
+		http: netdns.NewClient(25 * time.Second),
 		cv:   protocol.Get().MpayAppCv,
 	}
 }
@@ -60,7 +63,8 @@ func (c *Client) get(path string, q url.Values) (map[string]any, error) {
 	b, _ := io.ReadAll(resp.Body)
 	var out map[string]any
 	if err := json.Unmarshal(b, &out); err != nil {
-		return nil, fmt.Errorf("%s 返回非 JSON: %s", path, truncate(string(b), 300))
+		// 用专门类型：上层据此知道"没问到服务端"，不能判凭证失效
+		return nil, &NotJSONError{Path: path, Body: string(b)}
 	}
 	return out, nil
 }
