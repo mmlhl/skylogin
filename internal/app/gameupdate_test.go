@@ -22,15 +22,21 @@ func TestCheckGameUpdateNoDeadlock(t *testing.T) {
 
 	select {
 	case view := <-done:
-		if view["update_needed"] != true || view["checked"] != true {
-			t.Fatalf("比对结果不对: %v", view)
+		// 比对本身必须完成；是否提示更新取决于本机有没有本地版本基准
+		// （CI / 没装平台的机器 SkyVersionCode 为空，按规则不能瞎报更新）
+		if view["checked"] != true {
+			t.Fatalf("checked 不对: %v", view)
 		}
 		if !strings.Contains(view["latest_version"].(string), "999") {
 			t.Fatalf("latest_version 不对: %v", view)
 		}
+		local, _ := view["local_full"].(string)
+		if want := local != "" && local != "v3_999_new"; view["update_needed"] != want {
+			t.Fatalf("update_needed 不对（local=%q）: %v", local, view)
+		}
 		// 锁已释放：并发再取一次视图必须立刻返回
 		v2 := gameUpdateView()
-		if v2["update_needed"] != true {
+		if v2["checked"] != true {
 			t.Fatalf("视图状态丢失: %v", v2)
 		}
 	case <-time.After(10 * time.Second):
