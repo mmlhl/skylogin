@@ -7,15 +7,48 @@
  *
  * 注意：这里的数据仅用于看布局，不参与任何真实逻辑。
  */
-import type { AppState } from "./types";
+import type { AccountView, AppState } from "./types";
 
 /** 假状态：两个账号、一个处于选中、设置填满 */
+/**
+ * 造一条预览账号：字段够界面用就行，不参与任何真实逻辑。
+ * 为什么要有：只有两三个号时列表大片空白，看观感会被"空"误导——
+ * 评审排版至少得有 8~10 行才判断得出密度。
+ */
+function mk(
+  n: number,
+  name: string,
+  channel: AccountView["channel"],
+  channelLabel: string,
+  tags: string[],
+  extra: Partial<AccountView> = {}
+): AccountView {
+  return {
+    id: `mock${n}`,
+    name,
+    nick: name,
+    channel,
+    channelLabel,
+    idLabel: "账号 ID",
+    accountId: `mock-${n}`,
+    playerId: `mock-${n}`,
+    masked: name.slice(0, 1) + "***",
+    level: String((n * 7) % 40),
+    updated: "11-14 20:12",
+    tags,
+    current: false,
+    createdAt: Math.round(Date.now() / 1000) - n * 6 * 86400,
+    ...extra,
+  };
+}
+
 function fakeState(): AppState {
   return {
     tags: [
-      { name: "大号", count: 1 },
-      { name: "朋友", count: 1 },
-      { name: "小号", count: 1 },
+      { name: "大号", count: 3 },
+      { name: "朋友", count: 3 },
+      { name: "小号", count: 3 },
+      { name: "待续期", count: 2 },
     ],
     accounts: [
       {
@@ -68,6 +101,14 @@ function fakeState(): AppState {
         tokenSaLabel: "会话级（可续期）",
         tokenAtText: "2026-11-05 21:04",
       },
+      // 其余账号：只为把列表填到 9 行，覆盖各种状态（过期 / 运行中 / 副本 / 未分组）
+      mk(1, "归墟行者", "huawei", "华为渠道", ["小号", "待续期"], { credState: "expired" }),
+      mk(2, "云野常客", "netease", "网易官方", ["大号", "朋友"]),
+      mk(3, "星野 · 第二区", "netease", "网易官方", ["大号"], { copyKey: "aedemo0000000000-2" }),
+      mk(4, "阿岚", "bilibili", "B站渠道", ["朋友"]),
+      mk(5, "六月", "huawei", "华为渠道", ["小号"], { running: true }),
+      mk(6, "雾里", "netease", "网易官方", ["待续期"]),
+      mk(7, "沉船", "huawei", "华为渠道", []),
     ],
     game: "未启动",
     login: { status: "idle", message: "", qr: "", nick: "", player: "", expireAt: 0, attempt: 0, steps: [] },
