@@ -11,7 +11,7 @@
  *   - 这里：加一个请求函数
  *   - types.ts：补上返回结构
  */
-import type { ApiResult, AppState } from "./types";
+import type { ApiResult, AppState, GameUpdateView } from "./types";
 
 /** 通用请求：自动带 JSON 头、自动解析、失败抛错 */
 async function request<T = ApiResult>(path: string, init?: RequestInit): Promise<T> {
@@ -95,6 +95,13 @@ export const api = {
 
 	/** 检查更新（构建号由后端注入，本地开发版为 0） */
 	releaseCheck: () => request("/api/release/check", { method: "POST" }),
+
+	/** 游戏版本：立刻重新比对一次（提示条上的「重新检查」） */
+	gameUpdateCheck: () =>
+		request<{ ok?: boolean; gameUpdate?: GameUpdateView }>("/api/gameupdate/check", { method: "POST" }),
+
+	/** 游戏版本落后时：打开发烧平台本体让用户更新游戏（找不到本体时 Go 会开官网） */
+	gameUpdateOpenPlatform: () => request("/api/gameupdate/open-platform", { method: "POST" }),
 
 	/** 增量拉取公告（since = 已见过的最大公告序号） */
 	releaseAnnouncements: (since: number) =>

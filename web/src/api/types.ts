@@ -247,7 +247,25 @@ export interface AppState {
   loginChannels?: { entries: LoginEntryView[] };
   /** 启动事件弹窗（如客户端闪退）；id 递增，前端按 id 去重展示 */
   launchAlert: { id: number; title: string; message: string } | null;
+  /** 游戏版本比对（启动器打开时后台查官方接口；落后提示去发烧平台更新） */
+  gameUpdate?: GameUpdateView;
   version: string;
+}
+
+/** `/api/state` 里 gameUpdate 的结构（Go: fever.GameUpdate） */
+export interface GameUpdateView {
+  /** 是否完成了一次成功比对（网络失败 / 还没查完时 false） */
+  checked: boolean;
+  /** 本地包版本落后于服务器 → 提示去发烧平台更新 */
+  update_needed: boolean;
+  /** 展示用的版本号（"build 5219" 形式；空 = 没走平台安装，无本地基准） */
+  local_version: string;
+  latest_version: string;
+  /** 完整版本串（v3_5219_...），排查用 */
+  local_full?: string;
+  latest_full?: string;
+  /** 比对失败原因（网络断等），checked=false 时可能有 */
+  error?: string;
 }
 /** 接口统一的返回包装 */
 export interface ApiResult {

@@ -115,6 +115,12 @@ type Hooks struct {
 	ChannelCancel func(key string)
 	AuthHint             func() map[string]any
 	LaunchAlert          func() map[string]any
+	// GameUpdate 给界面用的游戏版本比对结果（启动时后台查，落后提示去发烧平台更新）。
+	GameUpdate func() map[string]any
+	// GameUpdateCheck 立刻重新查一次游戏版本（界面点「重新检查」用）。
+	GameUpdateCheck func() map[string]any
+	// GameUpdateOpenPlatform 打开发烧平台本体（没有就退回官网）。
+	GameUpdateOpenPlatform func() error
 	Version              func() string
 	Reregister           func(mode string) (string, error)
 	SetDeviceID          func(id string) error
@@ -187,8 +193,31 @@ func (s *Server) Handler() http.Handler {
 
 			"authHint":    safeMap(s.hooks.AuthHint),
 			"launchAlert": safeMap(s.hooks.LaunchAlert),
+			"gameUpdate":  safeMap(s.hooks.GameUpdate),
 			"version":     safeStatus(s.hooks.Version),
 		})
+	})
+
+	// 游戏版本：立刻重新比对一次（界面提示条上的「重新检查」按钮）。
+	mux.HandleFunc("/api/gameupdate/check", func(w http.ResponseWriter, r *http.Request) {
+		if s.hooks.GameUpdateCheck == nil {
+			writeJSON(w, map[string]any{"ok": false, "message": "版本检查不可用"})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "gameUpdate": s.hooks.GameUpdateCheck()})
+	})
+
+	// 打开发烧平台本体（用户去那里把游戏更新到最新版）。
+	mux.HandleFunc("/api/gameupdate/open-platform", func(w http.ResponseWriter, r *http.Request) {
+		if s.hooks.GameUpdateOpenPlatform == nil {
+			writeJSON(w, map[string]any{"ok": false, "message": "不可用"})
+			return
+		}
+		if err := s.hooks.GameUpdateOpenPlatform(); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
 	})
 
 	mux.HandleFunc("/api/login", func(w http.ResponseWriter, r *http.Request) {

@@ -20,6 +20,7 @@ import { createRealStore } from "./realStore";
 import { api } from "./api/client";
 import { startPolling, state } from "./composables/useAppState";
 import LaunchAlertDialog from "./components/LaunchAlertDialog.vue";
+import GameUpdateBanner from "./components/GameUpdateBanner.vue";
 import ReleaseNotice from "./components/ReleaseNotice.vue";
 import type { LoginEntryView } from "./api/types";
 
@@ -213,6 +214,7 @@ onUnmounted(() => {
           <TitleBar />
           <div class="app-body">
             <LaunchAlertDialog />
+            <GameUpdateBanner />
             <ReleaseNotice />
             <ShellHost :store="realStore" :default-index="2" :show-switcher="false" :load-pref="loadShellPref" :save-pref="saveShellPref" />
 

@@ -261,6 +261,13 @@ func RunUI(title string) error {
 		ChannelCancel:        StopChannelMethodLogin,
 		AuthHint:             authHintView,
 		LaunchAlert:          launchAlertView,
+		GameUpdate:           gameUpdateView,
+		GameUpdateCheck:      checkGameUpdateNow,
+		GameUpdateOpenPlatform: func() error {
+			return openFeverPlatform(func(u string) error {
+				return exec.Command("rundll32", "url.dll,FileProtocolHandler", u).Start()
+			})
+		},
 		Version:              func() string { return Version },
 		SaveRailWidth:        saveRailWidth,
 		SaveShell:            saveShell,
@@ -288,6 +295,9 @@ func RunUI(title string) error {
 	// 扫码号就不用因为过期重新扫码了（见 rolltoken.go）
 	go rollStaleTokens()
 	startCredCheck()
+	// 游戏版本校验：启动器打开就比对一次本地包和服务器最新包（不阻塞界面）。
+	// 我们绕过官方平台的启动链路，平台不会替用户打更新，落后只能靠这里提醒。
+	go checkGameUpdateNow()
 
 	// 鼠标仲裁：多开时防止后台客户端自认持有鼠标（进大厅后抢焦点、
 	// 持续把光标拉回窗口中心）。客户端 <2 个时空转。
