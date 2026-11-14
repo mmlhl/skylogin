@@ -50,6 +50,58 @@ function fakeState(): AppState {
       { name: "小号", count: 3 },
       { name: "待续期", count: 2 },
     ],
+    // 两套启动组：一套两开（记过位置），一套单开全屏（没记位置）。
+    // 有这两套，预览才看得出"组列表 + 成员表 + 位置"是什么样。
+    groups: [
+      {
+        id: "g1",
+        name: "日常双开",
+        layout: "tile",
+        cols: 2,
+        rows: 2,
+        defMode: "HighQuality",
+        defFps: 60,
+        defDisplay: "windowed",
+        stopFirst: true,
+        autoWall: true,
+        gapSec: 1,
+        screenW: 1920,
+        screenH: 1080,
+        updated: "今天 21:04",
+        slots: [
+          {
+            accountKey: "1100000000000001", name: "示例玩家", mode: "", fps: 0, display: "",
+            disabled: false, x: 0, y: 0, w: 960, h: 540, hasRect: true,
+          },
+          {
+            accountKey: "aedemo0000000000", name: "13800138000", mode: "LowPower", fps: 30, display: "",
+            disabled: false, x: 960, y: 540, w: 960, h: 540, hasRect: true,
+          },
+        ],
+      },
+      {
+        id: "g2",
+        name: "四开练小号",
+        layout: "cascade",
+        cols: 2,
+        rows: 2,
+        defMode: "LowPower",
+        defFps: 30,
+        defDisplay: "",
+        stopFirst: true,
+        autoWall: true,
+        gapSec: 2,
+        screenW: 0,
+        screenH: 0,
+        updated: "昨天 22:31",
+        slots: [
+          { accountKey: "mock1", name: "归墟行者", mode: "", fps: 0, display: "", disabled: false, x: 0, y: 0, w: 0, h: 0, hasRect: false },
+          { accountKey: "mock2", name: "云野常客", mode: "", fps: 0, display: "", disabled: false, x: 0, y: 0, w: 0, h: 0, hasRect: false },
+          { accountKey: "mock3", name: "星野 · 第二区", mode: "", fps: 0, display: "", disabled: true, x: 0, y: 0, w: 0, h: 0, hasRect: false },
+          { accountKey: "已删除的键", name: "已删除的账号", missing: true, mode: "", fps: 0, display: "", disabled: false, x: 0, y: 0, w: 0, h: 0, hasRect: false },
+        ],
+      },
+    ],
     accounts: [
       {
         id: "1100000000000001",

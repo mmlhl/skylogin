@@ -240,6 +240,8 @@ export interface AppState {
   accounts: AccountView[];
   /** 全部标签的聚合清单（名称 + 命中数），按首次出现顺序 */
   tags?: { name: string; count: number }[];
+  /** 启动组（可重复执行的启动配方） */
+  groups?: GroupView[];
   game: string;
   login: LoginState;
   scan: ScanState;
@@ -278,3 +280,46 @@ export interface ApiResult {
   [key: string]: unknown;
 }
 
+
+/** 启动组里的一个成员：账号 + 它在这套里的启动参数 */
+export interface GroupSlotView {
+  accountKey: string;
+  /** 账号显示名；账号被删掉时后端给"已删除的账号" */
+  name: string;
+  missing?: boolean;
+  /** 画质 / 帧率 / 显示的覆盖值，空 = 跟随组 */
+  mode?: string;
+  fps?: number;
+  display?: string;
+  /** 这次不启动这个号，但保留它的位置与参数 */
+  disabled?: boolean;
+  /** 窗口位置（物理像素）；hasRect=false 表示这套没记过位置 */
+  x?: number;
+  y?: number;
+  w?: number;
+  h?: number;
+  hasRect?: boolean;
+}
+
+/** 一套启动组 */
+export interface GroupView {
+  id: string;
+  name: string;
+  layout: "tile" | "cascade" | "fullscreen" | string;
+  cols: number;
+  rows: number;
+  defMode?: string;
+  defFps?: number;
+  defDisplay?: string;
+  /** 启动前先停掉正在跑的客户端 */
+  stopFirst?: boolean;
+  /** 全部就位后自动开监控墙 */
+  autoWall?: boolean;
+  gapSec?: number;
+  screenW?: number;
+  screenH?: number;
+  slots: GroupSlotView[];
+  /** 有几个槽位的账号已经不存在了 */
+  missing?: number;
+  updated?: string;
+}

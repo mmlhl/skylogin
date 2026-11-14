@@ -5,11 +5,10 @@
  */
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import {
-  Flame, LayoutGrid, LayoutDashboard, Monitor, Settings, Eye, EyeOff, Plus, Pencil, Play, Square,
+  Flame, LayoutGrid, Monitor, Settings, Eye, EyeOff, Plus, Pencil, Play, Square,
   Layers, RefreshCw, CopyPlus, SlidersHorizontal, ChevronDown,
-  // 视图切换用图标而不是文字：左栏只有 264–288 宽，四个两字按钮并排会挤成一排
-  // 没有主次的按钮（监控墙顶栏当初也是这么定的，见 .ai/06 第九节）
-  List, Tag as TagIcon, Boxes, Clock, ArrowUpDown,
+  // 视图切换是文字分段（.vseg），不用图标——图标表意实测失败
+  ArrowUpDown,
 } from "lucide-vue-next";
 import type { Account, LauncherStore } from "../contract";
 
@@ -51,16 +50,16 @@ const runningSelf = computed(() => !!cur.value?.running);
  * 所以"重复出现"只可能来自标签视图，而且只是同一行的投影，不是新数据。
  */
 type ListView = "flat" | "tag" | "channel" | "time";
-const VIEW_TABS: { k: ListView; label: string; icon: unknown; tip: string }[] = [
-  { k: "flat", label: "平铺", icon: List, tip: "平铺：一行一个号，可自定义顺序" },
-  { k: "tag", label: "标签", icon: TagIcon, tip: "按标签分组：多标签的号会在每个组各出现一次" },
-  { k: "channel", label: "渠道", icon: Boxes, tip: "按渠道分段：每个号只出现一次" },
-  { k: "time", label: "时间", icon: Clock, tip: "按添加时间分段：每个号只出现一次" },
+const VIEW_TABS: { k: ListView; label: string; tip: string }[] = [
+  { k: "flat", label: "平铺", tip: "一行一个号，顺序可拖动" },
+  { k: "tag", label: "标签", tip: "多标签的号每组各出现一次" },
+  { k: "channel", label: "渠道", tip: "按渠道分组" },
+  { k: "time", label: "时间", tip: "按添加时间分组" },
 ];
 const SORTS: { k: "custom" | "name" | "recent"; label: string; tip: string }[] = [
-  { k: "custom", label: "自定义", tip: "自己拖出来的顺序（只有这一种能拖）" },
-  { k: "name", label: "名称", tip: "按名字排，排完不能拖" },
-  { k: "recent", label: "最近登录", tip: "最近启动过的在前，排完不能拖" },
+  { k: "custom", label: "自定义", tip: "手动拖动的顺序" },
+  { k: "name", label: "名称", tip: "按名称排序" },
+  { k: "recent", label: "最近登录", tip: "按最近登录排序" },
 ];
 const listView = ref<ListView>("flat");
 const flatSort = ref<"custom" | "name" | "recent">("custom");
@@ -83,9 +82,11 @@ const groupOrder = ref<string[]>([]);
 watch(
   () => (appState.tags ?? []).map((t) => t.name).join("|"),
   () => {
-    const all = [...(appState.tags ?? []).map((t) => t.name), UNTAGGED];
-    const kept = groupOrder.value.filter((t) => all.includes(t));
-    groupOrder.value = [...kept, ...all.filter((t) => !kept.includes(t))];
+    // "未分组"不进 kept：它是在数据到达前就播进去的占位段，
+    // 如果跟着 kept 走，第一次真实标签到来时它还赖在第一位。
+    const names = [...new Set((appState.tags ?? []).map((t) => t.name))];
+    const kept = groupOrder.value.filter((t) => t !== UNTAGGED && names.includes(t));
+    groupOrder.value = [...kept, ...names.filter((t) => !kept.includes(t)), UNTAGGED];
   },
   { immediate: true }
 );
@@ -120,7 +121,7 @@ const sections = computed<{ key: string; rows: Account[]; draggable: boolean }[]
       rows: sorted(tag === UNTAGGED ? accs.filter((a) => !a.tags.length) : accs.filter((a) => a.tags.includes(tag))),
       // 组内可以调顺序；跨组移动没有意义（那等于改标签），所以只认同组
       draggable: true,
-    }));
+    })).filter((s) => s.rows.length); // 标签删空后段要消失，别留一个"0"
   }
   if (listView.value === "channel") {
     const names = Array.from(new Set(accs.map((a) => channelLabel(a.channel))));
@@ -143,10 +144,40 @@ function tagsOf(a: Account, group: string) {
   return listView.value === "tag" ? a.tags.filter((t) => t !== group) : a.tags;
 }
 
+/** 行的悬停提示：只解释两类"看起来不对劲"的时刻——
+ *  标签视图里同一个号出现多次（是投影不是重复数据），
+ *  和排序视图里拖不动（顺序由规则决定，不是卡了）。 */
+function rowTitle(a: Account) {
+  if (listView.value === "tag" && a.tags.length > 1) {
+    return "多标签账号，每组各出现一次";
+  }
+  if (listView.value === "flat" && flatSort.value !== "custom") {
+    return `按${sortLabel.value}排序，不能拖动`;
+  }
+  if (listView.value === "channel" || listView.value === "time") {
+    return "分组视图，不能拖动";
+  }
+  return undefined;
+}
+
 function toggleTag(tag: string) {
   const i = collapsedTags.value.indexOf(tag);
   if (i >= 0) collapsedTags.value.splice(i, 1);
   else collapsedTags.value.push(tag);
+}
+
+/* ── 点段头 = 选中这一组 ──
+ * 段头是列表里最大的点击目标，留给最常用的动作：把整组变成批量操作的目标
+ * （配合底部批量条：多开 / 停止 / 删除）。折叠退到左侧箭头上。
+ * 再点一次 = 取消这一组；与其它组的选择互不影响，可以连点多组。 */
+function secSelectedAll(sec: { rows: Account[] }) {
+  return sec.rows.length > 0 && sec.rows.every((a) => store.selectedIds.includes(a.id));
+}
+function toggleSelectSec(sec: { rows: Account[] }) {
+  const target = !secSelectedAll(sec);
+  for (const a of sec.rows) {
+    if (store.selectedIds.includes(a.id) !== target) store.toggleSelect(a.id);
+  }
 }
 
 /* 拖动排序：只改顺序，不改内容（后端按整表顺序落盘） */
@@ -341,28 +372,22 @@ const lastCheckText = computed(() => {
     </div>
 
     <div class="list" :style="{ width: railWidth + 'px' }">
-      <!-- 头部只占一行：标题 + 四个视图图标 + 排序（仅平铺）+ 打码。
-           以前是"标题行 + 四个文字按钮 + 排序条"三层，光控件就吃掉 98px，
-           列表看起来像被压住；图标化之后 44px 解决，宽度也不和标题抢。 -->
+      <!-- 头部两行，控件位置在任何视图下都不动：
+           第一行：标题 + 排序（非平铺时禁用占位，不消失——消失会让打码键跳位）
+           第二行：文字分段切换视图。图标版实测看不出功能，文字不用猜。 -->
       <div class="lhead">
         <span class="lname">账号</span>
-        <div class="vsw">
+        <div class="sortwrap">
           <button
-            v-for="v in VIEW_TABS"
-            :key="v.k"
-            class="vico"
-            :class="{ on: listView === v.k }"
-            :title="v.tip"
-            @click="listView = v.k"
+            class="sortbtn"
+            :class="{ on: sortOpen }"
+            :disabled="listView !== 'flat'"
+            :title="listView === 'flat' ? '列表排序' : '排序只在平铺视图可用'"
+            @click.stop="sortOpen = !sortOpen"
           >
-            <component :is="v.icon" />
-          </button>
-        </div>
-        <div v-if="listView === 'flat'" class="sortwrap">
-          <button class="sortbtn" :class="{ on: sortOpen }" title="排序方式" @click.stop="sortOpen = !sortOpen">
             <ArrowUpDown /><span>{{ sortLabel }}</span>
           </button>
-          <div v-if="sortOpen" class="sortmenu">
+          <div v-if="sortOpen && listView === 'flat'" class="sortmenu">
             <button
               v-for="o in SORTS"
               :key="o.k"
@@ -378,12 +403,37 @@ const lastCheckText = computed(() => {
           <EyeOff v-if="store.maskAll" :style="{ width: '14px', height: '14px' }" /><Eye v-else :style="{ width: '14px', height: '14px' }" />
         </button>
       </div>
+      <div class="vseg">
+        <button
+          v-for="v in VIEW_TABS"
+          :key="v.k"
+          class="vtab"
+          :class="{ on: listView === v.k }"
+          :title="v.tip"
+          @click="listView = v.k"
+        >
+          {{ v.label }}
+        </button>
+      </div>
 
       <p v-if="!store.accounts.length" class="lempty">还没有账号</p>
       <div v-else ref="listScroll" class="rows">
         <section v-for="sec in sections" :key="listView + sec.key" class="sect" :data-sec="sec.key">
-          <div v-if="sec.key" class="shead" :class="{ nograb: !canDragSec(sec) }" @click="toggleTag(sec.key)">
-            <ChevronDown v-if="listView === 'tag'" class="chev" :class="{ closed: collapsedTags.includes(sec.key) }" />
+          <div
+            v-if="sec.key"
+            class="shead"
+            :class="{ allon: secSelectedAll(sec) }"
+            :title="listView === 'tag' ? '点击选中整组；箭头折叠' : '点击选中整组'"
+            @click="toggleSelectSec(sec)"
+          >
+            <button
+              v-if="listView === 'tag'"
+              class="chevbtn"
+              title="折叠 / 展开这一组"
+              @click.stop="toggleTag(sec.key)"
+            >
+              <ChevronDown class="chev" :class="{ closed: collapsedTags.includes(sec.key) }" />
+            </button>
             <span class="sname">{{ sec.key }}</span>
             <em>{{ sec.rows.length }}</em>
           </div>
@@ -399,6 +449,7 @@ const lastCheckText = computed(() => {
               :key="a.id"
               class="lrow"
               :class="{ on: a.current, dragging: draggingId === a.id }"
+              :title="rowTitle(a)"
               @pointerdown="onRowPointerDown($event, sec, a)"
               @click="store.select(a.id)"
             >
@@ -410,22 +461,27 @@ const lastCheckText = computed(() => {
                 @click.stop
                 @change="store.toggleSelect(a.id)"
               />
-              <span class="lava">{{ a.name.slice(0, 1) }}</span>
               <span class="ltxt">
+                <!-- 第一行：身份。名字是唯一主角，标签贴右缘——
+                     身份和分类读成一条水平线，第二行只留状态 -->
                 <span class="l1">
                   <b>{{ store.maskAll ? a.maskedName : a.name }}</b>
                   <span v-if="a.copyKey" class="copybadge" title="副本：独立记录，凭证与原件共享">副本</span>
+                  <span v-if="tagsOf(a, sec.key).length" class="chips">
+                    <span v-for="t in tagsOf(a, sec.key).slice(0, 2)" :key="t" class="tagchip">{{ t }}</span>
+                    <span v-if="tagsOf(a, sec.key).length > 2" class="tagchip more">+{{ tagsOf(a, sec.key).length - 2 }}</span>
+                  </span>
                 </span>
+                <!-- 第二行：能不能用。状态词着色（运行=绿 / 过期=红），
+                     时长和渠道退成中性，一眼扫出哪些在跑、哪些要处理 -->
                 <span class="l2">
                   <span class="st">
                     <em v-if="a.running" class="dot ok live" />
                     <em v-else-if="a.cred === 'expired'" class="dot bad" />
                     <em v-else class="dot ok" />
-                    {{ a.running ? "运行中 · " + fmtRun(a.runSeconds) : a.cred === "expired" ? "凭证过期" : "就绪" }}<template v-if="listView !== 'channel'"> · {{ channelLabel(a.channel) }}</template>
-                  </span>
-                  <span v-if="tagsOf(a, sec.key).length" class="chips">
-                    <span v-for="t in tagsOf(a, sec.key).slice(0, 2)" :key="t" class="tagchip">{{ t }}</span>
-                    <span v-if="tagsOf(a, sec.key).length > 2" class="tagchip more">+{{ tagsOf(a, sec.key).length - 2 }}</span>
+                    <span v-if="a.running" class="sv run">运行中</span>
+                    <span v-else-if="a.cred === 'expired'" class="sv exp">凭证过期</span>
+                    <span v-else class="sv">就绪</span><template v-if="a.running"> · {{ fmtRun(a.runSeconds) }}</template><template v-if="listView !== 'channel'"> · {{ channelLabel(a.channel) }}</template>
                   </span>
                 </span>
               </span>
@@ -551,7 +607,6 @@ const lastCheckText = computed(() => {
       <p class="dseclabel">运行中的客户端</p>
       <p v-if="!store.runningAccounts.length" class="dnone">没有客户端在运行</p>
       <div v-for="a in store.runningAccounts" :key="a.id" class="drun">
-        <span class="lava">{{ a.name.slice(0, 1) }}</span>
         <span class="ltxt">
           <b>{{ store.maskAll ? a.maskedName : a.name }}</b>
           <i>{{ channelLabel(a.channel) }} · 已运行 {{ fmtRun(a.runSeconds) }}</i>
@@ -582,8 +637,8 @@ const lastCheckText = computed(() => {
   --tx: #eef1f4;
   --dim: #98a2ae;
   --faint: #64707c;
-  --line: rgba(255, 255, 255, 0.07);
-  --line2: rgba(255, 255, 255, 0.12);
+  --line: rgba(255, 255, 255, 0.08);
+  --line2: rgba(255, 255, 255, 0.14);
   --acc: #6d9aef;
   --on: #0b1526;
   --ok: #7fc9a0;
@@ -654,16 +709,15 @@ const lastCheckText = computed(() => {
   border-right: 1px solid var(--line);
   background: var(--s1);
 }
-/* ── 列表头部：一行装下 标题 / 视图 / 排序 / 打码 ──
-   以前是"标题 + 四个文字按钮 + 排序条"三层，控件就吃掉 98px，
-   列表像被压住；图标化后 44px 解决，也不跟标题抢宽度。 */
+/* ── 列表头部：两行，位置稳定 ──
+   第一行 标题+排序+打码；第二行 视图分段。排序按钮在非平铺视图
+   禁用而不是消失——消失会让后面的打码键跳位。 */
 .lhead {
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 44px;
+  height: 40px;
   padding: 0 8px 0 14px;
-  border-bottom: 1px solid var(--line);
 }
 .lname {
   margin-right: auto;
@@ -671,34 +725,34 @@ const lastCheckText = computed(() => {
   letter-spacing: 0.06em;
   color: var(--faint);
 }
-.vsw {
+/* 视图切换：文字分段。图标版（列表/标签/箱子/时钟）实测没人看得出
+   哪个是哪个，文字是最便宜的说明书。等宽四段，切换时不跳。 */
+.vseg {
   display: flex;
-  gap: 1px;
+  gap: 2px;
+  margin: 0 8px 8px;
   padding: 2px;
-  border-radius: 7px;
+  border-radius: 8px;
   background: color-mix(in srgb, var(--tx) 4%, transparent);
 }
-.vico {
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 20px;
+.vtab {
+  flex: 1;
+  height: 24px;
   border: 0;
-  border-radius: 5px;
+  border-radius: 6px;
   background: transparent;
   color: var(--faint);
+  font-family: inherit;
+  font-size: 12px;
   cursor: pointer;
 }
-.vico svg {
-  width: 12.5px;
-  height: 12.5px;
-}
-.vico:hover {
+.vtab:hover {
   color: var(--tx);
 }
-.vico.on {
+.vtab.on {
   background: color-mix(in srgb, var(--tx) 10%, transparent);
   color: var(--acc);
+  font-weight: 500;
 }
 .sortwrap {
   position: relative;
@@ -707,14 +761,14 @@ const lastCheckText = computed(() => {
   display: flex;
   align-items: center;
   gap: 4px;
-  height: 22px;
-  padding: 0 6px;
+  height: 24px;
+  padding: 0 7px;
   border: 1px solid transparent;
   border-radius: 5px;
   background: transparent;
   color: var(--faint);
   font-family: inherit;
-  font-size: 10.5px;
+  font-size: 11px;
   cursor: pointer;
 }
 .sortbtn svg {
@@ -725,6 +779,14 @@ const lastCheckText = computed(() => {
 .sortbtn.on {
   color: var(--tx);
   border-color: var(--line);
+}
+.sortbtn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.sortbtn:disabled:hover {
+  color: var(--faint);
+  border-color: transparent;
 }
 .sortmenu {
   position: absolute;
@@ -772,24 +834,29 @@ const lastCheckText = computed(() => {
 }
 
 /* ── 列表行：整行铺满 + 1px 分隔线（规范里"列表行不做卡片"）；
-      选中 = 左侧 2px 金条 + 浮起底色 ── */
+      选中 = 左侧 2px 金条 + 浮起底色。
+      没有头像方块：它只重复名字首字，不承载信息，去掉后名字是唯一主角。 ── */
 .rows {
   flex: 1;
   overflow: auto;
 }
 .sect + .sect {
-  border-top: 1px solid var(--line);
+  /* 段间只留 4px 呼吸：分隔本身交给段头色带 + 色带底边的线 */
+  margin-top: 4px;
 }
 .rlist {
   display: flex;
   flex-direction: column;
+}
+.rlist .lrow:last-child {
+  border-bottom: 0; /* 段的收尾交给段间的线，别叠出 2px */
 }
 .lrow {
   position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 52px;
+  height: 44px;
   padding: 0 12px 0 10px;
   border-bottom: 1px solid var(--line);
   cursor: pointer;
@@ -833,17 +900,6 @@ const lastCheckText = computed(() => {
 .sel:checked {
   opacity: 1;
 }
-.lava {
-  display: grid;
-  place-items: center;
-  flex: none;
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--tx) 8%, transparent);
-  font-size: 11.5px;
-  color: var(--dim);
-}
 .ltxt {
   flex: 1;
   min-width: 0;
@@ -851,12 +907,12 @@ const lastCheckText = computed(() => {
   flex-direction: column;
   gap: 2px;
 }
-/* 两行封顶：第一行名字（+副本标记），第二行状态 + 标签。
-   标签放第二行右侧而不是另起一行：另起一行会让行高在 52~73 之间跳。 */
+/* 两行封顶：第一行 = 身份（名字 + 副本标记 + 标签贴右缘），
+   第二行 = 状态（点 + 着色状态词 + 时长/渠道）。 */
 .l1 {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   min-width: 0;
 }
 .l1 b {
@@ -870,7 +926,6 @@ const lastCheckText = computed(() => {
 .l2 {
   display: flex;
   align-items: center;
-  gap: 6px;
   min-width: 0;
 }
 .st {
@@ -880,18 +935,34 @@ const lastCheckText = computed(() => {
   align-items: center;
   gap: 5px;
   font-size: 11px;
-  color: var(--faint);
+  /* 副行整体用 dim 而不是 faint：faint 贴着 3:1 对比度下限，
+     这行承载"能不能用"，暗到要凑近看就失去意义；再弱的层级交给状态词去做 */
+  color: var(--dim);
   white-space: nowrap;
   overflow: hidden;
 }
 .st .dot {
+  flex: none;
   width: 5px;
   height: 5px;
 }
+/* 状态词跟着圆点着色：绿=在跑、红=要处理；
+   就绪是多数态，用"比渠道亮一档"的中性色——不抢运行/过期的戏，
+   但要能和后面的渠道灰区分开 */
+.sv {
+  color: color-mix(in srgb, var(--tx) 42%, var(--dim));
+}
+.sv.run {
+  color: var(--ok);
+}
+.sv.exp {
+  color: var(--bad);
+}
 .chips {
   display: flex;
-  gap: 3px;
+  gap: 4px;
   flex: none;
+  margin-left: auto;
 }
 .ladd {
   display: flex;
@@ -1079,6 +1150,15 @@ const lastCheckText = computed(() => {
 .drun .btn {
   margin-left: auto;
 }
+.drun b {
+  font-size: 13px;
+  font-weight: 600;
+}
+.drun i {
+  font-style: normal;
+  font-size: 12px;
+  color: var(--faint);
+}
 </style>
 <style scoped>
 .qpills {
@@ -1122,39 +1202,65 @@ const lastCheckText = computed(() => {
 }
 
 /* ── 分段头（标签 / 渠道 / 时间共用）──
-   段头不是容器，只是一条分隔：24px 高、10.5px 字、数量贴右。 */
+   一条可点击的色带：比行高矮、底色比列表底亮、字比行信息疏，
+   三个维度同时拉开，滚动时吸顶——"我在哪个组"永远不用猜。
+   背景必须不透明：吸顶时行从它底下穿过去，半透明会透字。 */
 .shead {
+  position: sticky;
+  top: 0;
+  z-index: 3; /* 高于拖动中的行(z2)：行滑过头时从段头底下穿过去 */
   display: flex;
   align-items: center;
   gap: 6px;
-  height: 24px;
-  padding: 0 12px 0 10px;
-  background: color-mix(in srgb, var(--tx) 2%, transparent);
-  color: var(--faint);
-  font-size: 10.5px;
-  letter-spacing: 0.06em;
+  height: 28px;
+  padding: 0 12px 0 8px;
+  background: color-mix(in srgb, var(--tx) 5%, var(--s1));
+  border-bottom: 1px solid var(--line2);
+  color: var(--dim);
+  font-size: 12px;
+  letter-spacing: 0.04em;
   cursor: pointer;
   user-select: none;
 }
 .shead:hover {
-  color: var(--dim);
+  background: color-mix(in srgb, var(--tx) 8%, var(--s1));
+  color: var(--tx);
 }
-.shead.nograb {
-  cursor: default;
+/* 整组已选中：段头亮起，和行内勾选框同一语义 */
+.shead.allon .sname,
+.shead.allon em {
+  color: var(--acc);
+}
+.chevbtn {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-left: -4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+}
+.chevbtn:hover {
+  background: color-mix(in srgb, var(--tx) 10%, transparent);
+  color: var(--tx);
 }
 .sname {
   font-weight: 600;
 }
 .shead em {
-  margin-left: auto;
   font-style: normal;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--faint);
+  font-variant-numeric: tabular-nums;
 }
 .chev {
-  width: 11px;
-  height: 11px;
+  width: 12px;
+  height: 12px;
   flex: none;
+  color: var(--dim); /* 折叠是段头唯一的动作，箭头别淡到看不见 */
   transition: transform 0.15s ease-out;
 }
 .chev.closed {
@@ -1162,15 +1268,16 @@ const lastCheckText = computed(() => {
 }
 
 /* 行内的标签：无彩色小块。为什么不用彩色：这个界面里颜色已经代表
-   "可操作 / 当前"（金色），再给标签一套颜色就是第二套语义。 */
+   "可操作 / 当前"（金色），再给标签一套颜色就是第二套语义。
+   字号 11px 是规范下限——标签是用户自己起的名，缩到 9.5px 就认不出了。 */
 .tagchip {
-  height: 14px;
-  padding: 0 4px;
-  border-radius: 3px;
-  background: rgba(255, 255, 255, 0.055);
-  color: var(--faint);
-  font-size: 9.5px;
-  line-height: 14px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--dim);
+  font-size: 11px;
+  line-height: 16px;
   font-style: normal;
   white-space: nowrap;
 }
@@ -1180,15 +1287,15 @@ const lastCheckText = computed(() => {
 }
 .copybadge {
   display: inline-block;
-  height: 15px;
-  padding: 0 4px;
+  height: 16px;
+  padding: 0 5px;
   margin-left: 4px;
   border: 1px solid var(--line2);
-  border-radius: 3px;
+  border-radius: 4px;
   color: var(--faint);
-  font-size: 9.5px;
+  font-size: 11px;
   font-weight: 400;
-  line-height: 13px;
+  line-height: 14px;
   vertical-align: 1px;
 }
 

@@ -11,6 +11,8 @@ export const demoUi = reactive({
   renameId: "",
   dupId: "",
   qualityId: "",
+  /** 启动组（运行配置）弹层：整屏，左组右成员 */
+  groupsOpen: false,
   /** 多开弹层要预选的账号；空数组 = 用默认预选逻辑 */
   multiPreset: [] as string[],
   openAdd() {
@@ -21,6 +23,14 @@ export const demoUi = reactive({
     this.addOpen = false;
     this.multiPreset = preset;
     this.multiOpen = true;
+  },
+  openGroups() {
+    this.addOpen = false;
+    this.multiOpen = false;
+    this.groupsOpen = true;
+  },
+  closeGroups() {
+    this.groupsOpen = false;
   },
   openRename(id: string) {
     this.renameId = id;

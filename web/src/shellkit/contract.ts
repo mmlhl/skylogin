@@ -147,8 +147,49 @@ export function recommendLayout(count: number): GridLayout {
   return LAYOUTS.find((l) => l.max >= count) ?? LAYOUT_NONE;
 }
 
-/** 界面壳允许调用的全部功能。 */
-export interface LauncherStore {
+/** 启动组里的一个成员：账号 + 它在这套里的启动参数 */
+export interface LaunchSlot {
+  accountKey: string;
+  /** 账号显示名；账号被删掉时后端给"已删除的账号" */
+  name: string;
+  missing?: boolean;
+  /** 覆盖值，空/0 = 跟随组 */
+  mode: string;
+  fps: number;
+  display: string;
+  /** 这次不启动它，但保留位置与参数 */
+  disabled: boolean;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** false = 这套没记过位置，启动时按排列方式算 */
+  hasRect: boolean;
+}
+
+/**
+ * 一套启动组：可重复执行的启动配方。
+ * 参数分三层：组（排列/默认值/启动行为）→ 成员（顺序/位置/覆盖）→ 账号自己。
+ */
+export interface LaunchGroup {
+  id: string;
+  name: string;
+  layout: "tile" | "cascade" | "fullscreen";
+  cols: number;
+  rows: number;
+  defMode: string;
+  defFps: number;
+  defDisplay: string;
+  stopFirst: boolean;
+  autoWall: boolean;
+  gapSec: number;
+  screenW: number;
+  screenH: number;
+  slots: LaunchSlot[];
+  updated?: string;
+}
+
+/** 界面壳允许调用的全部功能。 */export interface LauncherStore {
   readonly accounts: Account[];
   readonly current: Account | undefined;
   readonly runningAccounts: Account[];
@@ -218,6 +259,13 @@ export interface LauncherStore {
   reorder(ids: string[]): void;
   /** 保存账号列表宽度（分界线拖拽结束）。 */
   setRailWidth(width: number): void;
+
+  /** 全部启动组（后端是唯一真相来源） */
+  readonly groups: LaunchGroup[];
+  /** 新建/更新一套启动组（带 id = 更新） */
+  saveGroup(g: LaunchGroup): void;
+  /** 删除一套启动组 */
+  deleteGroup(id: string): void;
 
   /** 多开默认（画质 / 帧率 / 鼠标仲裁）：多开弹窗和设置面板读写的是同一份 */
   multiDefaults(): { qualityMode: string; fps: number; arbiter: boolean; arbiterMin: number };

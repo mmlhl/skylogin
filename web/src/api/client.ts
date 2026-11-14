@@ -11,7 +11,7 @@
  *   - 这里：加一个请求函数
  *   - types.ts：补上返回结构
  */
-import type { ApiResult, AppState, GameUpdateView } from "./types";
+import type { ApiResult, AppState, GameUpdateView, GroupView } from "./types";
 
 /** 通用请求：自动带 JSON 头、自动解析、失败抛错 */
 async function request<T = ApiResult>(path: string, init?: RequestInit): Promise<T> {
@@ -172,6 +172,20 @@ export const api = {
     request("/api/accounts/reorder", {
       method: "POST",
       body: JSON.stringify({ ids }),
+    }),
+
+  /** 新建/更新一套启动组（带 id = 更新）。返回里带最新清单，省一次轮询 */
+  saveGroup: (g: GroupView) =>
+    request<ApiResult & { id?: string; groups?: GroupView[] }>("/api/groups/save", {
+      method: "POST",
+      body: JSON.stringify(g),
+    }),
+
+  /** 删除一套启动组（不存在也算成功） */
+  deleteGroup: (id: string) =>
+    request<ApiResult & { groups?: GroupView[] }>("/api/groups/delete", {
+      method: "POST",
+      body: JSON.stringify({ id }),
     }),
 
   /** 创建一条账号的副本（name 为空时后端自动起名，region 为空表示副本先不选区） */

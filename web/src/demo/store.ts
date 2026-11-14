@@ -6,7 +6,7 @@
  */
 import { reactive } from "vue";
 import { demoUi } from "../shellkit/ui";
-import { LAYOUT_NONE, recommendLayout, type Account, type GridLayout, type LauncherStore, type NewAccountDraft } from "../shellkit/contract";
+import { LAYOUT_NONE, recommendLayout, type Account, type GridLayout, type LaunchGroup, type LauncherStore, type NewAccountDraft } from "../shellkit/contract";
 
 let seq = 100;
 const nextId = () => `demo${(seq++).toString().padStart(8, "0")}`;
@@ -39,8 +39,50 @@ const state = reactive({
   maskAll: true,
   multiQualityMode: "",
   multiQualityFps: 0,
+  groups: [] as LaunchGroup[],
   selectedIds: [] as string[],
   toasts: [] as { id: number; text: string }[],
+});
+
+// 两套演示启动组：一套两开（有位置），一套单开全屏（没记位置）
+state.groups.push({
+  id: "g-demo-1",
+  name: "日常双开",
+  layout: "tile",
+  cols: 2,
+  rows: 2,
+  defMode: "HighQuality",
+  defFps: 60,
+  defDisplay: "windowed",
+  stopFirst: true,
+  autoWall: true,
+  gapSec: 1,
+  screenW: 1920,
+  screenH: 1080,
+  updated: "今天 21:04",
+  slots: [
+    { accountKey: state.accounts[0].id, name: "示例玩家", mode: "", fps: 0, display: "", disabled: false, x: 0, y: 0, w: 960, h: 540, hasRect: true },
+    { accountKey: state.accounts[1].id, name: "13800138000", mode: "LowPower", fps: 30, display: "", disabled: false, x: 960, y: 540, w: 960, h: 540, hasRect: true },
+  ],
+});
+state.groups.push({
+  id: "g-demo-2",
+  name: "全屏挂机",
+  layout: "fullscreen",
+  cols: 1,
+  rows: 1,
+  defMode: "Presentation",
+  defFps: 120,
+  defDisplay: "fullscreen",
+  stopFirst: true,
+  autoWall: false,
+  gapSec: 0,
+  screenW: 0,
+  screenH: 0,
+  updated: "11-08",
+  slots: [
+    { accountKey: state.accounts[2].id, name: "归墟行者", mode: "", fps: 0, display: "", disabled: false, x: 0, y: 0, w: 0, h: 0, hasRect: false },
+  ],
 });
 
 let toastSeq = 0;
@@ -64,6 +106,19 @@ if (!g.__demoTicker) {
 export const store: LauncherStore = {
   get accounts() {
     return state.accounts;
+  },
+  get groups() {
+    return state.groups;
+  },
+  saveGroup(g) {
+    const at = state.groups.findIndex((x) => x.id === g.id);
+    if (at >= 0) state.groups[at] = g;
+    else state.groups.push({ ...g, id: `g${state.groups.length + 1}` });
+    toast("已保存启动组（演示）");
+  },
+  deleteGroup(id) {
+    const at = state.groups.findIndex((x) => x.id === id);
+    if (at >= 0) state.groups.splice(at, 1);
   },
   get current() {
     return state.accounts.find((a) => a.current);

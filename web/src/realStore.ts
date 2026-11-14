@@ -15,8 +15,10 @@ import {
   type Channel,
   LAYOUT_NONE,
   type GridLayout,
+  type LaunchGroup,
   type LauncherStore,
 } from "./shellkit/contract";
+import { demoUi } from "./shellkit/ui";
 
 export interface RealStoreHooks {
   /** 添加账号：打开渠道/登录方式选择（真实登录流程从那里走） */
@@ -30,6 +32,7 @@ export interface RealStoreHooks {
 export function createRealStore(hooks: RealStoreHooks): LauncherStore {
   const st = reactive({
     accounts: [] as Account[],
+    groups: [] as LaunchGroup[],
     maskAll: true,
     selectedIds: [] as string[],
     toasts: [] as { id: number; text: string }[],
@@ -109,12 +112,59 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
   }
   watch(() => state.accounts, sync, { immediate: true });
 
+  /**
+   * 启动组：把后端视图映射成契约结构。
+   *
+   * 为什么在这里补一堆默认值：后端会省略空字段（omitempty），
+   * 而界面（尤其是输入框）拿到 undefined 会显示成空字符串、
+   * v-model.number 还会把空串变成 NaN。统一在入口补成 0/""/false 最省事。
+   */
+  function mapGroups(): LaunchGroup[] {
+    const list = state.groups ?? [];
+    return list.map((g) => ({
+      id: g.id,
+      name: g.name,
+      layout: g.layout === "cascade" || g.layout === "fullscreen" ? g.layout : "tile",
+      cols: g.cols || 2,
+      rows: g.rows || 2,
+      defMode: g.defMode ?? "",
+      defFps: g.defFps ?? 0,
+      defDisplay: g.defDisplay ?? "",
+      stopFirst: g.stopFirst !== false,
+      autoWall: g.autoWall !== false,
+      gapSec: g.gapSec ?? 0,
+      screenW: g.screenW ?? 0,
+      screenH: g.screenH ?? 0,
+      updated: g.updated,
+      slots: (g.slots ?? []).map((s) => ({
+        accountKey: s.accountKey,
+        name: s.name,
+        missing: !!s.missing,
+        mode: s.mode ?? "",
+        fps: s.fps ?? 0,
+        display: s.display ?? "",
+        disabled: !!s.disabled,
+        x: s.x ?? 0,
+        y: s.y ?? 0,
+        w: s.w ?? 0,
+        h: s.h ?? 0,
+        hasRect: !!s.hasRect,
+      })),
+    }));
+  }
+  watch(() => state.groups, () => {
+    st.groups.splice(0, st.groups.length, ...mapGroups());
+  }, { immediate: true, deep: true });
+
   const find = (id: string) => st.accounts.find((a) => a.id === id);
   const currentId = () => st.accounts.find((a) => a.current)?.id;
 
   const store: LauncherStore = {
     get accounts() {
       return st.accounts;
+    },
+    get groups() {
+      return st.groups;
     },
     get current() {
       return st.accounts.find((a) => a.current);
@@ -228,6 +278,31 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
       // 分三次请求只会多出两次半写状态。
       void api.setGameSettings(id, mode, fps, display).then((r) => {
         if (r.ok === false) toast(r.message || "保存失败");
+      });
+    },
+
+    saveGroup(g) {
+      void api.saveGroup(g as never).then((r) => {
+        if (r.ok === false) {
+          toast(r.message || "保存启动组失败");
+          return;
+        }
+        // 本地先合进去：新建的组要能立刻出现在左边列表里，不用等下一轮轮询
+        const id = r.id || g.id;
+        const next = st.groups.slice();
+        const at = next.findIndex((x) => x.id === id);
+        const merged = { ...g, id };
+        if (at >= 0) next[at] = merged;
+        else next.push(merged);
+        st.groups.splice(0, st.groups.length, ...next);
+      });
+    },
+
+    deleteGroup(id) {
+      const at = st.groups.findIndex((x) => x.id === id);
+      if (at >= 0) st.groups.splice(at, 1);
+      void api.deleteGroup(id).then((r) => {
+        if (r.ok === false) toast(r.message || "删除启动组失败");
       });
     },
 
@@ -365,7 +440,8 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
     },
 
     openRunning() {
-      toast("「运行」聚合页规划中，账号状态见详情面板");
+      // 「运行」= 启动组：一套可重复执行的启动配方（账号组合 + 位置 + 画质 + 启动行为）
+      demoUi.openGroups();
     },
 
     toast,

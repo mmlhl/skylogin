@@ -6,6 +6,7 @@
 import { computed, ref, watch } from "vue";
 import { X, QrCode, MessageSquare, KeyRound, LayoutGrid } from "lucide-vue-next";
 import type { LauncherStore } from "./contract";
+import LaunchGroups from "../components/LaunchGroups.vue";
 import { demoUi } from "./ui";
 import { LAYOUTS, LAYOUT_NONE, recommendLayout, channelLabel, fmtRun } from "./contract";
 
@@ -483,6 +484,10 @@ function confirmRename() {
       </div>
     </div>
   </div>
+
+  <!-- 启动组：整屏面板（不是小弹窗）。它是一套配置编辑器，要摆表格和画布，
+       塞进 400 宽的弹层里会变成两列都读不清 -->
+  <LaunchGroups v-if="demoUi.groupsOpen" :store="store" @close="demoUi.closeGroups()" />
 
   <!-- 吐司：有批量操作条时往上抬 -->
   <div class="toasts" :class="{ lifted: store.selectedIds.length }">

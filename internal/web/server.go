@@ -84,6 +84,13 @@ type Hooks struct {
 	// Reorder 按给定顺序重排账号行序（列表顺序 = 文件行序）。
 	// 未提到的行保持原相对顺序追加在末尾；未知 id 忽略。
 	Reorder func(ids []string) error
+
+	// Groups 全部启动组（含槽位的账号显示名与"账号是否还在"）。
+	Groups func() []map[string]any
+	// SaveGroup 新建/更新一套启动组，返回 id。
+	SaveGroup func(p GroupPayload) (string, error)
+	// DeleteGroup 删除一套启动组（不存在也算成功）。
+	DeleteGroup func(id string) error
 	// HeadlessLogin 用账号密码无头添加/更新网易账号（不弹网易登录窗）。
 	// 返回给界面用的结果（id / name / existed / region）。
 	HeadlessLogin func(user, password, region, name string) (map[string]any, error)
@@ -144,6 +151,40 @@ type Hooks struct {
 	MouseState           func() map[string]any // 诊断：多开时鼠标占用与仲裁状态
 }
 
+// GroupSlotPayload / GroupPayload 是启动组的传输结构。
+//
+// 为什么放在 web 包而不是 app 包：这是"前端发过来的形状"，属于传输层；
+// app 里那套 LaunchGroup 是持久化结构（带反向字段、有校验）。
+// 两者刻意分开——传输出问题不影响磁盘上的数据，磁盘结构改动也不用动前端。
+type GroupSlotPayload struct {
+	AccountKey string `json:"accountKey"`
+	Mode       string `json:"mode"`
+	Fps        int    `json:"fps"`
+	Display    string `json:"display"`
+	Disabled   bool   `json:"disabled"`
+	X          int    `json:"x"`
+	Y          int    `json:"y"`
+	W          int    `json:"w"`
+	H          int    `json:"h"`
+	HasRect    bool   `json:"hasRect"`
+}
+
+// GroupPayload 一套启动组。
+type GroupPayload struct {
+	ID         string             `json:"id"`
+	Name       string             `json:"name"`
+	Layout     string             `json:"layout"`
+	Cols       int                `json:"cols"`
+	Rows       int                `json:"rows"`
+	DefMode    string             `json:"defMode"`
+	DefFps     int                `json:"defFps"`
+	DefDisplay string             `json:"defDisplay"`
+	StopFirst  bool               `json:"stopFirst"`
+	AutoWall   bool               `json:"autoWall"`
+	GapSec     int                `json:"gapSec"`
+	Slots      []GroupSlotPayload `json:"slots"`
+}
+
 // Server 是对外的本地 Web 服务。
 type Server struct {
 	mu      sync.Mutex
@@ -194,6 +235,7 @@ func (s *Server) Handler() http.Handler {
 			"game":          safeStatus(s.hooks.Status),
 			"accounts":      safeAccounts(s.hooks.Accounts),
 			"tags":          safeTags(s.hooks.Tags),
+			"groups":        safeGroups(s.hooks.Groups),
 			"settings":      safeSettings(s.hooks.Settings),
 			"scan":          safeScan(s.hooks.ScanNow),
 			"channelScan":   safeMap(s.hooks.ChannelScanInfo),
@@ -580,6 +622,55 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		writeJSON(w, map[string]any{"ok": true})
+	})
+
+	// 启动组：一套"可重复执行的启动配方"（账号组合 + 位置 + 画质 + 启动行为）。
+	// 存 groups.json，和账号文件一样走 DPAPI。
+	mux.HandleFunc("/api/groups/save", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, map[string]any{"ok": false, "message": "只支持 POST"})
+			return
+		}
+		if s.hooks.SaveGroup == nil {
+			writeJSON(w, map[string]any{"ok": false, "message": "当前版本不支持启动组"})
+			return
+		}
+		var body GroupPayload
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<18)).Decode(&body)
+		id, err := s.hooks.SaveGroup(body)
+		if err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		var groups []map[string]any
+		if s.hooks.Groups != nil {
+			groups = s.hooks.Groups()
+		}
+		writeJSON(w, map[string]any{"ok": true, "id": id, "groups": groups})
+	})
+
+	mux.HandleFunc("/api/groups/delete", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, map[string]any{"ok": false, "message": "只支持 POST"})
+			return
+		}
+		if s.hooks.DeleteGroup == nil {
+			writeJSON(w, map[string]any{"ok": false, "message": "当前版本不支持启动组"})
+			return
+		}
+		var body struct {
+			ID string `json:"id"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&body)
+		if err := s.hooks.DeleteGroup(body.ID); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		var groups []map[string]any
+		if s.hooks.Groups != nil {
+			groups = s.hooks.Groups()
+		}
+		writeJSON(w, map[string]any{"ok": true, "groups": groups})
 	})
 
 	// 账号级"游戏设置"：画质 / 帧率 / 显示方式（窗口还是全屏）。
@@ -1068,6 +1159,14 @@ func safeSettings(f func() map[string]any) map[string]any {
 
 // safeTags 标签聚合清单：没接钩子时给空数组（前端直接 .map()，不能给 null）。
 func safeTags(f func() []map[string]any) []map[string]any {
+	if f == nil {
+		return []map[string]any{}
+	}
+	return f()
+}
+
+// safeGroups 启动组清单，理由同 safeTags。
+func safeGroups(f func() []map[string]any) []map[string]any {
 	if f == nil {
 		return []map[string]any{}
 	}
