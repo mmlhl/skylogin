@@ -156,6 +156,24 @@ export const api = {
       body: JSON.stringify({ id, mode, fps, display }),
     }),
 
+  /**
+   * 保存某个账号的标签（整组替换）。
+   * 副本与原件各存各的：传的是哪一行的 id，就只改那一行。
+   * 返回里带最新的聚合清单，界面不用等下一轮轮询。
+   */
+  setAccountTags: (id: string, tags: string[]) =>
+    request<ApiResult & { tags?: { name: string; count: number }[] }>("/api/accounts/tags", {
+      method: "POST",
+      body: JSON.stringify({ id, tags }),
+    }),
+
+  /** 按给定顺序重排账号行序（顺序就是账号文件的行序） */
+  reorderAccounts: (ids: string[]) =>
+    request("/api/accounts/reorder", {
+      method: "POST",
+      body: JSON.stringify({ ids }),
+    }),
+
   /** 创建一条账号的副本（name 为空时后端自动起名，region 为空表示副本先不选区） */
   duplicateAccount: (id: string, name: string, region = "") =>
     request("/api/accounts/duplicate", { method: "POST", body: JSON.stringify({ id, name, region }) }),

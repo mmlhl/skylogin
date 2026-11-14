@@ -51,6 +51,12 @@ export interface Account {
   displayMode?: string;
   /** 副本键（"PlayerID-2" 样式）；空 = 原始行 */
   copyKey?: string;
+  /** 用户自己打的标签（多个，自由输入）。副本与原件各存各的。 */
+  tags: string[];
+  /** 添加到本机的时间（unix 秒）——按时间分段/排序用 */
+  createdAt?: number;
+  /** 最后一次成功启动的时间（unix 秒）——"最近登录"排序用 */
+  lastLoginTs?: number;
 
   // ── 账号详情（登录环境与时间，见 Go 侧 accountView）──
   /** 登录窗加载的 mpay.dll 路径（空 = 这个渠道不走 DLL） */
@@ -200,6 +206,16 @@ export interface LauncherStore {
   /** 保存某行账号自己的画质/帧率（账号级就是具体档位，无"跟随"项）。 */
   /** 保存账号级游戏设置：画质 / 帧率 / 显示方式（空/0 = 跟随游戏） */
   setAccountQuality(id: string, mode: string, fps: number, display?: string): void;
+  /**
+   * 保存某个账号的标签（整组替换）。
+   * 副本与原件各存各的——传的是哪一行，就只改那一行。
+   */
+  setTags(id: string, tags: string[]): void;
+  /**
+   * 按给定顺序重排账号（整表顺序）。
+   * 没提到的行由后端按原相对顺序补在末尾，所以筛选后只传可见的也不会丢号。
+   */
+  reorder(ids: string[]): void;
   /** 保存账号列表宽度（分界线拖拽结束）。 */
   setRailWidth(width: number): void;
 

@@ -43,6 +43,13 @@ type Account struct {
 	// 窗口模式，否则窗口排不动），账号这一项不参与。
 	DisplayMode string `json:"display_mode,omitempty"`
 
+	// Tags 是用户自己打的标签（多个，自由输入）。只用于界面的分组/筛选，
+	// 不参与任何登录逻辑。
+	//
+	// 副本与原件各存各的（用户 2026-11-15 明确要求"标签独立"）：副本是独立
+	// 的一条记录（键是 PlayerID-2 这样），名字可以随便改，标签也是它自己的。
+	Tags []string `json:"tags,omitempty"`
+
 	// CopyKey 是副本的本机键（"PlayerID-2" 这样的后缀），允许同一个
 	// PlayerID 存多条记录（典型：同一网易账号再建一个副本在另一个区玩）。
 	// 空 = 原始行，键就是 PlayerID；老数据没有这个字段，无需迁移。
@@ -212,6 +219,9 @@ func RunUI(title string) error {
 		Delete:          deleteAccount,
 		Duplicate:       duplicateAccount,
 		SetRegion:       setAccountRegion,
+		SetTags:         saveAccountTags,
+		Tags:            allTagsView,
+		Reorder:         reorderAccounts,
 		GameSettings:    saveGameSettings,
 		HeadlessLogin:   HeadlessLoginAccount,
 		HostPool:        func() any { return HostPoolStatus() },

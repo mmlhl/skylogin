@@ -12,10 +12,16 @@ import type { AppState } from "./types";
 /** 假状态：两个账号、一个处于选中、设置填满 */
 function fakeState(): AppState {
   return {
+    tags: [
+      { name: "大号", count: 1 },
+      { name: "朋友", count: 1 },
+      { name: "小号", count: 1 },
+    ],
     accounts: [
       {
         id: "1100000000000001",
         name: "示例玩家",
+        tags: ["大号", "朋友"],
         nick: "示例玩家",
         channel: "huawei",
         channelLabel: "华为渠道",

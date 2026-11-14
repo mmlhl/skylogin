@@ -30,6 +30,8 @@ export interface AccountView {
   qualityFps?: number;
   /** 单开时的显示方式："" 跟随游戏 / "windowed" 窗口 / "fullscreen" 全屏 */
   displayMode?: string;
+  /** 用户自己打的标签（多个，自由输入）；副本与原件各存各的 */
+  tags?: string[];
   masked: string;
   level: string;
   updated: string;
@@ -236,6 +238,8 @@ export interface LoginEntryView {
 /** `/api/state` 的完整返回 */
 export interface AppState {
   accounts: AccountView[];
+  /** 全部标签的聚合清单（名称 + 命中数），按首次出现顺序 */
+  tags?: { name: string; count: number }[];
   game: string;
   login: LoginState;
   scan: ScanState;

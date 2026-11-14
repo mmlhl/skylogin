@@ -3,9 +3,9 @@
  * 壳 03 · 控制台：图标栏 + 账号列表 + 详情面板，类 Linear。
  * 信息密度最高，运行中的客户端在详情页统一管理。
  */
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { Flame, LayoutGrid, LayoutDashboard, Monitor, Settings, Eye, EyeOff, Plus, Pencil, Play, Square, Layers, RefreshCw, CopyPlus, SlidersHorizontal, ChevronDown } from "lucide-vue-next";
-import type { LauncherStore } from "../contract";
+import type { Account, LauncherStore } from "../contract";
 
 const props = defineProps<{ store: LauncherStore }>();
 const store = props.store;import { demoUi } from "../ui";
@@ -36,6 +36,123 @@ function onDividerDown(e: MouseEvent) {
 }
 const expired = computed(() => cur.value?.cred === "expired");
 const runningSelf = computed(() => !!cur.value?.running);
+
+/* ───────────────── 账号列表的四种视图 ─────────────────
+ * 用户 2026-11-15 定的规则：
+ *   渠道 / 添加时间 是**单值**维度 → 用分段：每个号只出现一次
+ *   标签 是**多值**维度 → 用分组：一个号有几个标签就在几个组里出现
+ *   平铺 是不分组的老样子，顺序可以自己拖
+ * 所以"重复出现"只可能来自标签视图，而且只是同一行的投影，不是新数据。
+ */
+type ListView = "flat" | "tag" | "channel" | "time";
+const VIEW_TABS: { k: ListView; label: string }[] = [
+  { k: "flat", label: "平铺" },
+  { k: "tag", label: "标签" },
+  { k: "channel", label: "渠道" },
+  { k: "time", label: "时间" },
+];
+const listView = ref<ListView>("flat");
+const flatSort = ref<"custom" | "name" | "recent">("custom");
+const collapsedTags = ref<string[]>([]);
+const UNTAGGED = "未分组";
+const CHANNEL_ORDER = ["华为渠道", "网易官方", "B站渠道", "4399渠道", "vivo渠道"];
+const TIME_ORDER = ["最近 7 天", "8–30 天", "30 天以上"];
+
+/** 标签的显示顺序：跟后端聚合清单一致（首次出现），"未分组"永远在最后 */
+const groupOrder = ref<string[]>([]);
+watch(
+  () => (appState.tags ?? []).map((t) => t.name).join("|"),
+  () => {
+    const all = [...(appState.tags ?? []).map((t) => t.name), UNTAGGED];
+    const kept = groupOrder.value.filter((t) => all.includes(t));
+    groupOrder.value = [...kept, ...all.filter((t) => !kept.includes(t))];
+  },
+  { immediate: true }
+);
+
+function sorted(rows: Account[]) {
+  const out = [...rows];
+  if (flatSort.value === "name") out.sort((a, b) => a.name.localeCompare(b.name, "zh"));
+  // 最近登录：没有时间戳的（从没成功启动过）排在最后
+  if (flatSort.value === "recent") out.sort((a, b) => (b.lastLoginTs ?? 0) - (a.lastLoginTs ?? 0));
+  return out;
+}
+
+/** 添加时间分成三段：最近一周 / 一个月内 / 更早 */
+function timeBucket(a: Account) {
+  const t = a.createdAt ?? 0;
+  if (!t) return "30 天以上";
+  const days = (Date.now() / 1000 - t) / 86400;
+  return days <= 7 ? "最近 7 天" : days <= 30 ? "8–30 天" : "30 天以上";
+}
+
+const sections = computed<{ key: string; rows: Account[]; draggable: boolean }[]>(() => {
+  const accs = store.accounts;
+  if (listView.value === "flat") {
+    return [{ key: "", rows: sorted(accs), draggable: true }];
+  }
+  if (listView.value === "tag") {
+    return groupOrder.value.map((tag) => ({
+      key: tag,
+      rows: sorted(tag === UNTAGGED ? accs.filter((a) => !a.tags.length) : accs.filter((a) => a.tags.includes(tag))),
+      // 组内可以调顺序；跨组移动没有意义（那等于改标签），所以只认同组
+      draggable: true,
+    }));
+  }
+  if (listView.value === "channel") {
+    const names = Array.from(new Set(accs.map((a) => channelLabel(a.channel))));
+    const order = [...CHANNEL_ORDER.filter((n) => names.includes(n)), ...names.filter((n) => !CHANNEL_ORDER.includes(n))];
+    return order.map((name) => ({
+      key: name,
+      rows: sorted(accs.filter((a) => channelLabel(a.channel) === name)),
+      draggable: false,
+    }));
+  }
+  return TIME_ORDER.map((k) => ({
+    key: k,
+    rows: sorted(accs.filter((a) => timeBucket(a) === k)),
+    draggable: false,
+  })).filter((s) => s.rows.length);
+});
+
+/** 标签视图里，行内只显示"别的标签"：当前这一组的标签已经由组头表达了 */
+function tagsOf(a: Account, group: string) {
+  return listView.value === "tag" ? a.tags.filter((t) => t !== group) : a.tags;
+}
+
+function toggleTag(tag: string) {
+  const i = collapsedTags.value.indexOf(tag);
+  if (i >= 0) collapsedTags.value.splice(i, 1);
+  else collapsedTags.value.push(tag);
+}
+
+/* 拖动排序：只改顺序，不改内容（后端按整表顺序落盘） */
+const dragRow = ref<{ sec: string; id: string } | null>(null);
+const dropTarget = ref("");
+function onDropRow(secKey: string, targetId: string) {
+  const d = dragRow.value;
+  if (!d || d.sec !== secKey) return;
+  const ids = store.accounts.map((a) => a.id);
+  const from = ids.indexOf(d.id);
+  const to = ids.indexOf(targetId);
+  if (from < 0 || to < 0 || from === to) return;
+  ids.splice(to, 0, ids.splice(from, 1)[0]);
+  store.reorder(ids);
+  dragRow.value = null;
+  dropTarget.value = "";
+}
+
+/* 标签编辑：改哪个号就只动哪个号（副本与原件的标签互相独立） */
+const tagDraft = ref("");
+function addTag(a: Account) {
+  const v = tagDraft.value.trim();
+  if (!v || a.tags.includes(v)) return;
+  store.setTags(a.id, [...a.tags, v]);
+  tagDraft.value = "";
+}
+function removeTag(a: Account, t: string) {
+  store.setTags(a.id, a.tags.filter((x) => x !== t));
+}
 
 // 被寄宿的号：找出提供槽位的那个宿主账号，给用户看名字而不是一串 ID。
 // 宿主可能已经被删掉了，那种情况下标出来——用户需要知道这条关系已经悬空。
@@ -112,32 +229,72 @@ const lastCheckText = computed(() => {
           <EyeOff v-if="store.maskAll" :style="{ width: '14px', height: '14px' }" /><Eye v-else :style="{ width: '14px', height: '14px' }" />
         </button>
       </div>
+
+      <!-- 四种视图：平铺 / 标签 / 渠道 / 时间（四个都改同一个列表，不开新页面） -->
+      <div class="vbar">
+        <button v-for="v in VIEW_TABS" :key="v.k" class="vbtn" :class="{ on: listView === v.k }" @click="listView = v.k">
+          {{ v.label }}
+        </button>
+      </div>
+      <div class="sbar">
+        <template v-if="listView === 'flat'">
+          <span>顺序</span>
+          <button :class="{ on: flatSort === 'custom' }" @click="flatSort = 'custom'">自定义</button>
+          <button :class="{ on: flatSort === 'name' }" @click="flatSort = 'name'">名称</button>
+          <button :class="{ on: flatSort === 'recent' }" @click="flatSort = 'recent'">最近登录</button>
+        </template>
+        <span v-else-if="listView === 'tag'" class="hint">多标签的号会在每个标签下各出现一次</span>
+        <span v-else class="hint">{{ listView === "channel" ? "按渠道排：每个号只出现一次" : "按添加时间排：每个号只出现一次" }}</span>
+      </div>
+
       <p v-if="!store.accounts.length" class="lempty">还没有账号</p>
-      <div
-        v-for="a in store.accounts"
-        :key="a.id"
-        class="lrow"
-        :class="{ on: a.current }"
-        @click="store.select(a.id)"
-      >
-        <input
-          type="checkbox"
-          class="sel"
-          :checked="store.selectedIds.includes(a.id)"
-          title="选中该账号"
-          @click.stop
-          @change="store.toggleSelect(a.id)"
-        />
-        <span class="lava">{{ a.name.slice(0, 1) }}</span>
-        <span class="ltxt">
-          <b>{{ store.maskAll ? a.maskedName : a.name }}</b>
-          <i>
-            <em v-if="a.running" class="dot ok live" />
-            <em v-else-if="a.cred === 'expired'" class="dot bad" />
-            <em v-else class="dot ok" />
-            {{ a.running ? "运行中 · " + fmtRun(a.runSeconds) : a.cred === "expired" ? "凭证过期" : "就绪" }} · {{ channelLabel(a.channel) }}
-          </i>
-        </span>
+      <div v-else class="rows">
+        <section v-for="sec in sections" :key="listView + sec.key" class="sect">
+          <div v-if="sec.key" class="shead" :class="{ nograb: !sec.draggable }" @click="toggleTag(sec.key)">
+            <ChevronDown v-if="listView === 'tag'" class="chev" :class="{ closed: collapsedTags.includes(sec.key) }" />
+            <span class="sname">{{ sec.key }}</span>
+            <em>{{ sec.rows.length }}</em>
+          </div>
+          <template v-if="listView !== 'tag' || !collapsedTags.includes(sec.key)">
+            <div
+              v-for="a in sec.rows"
+              :key="sec.key + a.id"
+              class="lrow"
+              :class="{ on: a.current, dragging: dragRow?.id === a.id, over: dropTarget === sec.key + a.id }"
+              :draggable="sec.draggable"
+              @dragstart="sec.draggable && (dragRow = { sec: sec.key, id: a.id })"
+              @dragend="dragRow = null; dropTarget = ''"
+              @dragover.prevent="dragRow && dragRow.sec === sec.key && (dropTarget = sec.key + a.id)"
+              @drop="dragRow && onDropRow(sec.key, a.id)"
+              @click="store.select(a.id)"
+            >
+              <input
+                type="checkbox"
+                class="sel"
+                :checked="store.selectedIds.includes(a.id)"
+                title="选中该账号"
+                @click.stop
+                @change="store.toggleSelect(a.id)"
+              />
+              <span class="lava">{{ a.name.slice(0, 1) }}</span>
+              <span class="ltxt">
+                <b>
+                  {{ store.maskAll ? a.maskedName : a.name }}
+                  <span v-if="a.copyKey" class="copybadge" title="这是一个副本：独立记录，凭证与原件共享">副本</span>
+                </b>
+                <i v-if="tagsOf(a, sec.key).length" class="tagline">
+                  <span v-for="t in tagsOf(a, sec.key)" :key="t" class="tagchip">{{ t }}</span>
+                </i>
+                <i>
+                  <em v-if="a.running" class="dot ok live" />
+                  <em v-else-if="a.cred === 'expired'" class="dot bad" />
+                  <em v-else class="dot ok" />
+                  {{ a.running ? "运行中 · " + fmtRun(a.runSeconds) : a.cred === "expired" ? "凭证过期" : "就绪" }} · {{ channelLabel(a.channel) }}
+                </i>
+              </span>
+            </div>
+          </template>
+        </section>
       </div>
       <button class="ladd" @click="store.addAccount()"><Plus />添加账号</button>
     </div>
@@ -165,6 +322,18 @@ const lastCheckText = computed(() => {
         <div><span>渠道</span><b>{{ channelLabel(cur.channel) }}</b></div>
         <div><span>添加时间</span><b class="mono">{{ cur.created || "—" }}</b></div>
         <div><span>最后登录</span><b class="mono">{{ cur.lastLogin || "—" }}</b></div>
+      </div>
+
+      <!-- 标签：在这里改。列表只负责显示和筛选，编辑永远落在详情里 -->
+      <div class="dsection">
+        <p class="dseclabel tight">标签</p>
+        <div class="tagrow">
+          <span v-for="t in cur.tags" :key="t" class="tagpick">
+            {{ t }}<button class="x" title="移除这个标签" @click="removeTag(cur, t)">×</button>
+          </span>
+          <input v-model="tagDraft" class="tagin" placeholder="输入标签后回车" @keyup.enter="addTag(cur)" />
+        </div>
+        <p class="regionnote">标签只存在本机，用来分组和筛选；副本与原件各存各的。</p>
       </div>
 
       <!-- 其余信息默认收起来：日常只看"这个号是什么、什么时候加的、上次什么时候登的"，
@@ -672,5 +841,195 @@ const lastCheckText = computed(() => {
   border-color: var(--acc);
   color: var(--tx);
   background: var(--on);
+}
+
+/* ── 账号列表：视图切换 / 排序条 / 分段 ── */
+.vbar {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 2px;
+  margin: 8px 10px 0;
+  padding: 2px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.vbtn {
+  height: 22px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--faint);
+  font-family: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.vbtn:hover {
+  color: var(--dim);
+}
+.vbtn.on {
+  background: rgba(255, 255, 255, 0.09);
+  color: var(--tx);
+}
+.sbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+  padding: 0 11px;
+  border-bottom: 1px solid var(--line);
+}
+.sbar > span {
+  font-size: 10.5px;
+  color: var(--faint);
+}
+.sbar .hint {
+  line-height: 1.3;
+}
+.sbar button {
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--faint);
+  font-family: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.sbar button.on {
+  border-color: var(--line2);
+  color: var(--tx);
+}
+.rows {
+  flex: 1;
+  overflow: auto;
+}
+.sect + .sect {
+  border-top: 1px solid var(--line);
+}
+.shead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  background: rgba(255, 255, 255, 0.015);
+  color: var(--faint);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  user-select: none;
+}
+.shead:hover {
+  color: var(--dim);
+}
+.shead.nograb {
+  cursor: default;
+}
+.sname {
+  font-weight: 600;
+}
+.shead em {
+  font-style: normal;
+  font-size: 10px;
+}
+.chev {
+  width: 11px;
+  height: 11px;
+  flex: none;
+  transition: transform 0.15s ease-out;
+}
+.chev.closed {
+  transform: rotate(-90deg);
+}
+
+/* 行：拖动中的样子与插入位置线 */
+.lrow.dragging {
+  opacity: 0.55;
+}
+.lrow.over {
+  box-shadow: inset 0 2px 0 var(--acc);
+}
+
+/* 行内的标签：无彩色小块。为什么不用彩色：颜色在本界面已经代表
+   "可操作/当前"（金色），再给标签一套颜色就成了第二套语义。 */
+.tagline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin: 1px 0;
+}
+.tagchip {
+  height: 15px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.055);
+  color: var(--faint);
+  font-size: 10px;
+  line-height: 15px;
+  font-style: normal;
+  white-space: nowrap;
+}
+.copybadge {
+  display: inline-block;
+  height: 15px;
+  padding: 0 4px;
+  margin-left: 4px;
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  color: var(--faint);
+  font-size: 9.5px;
+  font-weight: 400;
+  line-height: 13px;
+  vertical-align: 1px;
+}
+
+/* 详情里的标签编辑 */
+.tagrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.tagpick {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 4px 0 8px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--dim);
+  font-size: 11.5px;
+}
+.tagpick .x {
+  width: 15px;
+  height: 15px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--faint);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.tagpick .x:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--tx);
+}
+.tagin {
+  width: 132px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--line2);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--tx);
+  font-family: inherit;
+  font-size: 11.5px;
+  outline: none;
+}
+.tagin:focus {
+  border-color: rgba(216, 180, 124, 0.5);
 }
 </style>

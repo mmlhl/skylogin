@@ -77,6 +77,10 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
         regionBlocked: a.regionBlocked,
         playerId: a.playerId,
         copyKey: a.copyKey,
+        // 标签：后端给的是数组（nil 已经转成 []），这里再兜一次底
+        tags: a.tags ?? [],
+        createdAt: a.createdAt,
+        lastLoginTs: a.lastLogin,
         qualityMode: a.qualityMode,
         qualityFps: a.qualityFps,
         // 详情页：登录环境与时间（Go 侧已经在 accountView 里格式化成串了）
@@ -196,6 +200,26 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
     remove(id) {
       void api.deleteAccount(id).then((r) => {
         if (r.ok === false) toast(r.message || "删除失败");
+      });
+    },
+
+    setTags(id, tags) {
+      // 先本地生效（拖动/删除标签要立刻看到），失败再靠每秒轮询纠正回来
+      const hit = st.accounts.find((a) => a.id === id);
+      if (hit) hit.tags = tags;
+      void api.setAccountTags(id, tags).then((r) => {
+        if (r.ok === false) toast(r.message || "保存标签失败");
+      });
+    },
+
+    reorder(ids) {
+      // 同一份顺序先应用到本地，避免"松手后列表跳一下再回来"
+      const byId = new Map(st.accounts.map((a) => [a.id, a]));
+      const next = ids.map((id) => byId.get(id)).filter((a): a is Account => !!a);
+      for (const a of st.accounts) if (!next.includes(a)) next.push(a);
+      st.accounts.splice(0, st.accounts.length, ...next);
+      void api.reorderAccounts(ids).then((r) => {
+        if (r.ok === false) toast(r.message || "保存顺序失败");
       });
     },
 

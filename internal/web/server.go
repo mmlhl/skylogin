@@ -77,6 +77,13 @@ type Hooks struct {
 	Duplicate func(id, name, region string) (string, error)
 	// SetRegion 设置某条账号记录的所选渠道（仅网易官方账号）。
 	SetRegion func(id, region string) error
+	// SetTags 保存某条账号记录的标签（副本与原件各存各的，互不影响）。
+	SetTags func(id string, tags []string) error
+	// Tags 全部标签的聚合清单（名称 + 命中数），给列表的标签视图和筛选条用。
+	Tags func() []map[string]any
+	// Reorder 按给定顺序重排账号行序（列表顺序 = 文件行序）。
+	// 未提到的行保持原相对顺序追加在末尾；未知 id 忽略。
+	Reorder func(ids []string) error
 	// HeadlessLogin 用账号密码无头添加/更新网易账号（不弹网易登录窗）。
 	// 返回给界面用的结果（id / name / existed / region）。
 	HeadlessLogin func(user, password, region, name string) (map[string]any, error)
@@ -186,6 +193,7 @@ func (s *Server) Handler() http.Handler {
 			"login":         s.getState(),
 			"game":          safeStatus(s.hooks.Status),
 			"accounts":      safeAccounts(s.hooks.Accounts),
+			"tags":          safeTags(s.hooks.Tags),
 			"settings":      safeSettings(s.hooks.Settings),
 			"scan":          safeScan(s.hooks.ScanNow),
 			"channelScan":   safeMap(s.hooks.ChannelScanInfo),
@@ -519,6 +527,55 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/accounts/region", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if err := s.hooks.SetRegion(q.Get("id"), q.Get("region")); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
+	})
+
+	// 账号标签：一个账号可以有多个（自由输入），只用于分组/筛选。
+	mux.HandleFunc("/api/accounts/tags", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, map[string]any{"ok": false, "message": "只支持 POST"})
+			return
+		}
+		if s.hooks.SetTags == nil {
+			writeJSON(w, map[string]any{"ok": false, "message": "当前版本不支持标签"})
+			return
+		}
+		var body struct {
+			ID   string   `json:"id"`
+			Tags []string `json:"tags"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&body)
+		if err := s.hooks.SetTags(body.ID, body.Tags); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		// 直接回最新的聚合清单：界面改完标签立刻就能拿到新的筛选条内容，
+		// 不用再等下一轮 /api/state。
+		var tags []map[string]any
+		if s.hooks.Tags != nil {
+			tags = s.hooks.Tags()
+		}
+		writeJSON(w, map[string]any{"ok": true, "tags": tags})
+	})
+
+	// 账号列表的顺序：前端算好整表顺序后整体传上来（规则只写在前端一份）。
+	mux.HandleFunc("/api/accounts/reorder", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, map[string]any{"ok": false, "message": "只支持 POST"})
+			return
+		}
+		if s.hooks.Reorder == nil {
+			writeJSON(w, map[string]any{"ok": false, "message": "当前版本不支持排序"})
+			return
+		}
+		var body struct {
+			IDs []string `json:"ids"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body)
+		if err := s.hooks.Reorder(body.IDs); err != nil {
 			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
 			return
 		}
@@ -1005,6 +1062,14 @@ func safeAccounts(f func() []map[string]any) []map[string]any {
 func safeSettings(f func() map[string]any) map[string]any {
 	if f == nil {
 		return map[string]any{}
+	}
+	return f()
+}
+
+// safeTags 标签聚合清单：没接钩子时给空数组（前端直接 .map()，不能给 null）。
+func safeTags(f func() []map[string]any) []map[string]any {
+	if f == nil {
+		return []map[string]any{}
 	}
 	return f()
 }

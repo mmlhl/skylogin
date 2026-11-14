@@ -19,6 +19,9 @@ function account(p: Partial<Account> & { name: string; channel: Account["channel
     maskedName: p.name.length > 1 ? p.name.slice(0, 1) + "***" : p.name,
     level: "",
     cred: "ok",
+    tags: p.tags ?? [],
+    createdAt: p.createdAt ?? Date.now() / 1000,
+    lastLoginTs: p.lastLoginTs ?? 0,
     running: false,
     runSeconds: 0,
     current: false,
@@ -121,7 +124,19 @@ export const store: LauncherStore = {
     }
   },
 
-    setAccountQuality(id, mode, fps) {
+    setTags(id, tags) {
+    const a = state.accounts.find((x) => x.id === id);
+    if (a) a.tags = tags;
+  },
+
+  reorder(ids) {
+    const byId = new Map(state.accounts.map((a) => [a.id, a]));
+    const next = ids.map((id) => byId.get(id)).filter((a): a is Account => !!a);
+    for (const a of state.accounts) if (!next.includes(a)) next.push(a);
+    state.accounts.splice(0, state.accounts.length, ...next);
+  },
+
+  setAccountQuality(id, mode, fps) {
       const acc = state.accounts.find((a) => a.id === id);
       if (acc) acc.qualityMode = mode;
       if (acc) acc.qualityFps = fps;

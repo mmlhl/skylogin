@@ -549,9 +549,11 @@ func accountView(a Account) map[string]any {
 		"lastCheck":   a.LastCheck,
 		"id":          accountKey(a),
 		"copyKey":     a.CopyKey,
+		// tags = 用户自己打的标签，界面用它做分组/筛选。nil 已经换成空数组，
+		// 不然前端拿到 null 再 .map() 会直接崩。
+		"tags": tagsOf(a),
 		"qualityMode": a.QualityMode,
-		"qualityFps":  a.QualityFps,
-		// displayMode = 单开时的显示方式："" 跟随游戏 / windowed / fullscreen。
+		"qualityFps":  a.QualityFps,		// displayMode = 单开时的显示方式："" 跟随游戏 / windowed / fullscreen。
 		// 多开不读它（多开的显示方式由多开弹窗决定，平铺必须窗口模式）。
 		"displayMode": a.DisplayMode,
 		"region":      a.Region,
