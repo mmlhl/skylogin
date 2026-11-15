@@ -11,6 +11,7 @@ import {
   ArrowUpDown,
 } from "lucide-vue-next";
 import type { Account, LauncherStore } from "../contract";
+import LaunchGroups from "../../components/LaunchGroups.vue";
 
 const props = defineProps<{ store: LauncherStore }>();
 const store = props.store;import { demoUi } from "../ui";
@@ -20,6 +21,14 @@ import { channelLabel, fmtRun } from "../contract";
 const cur = computed(() => store.current);
 
 // 账号列表宽度：可拖拽调节，存后端（设置里的 railWidth）
+/**
+ * 内容区视图：账号 / 启动组。
+ *
+ * 用"窗口内切换"而不是弹层：启动组是左侧图标栏的一级入口，
+ * 一级入口应该换内容，不该盖一层——盖一层会让人以为点错了、想找关闭按钮。
+ */
+const view = ref<"accounts" | "groups">("accounts");
+
 const railWidth = ref(appState.settings.railWidth >= 220 ? appState.settings.railWidth : 264);
 const dragging = ref(false);
 function onDividerDown(e: MouseEvent) {
@@ -365,12 +374,14 @@ const lastCheckText = computed(() => {
   <div class="win">
     <div class="rail">
       <span class="rlogo"><Flame /></span>
-      <button class="rico on" title="账号"><LayoutGrid /></button>
-      <button class="rico" title="运行" @click="store.openRunning()"><Monitor /></button>
+      <button class="rico" :class="{ on: view === 'accounts' }" title="账号" @click="view = 'accounts'"><LayoutGrid /></button>
+      <button class="rico" :class="{ on: view === 'groups' }" title="启动组" @click="view = 'groups'"><Monitor /></button>
       <button class="rico" title="监控墙（实时小窗）" @click="store.toggleWall()"><LayoutDashboard /></button>
       <button class="rico bottom" title="设置" @click="store.openSettings()"><Settings /></button>
     </div>
 
+    <!-- 账号视图：列表 + 详情（原来的那一套） -->
+    <template v-if="view === 'accounts'">
     <div class="list" :style="{ width: railWidth + 'px' }">
       <!-- 头部两行，控件位置在任何视图下都不动：
            第一行：标题 + 排序（非平铺时禁用占位，不消失——消失会让打码键跳位）
@@ -614,6 +625,10 @@ const lastCheckText = computed(() => {
         <button class="btn sm" @click="store.stop(a.id)"><Square />停止</button>
       </div>
     </div>
+    </template>
+
+    <!-- 启动组视图：换内容不盖层。rail 保持可见，所以"我在哪一页"一直清楚 -->
+    <LaunchGroups v-else embedded :store="store" @close="view = 'accounts'" />
   </div>
 </template>
 

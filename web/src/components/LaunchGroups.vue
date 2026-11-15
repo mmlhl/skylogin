@@ -20,12 +20,21 @@ import {
   Settings2, Monitor, Power,
 } from "lucide-vue-next";
 import type { Account, LaunchGroup, LaunchSlot, LauncherStore } from "../shellkit/contract";
+import { channelLabel } from "../shellkit/contract";
 
-const props = defineProps<{ store: LauncherStore }>();
+const props = defineProps<{ store: LauncherStore; embedded?: boolean }>();
 
 /** 画质档位的中文名（游戏认识的档位名见 internal/prefs） */
 const qualityLabelOf = (v: string) =>
   v === "LowPower" ? "低功耗" : v === "Default" ? "默认" : v === "HighQuality" ? "高画质" : v === "Presentation" ? "极致" : "跟随";
+
+/** 槽位对应的账号（拿渠道、凭证状态这些"账号自身的属性"用） */
+const accOf = (key: string) => props.store.accounts.find((a) => a.id === key);
+const chanOf = (key: string) => {
+  const a = accOf(key);
+  return a ? channelLabel(a.channel) : "—";
+};
+const expiredOf = (key: string) => accOf(key)?.cred === "expired";
 const store = props.store;
 
 const q = ref("");
@@ -345,14 +354,14 @@ function onBlockUp() {
 </script>
 
 <template>
-  <div class="sheet">
+  <div class="sheet" :class="{ embedded }">
     <header class="top">
       <div class="title">
         <Monitor class="ticon" />
         <h2>启动组</h2>
         <span class="sub">一套 = 账号组合 + 窗口位置 + 画质 + 启动行为</span>
       </div>
-      <button class="close" title="关闭" @click="$emit('close')"><X /></button>
+      <button v-if="!embedded" class="close" title="关闭" @click="$emit('close')"><X /></button>
     </header>
 
     <div class="body">
@@ -483,9 +492,9 @@ function onBlockUp() {
           </div>
         </div>
 
-        <!-- 成员表 -->
+        <!-- 成员表：账号（含渠道、凭证状态这些"能不能起来"的信息）+ 各自的启动参数 -->
         <div class="thead">
-          <span>#</span><span>账号</span><span>位置</span><span>画质</span><span>帧率</span><span>显示</span><span>启用</span><span />
+          <span>#</span><span>账号</span><span>渠道</span><span>位置</span><span>画质</span><span>帧率</span><span>显示</span><span>启用</span><span />
         </div>
         <div class="tbody">
           <div
@@ -501,8 +510,11 @@ function onBlockUp() {
               <span class="ameta">
                 <b>{{ s.name }}</b>
                 <span v-if="s.missing" class="miss">账号已删除</span>
+                <!-- 凭证过期的号，这套启动时大概率会失败：直接标出来，别等点了才发现 -->
+                <span v-else-if="expiredOf(s.accountKey)" class="warn">凭证过期</span>
               </span>
             </span>
+            <span class="chan">{{ chanOf(s.accountKey) }}</span>
             <span class="pos mono">
               {{ s.hasRect ? `${s.x},${s.y} · ${s.w}×${s.h}` : "未记录" }}
             </span>
@@ -560,6 +572,16 @@ function onBlockUp() {
 </template>
 
 <style scoped>
+/* 内嵌在控制台壳的右侧内容区（不是弹层）：rail 与标题栏都保留，
+   只有内容区切换——"切页"比"盖一层"更符合这是一级导航的事实。 */
+.sheet.embedded {
+  position: static;
+  inset: auto;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  background: transparent;
+}
 .sheet {
   /* 令牌自己带一份：这个面板挂在壳外面，壳里的 --s1/--acc 是各壳私有变量，
      拿不到就会渲染成一片透明。这里用 .ai/06 规范里那套中性值。 */
@@ -1130,7 +1152,7 @@ function onBlockUp() {
 .thead,
 .trow {
   display: grid;
-  grid-template-columns: 26px minmax(120px, 1fr) 132px 84px 52px 62px 36px 50px;
+  grid-template-columns: 26px minmax(104px, 1fr) 76px 128px 80px 50px 60px 34px 48px;
   gap: 8px;
   align-items: center;
 }
@@ -1201,6 +1223,22 @@ function onBlockUp() {
   border-radius: 3px;
   color: var(--faint);
   font-size: 9.5px;
+}
+/* 凭证过期：这套启动时会卡在这个号上，标出来 */
+.warn {
+  flex: none;
+  padding: 0 4px;
+  border: 1px solid rgba(201, 128, 112, 0.5);
+  border-radius: 3px;
+  color: #c98070;
+  font-size: 9.5px;
+}
+.chan {
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .pos {
   font-size: 10.5px;
