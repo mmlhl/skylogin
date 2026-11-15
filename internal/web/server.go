@@ -19,6 +19,7 @@ import (
 	"skylogin/internal/channel"
 	"skylogin/internal/huawei"
 	"skylogin/internal/release"
+	"skylogin/internal/win"
 )
 
 // 前端构建产物（web/ 目录用 Vite 构建到这里）。
@@ -56,15 +57,16 @@ type Hooks struct {
 	WindowDrag func()
 	// WindowSuspend 挂起/恢复主界面 WebView（窗口不可见时省内存）。
 	WindowSuspend func(on bool)
-	StopAccount     func(id string) error
-	Status          func() string
-	Select          func(string) error
-	Rename          func(string, string) error
-	SetGameID       func(string, string) error
-	Delete          func(string) error
-	// GameSettings 保存某行账号的"游戏设置"：画质 / 帧率 / 显示方式。
-	// mode 空 = 跟随游戏，fps 0 = 跟随游戏，display 空 = 跟随游戏。
-	GameSettings func(id, mode string, fps int, display string) error
+	StopAccount   func(id string) error
+	Status        func() string
+	Select        func(string) error
+	Rename        func(string, string) error
+	SetGameID     func(string, string) error
+	Delete        func(string) error
+	// GameSettings 保存某行账号的"游戏设置"：画质 / 帧率 / 显示方式 / 自动进入。
+	// mode 空 = 跟随游戏，fps 0 = 跟随游戏，display 空 = 跟随游戏，
+	// autoEnter nil = 跟随全局。
+	GameSettings  func(id, mode string, fps int, display string, autoEnter *bool) error
 	SetMaskTitles func(on bool) bool
 	// GetBuild 返回 CI 注入的构建号（本地构建为 0）。
 	GetBuild func() int
@@ -78,7 +80,8 @@ type Hooks struct {
 	// SetRegion 设置某条账号记录的所选渠道（仅网易官方账号）。
 	SetRegion func(id, region string) error
 	// SetTags 保存某条账号记录的标签（副本与原件各存各的，互不影响）。
-	SetTags func(id string, tags []string) error
+	SetTags     func(id string, tags []string) error
+	SetTagOrder func(tags []string) ([]string, error)
 	// Tags 全部标签的聚合清单（名称 + 命中数），给列表的标签视图和筛选条用。
 	Tags func() []map[string]any
 	// Reorder 按给定顺序重排账号行序（列表顺序 = 文件行序）。
@@ -95,6 +98,8 @@ type Hooks struct {
 	LaunchGroup func(id string) (string, error)
 	// ClientRects 读当前运行中客户端的窗口矩形，给「记住当前各窗口位置」用。
 	ClientRects func() []map[string]any
+	// LayoutPlan 与实际排列共享物理尺寸规划，预览不触碰运行窗口。
+	LayoutPlan func(win.LayoutRequest) win.LayoutPlan
 	// HeadlessLogin 用账号密码无头添加/更新网易账号（不弹网易登录窗）。
 	// 返回给界面用的结果（id / name / existed / region）。
 	HeadlessLogin func(user, password, region, name string) (map[string]any, error)
@@ -104,7 +109,7 @@ type Hooks struct {
 	// HostPool 返回寄宿池状态：哪些账号能当宿主、槽里记着谁。
 	HostPool     func() any
 	Settings     func() map[string]any
-	SaveSettings func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int) error
+	SaveSettings func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int, autoEnterPlay *bool, multiAutoEnter *bool) error
 	// SaveMpayDebug 保存官方登录窗的调试参数（用哪份 DLL / 哪个 game id / 是否跳过清理）。
 	SaveMpayDebug func(dll, game string, skipLogout bool, dataPath string) error
 	// MpayChannelStart 打开官方登录窗并强制用游戏身份（ma75），让渠道服 App 也能扫码。
@@ -131,28 +136,28 @@ type Hooks struct {
 	// ChannelCancel 取消正在进行的协议登录（用户关掉扫码对话框时调）。
 	// 不取消的话 tracker 会一直占着，5 分钟内无法重新登录。
 	ChannelCancel func(key string)
-	AuthHint             func() map[string]any
-	LaunchAlert          func() map[string]any
+	AuthHint      func() map[string]any
+	LaunchAlert   func() map[string]any
 	// GameUpdate 给界面用的游戏版本比对结果（启动时后台查，落后提示去发烧平台更新）。
 	GameUpdate func() map[string]any
 	// GameUpdateCheck 立刻重新查一次游戏版本（界面点「重新检查」用）。
 	GameUpdateCheck func() map[string]any
 	// GameUpdateOpenPlatform 打开发烧平台本体（没有就退回官网）。
 	GameUpdateOpenPlatform func() error
-	Version              func() string
-	Reregister           func(mode string) (string, error)
-	SetDeviceID          func(id string) error
-	SMSSend              func(mobile string) error
-	SMSLogin             func(mobile, code, targetUserID string) error
-	WebLoginStart        func(targetUserID string) error
-	WebLoginStatus       func() map[string]any
-	MpayLoginStart       func(targetUserID string) error
-	MpayLoginStatus      func() map[string]any
-	MpayLoginCancel      func()
-	SaveRailWidth        func(width int) error
-	SaveShell            func(shell int) error
-	LoadShell            func() int
-	MouseState           func() map[string]any // 诊断：多开时鼠标占用与仲裁状态
+	Version                func() string
+	Reregister             func(mode string) (string, error)
+	SetDeviceID            func(id string) error
+	SMSSend                func(mobile string) error
+	SMSLogin               func(mobile, code, targetUserID string) error
+	WebLoginStart          func(targetUserID string) error
+	WebLoginStatus         func() map[string]any
+	MpayLoginStart         func(targetUserID string) error
+	MpayLoginStatus        func() map[string]any
+	MpayLoginCancel        func()
+	SaveRailWidth          func(width int) error
+	SaveShell              func(shell int) error
+	LoadShell              func() int
+	MouseState             func() map[string]any // 诊断：多开时鼠标占用与仲裁状态
 }
 
 // GroupSlotPayload / GroupPayload 是启动组的传输结构。
@@ -171,6 +176,7 @@ type GroupSlotPayload struct {
 	W          int    `json:"w"`
 	H          int    `json:"h"`
 	HasRect    bool   `json:"hasRect"`
+	ZOrder     int    `json:"zOrder"`
 }
 
 // GroupPayload 一套启动组。
@@ -186,6 +192,8 @@ type GroupPayload struct {
 	StopFirst  bool               `json:"stopFirst"`
 	AutoWall   bool               `json:"autoWall"`
 	GapSec     int                `json:"gapSec"`
+	ScreenW    int                `json:"screenW"`
+	ScreenH    int                `json:"screenH"`
 	Slots      []GroupSlotPayload `json:"slots"`
 }
 
@@ -593,7 +601,10 @@ func (s *Server) Handler() http.Handler {
 			ID   string   `json:"id"`
 			Tags []string `json:"tags"`
 		}
-		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&body)
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&body); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": "标签格式无效"})
+			return
+		}
 		if err := s.hooks.SetTags(body.ID, body.Tags); err != nil {
 			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
 			return
@@ -604,7 +615,16 @@ func (s *Server) Handler() http.Handler {
 		if s.hooks.Tags != nil {
 			tags = s.hooks.Tags()
 		}
-		writeJSON(w, map[string]any{"ok": true, "tags": tags})
+		var account map[string]any
+		if s.hooks.Accounts != nil {
+			for _, a := range s.hooks.Accounts() {
+				if a["id"] == body.ID {
+					account = map[string]any{"id": body.ID, "tags": a["tags"]}
+					break
+				}
+			}
+		}
+		writeJSON(w, map[string]any{"ok": true, "tags": tags, "account": account})
 	})
 
 	// 账号列表的顺序：前端算好整表顺序后整体传上来（规则只写在前端一份）。
@@ -620,12 +640,47 @@ func (s *Server) Handler() http.Handler {
 		var body struct {
 			IDs []string `json:"ids"`
 		}
-		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body)
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": "账号顺序格式无效"})
+			return
+		}
 		if err := s.hooks.Reorder(body.IDs); err != nil {
 			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
 			return
 		}
-		writeJSON(w, map[string]any{"ok": true})
+		ids := []string{}
+		if s.hooks.Accounts != nil {
+			for _, a := range s.hooks.Accounts() {
+				if id, ok := a["id"].(string); ok {
+					ids = append(ids, id)
+				}
+			}
+		}
+		writeJSON(w, map[string]any{"ok": true, "ids": ids})
+	})
+
+	mux.HandleFunc("/api/accounts/tag-order", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, map[string]any{"ok": false, "message": "只支持 POST"})
+			return
+		}
+		if s.hooks.SetTagOrder == nil {
+			writeJSON(w, map[string]any{"ok": false, "message": "当前版本不支持标签顺序"})
+			return
+		}
+		var body struct {
+			Tags []string `json:"tags"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": "标签顺序格式无效"})
+			return
+		}
+		order, err := s.hooks.SetTagOrder(body.Tags)
+		if err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "tagOrder": order})
 	})
 
 	// 启动组：一套"可重复执行的启动配方"（账号组合 + 位置 + 画质 + 启动行为）。
@@ -700,6 +755,27 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	// 当前运行中客户端的窗口矩形（「记住当前各窗口位置」）。
+	mux.HandleFunc("/api/layout/plan", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, map[string]any{"ok": false, "message": "只支持 POST"})
+			return
+		}
+		var req win.LayoutRequest
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&req); err != nil || req.Count < 0 || req.Count > 256 {
+			writeJSON(w, map[string]any{"ok": false, "message": "排列参数不合法"})
+			return
+		}
+		planFn := s.hooks.LayoutPlan
+		if planFn == nil {
+			planFn = win.CurrentLayoutPlan
+		}
+		plan := planFn(req)
+		writeJSON(w, struct {
+			OK bool `json:"ok"`
+			win.LayoutPlan
+		}{true, plan})
+	})
+
 	mux.HandleFunc("/api/clients/rects", func(w http.ResponseWriter, r *http.Request) {
 		var rects []map[string]any
 		if s.hooks.ClientRects != nil {
@@ -708,7 +784,11 @@ func (s *Server) Handler() http.Handler {
 		if rects == nil {
 			rects = []map[string]any{}
 		}
-		writeJSON(w, map[string]any{"ok": true, "rects": rects})
+		// 浏览器的 screen 是逻辑像素，位置记录必须带后端量到的物理屏幕基准。
+		sw, sh := win.ScreenSize()
+		wa := win.PrimaryWorkAreaRect()
+		writeJSON(w, map[string]any{"ok": true, "rects": rects, "screenW": sw, "screenH": sh,
+			"workArea": map[string]int{"x": wa.X, "y": wa.Y, "w": wa.W, "h": wa.H}})
 	})
 
 	// 账号级"游戏设置"：画质 / 帧率 / 显示方式（窗口还是全屏）。
@@ -726,13 +806,14 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		var body struct {
-			ID      string `json:"id"`
-			Mode    string `json:"mode"`
-			Fps     int    `json:"fps"`
-			Display string `json:"display"`
+			ID        string `json:"id"`
+			Mode      string `json:"mode"`
+			Fps       int    `json:"fps"`
+			Display   string `json:"display"`
+			AutoEnter *bool  `json:"autoEnter"` // nil = 跟随全局
 		}
 		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&body)
-		if err := s.hooks.GameSettings(body.ID, body.Mode, body.Fps, body.Display); err != nil {
+		if err := s.hooks.GameSettings(body.ID, body.Mode, body.Fps, body.Display, body.AutoEnter); err != nil {
 			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
 			return
 		}
@@ -811,12 +892,14 @@ func (s *Server) Handler() http.Handler {
 			MultiQualityFps  *int    `json:"multiQualityFps"`
 			MouseArbiter     *bool   `json:"mouseArbiter"`
 			MouseArbiterMin  *int    `json:"mouseArbiterMin"`
+			AutoEnterPlay    *bool   `json:"autoEnterPlay"`
+			MultiAutoEnter   *bool   `json:"multiAutoEnter"`
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
 			writeJSON(w, map[string]any{"ok": false, "message": "请求格式有误"})
 			return
 		}
-		if err := s.hooks.SaveSettings(body.SkyExe, body.DeviceID, body.MirrorDir, body.CloseLauncher, body.MultiQualityMode, body.MultiQualityFps, body.MouseArbiter, body.MouseArbiterMin); err != nil {
+		if err := s.hooks.SaveSettings(body.SkyExe, body.DeviceID, body.MirrorDir, body.CloseLauncher, body.MultiQualityMode, body.MultiQualityFps, body.MouseArbiter, body.MouseArbiterMin, body.AutoEnterPlay, body.MultiAutoEnter); err != nil {
 			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
 			return
 		}
@@ -1256,5 +1339,3 @@ func staticHandler() http.Handler {
 		files.ServeHTTP(w, r2)
 	})
 }
-
-

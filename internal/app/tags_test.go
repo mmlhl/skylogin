@@ -185,3 +185,33 @@ func TestReorderKeepsCredAndCurrent(t *testing.T) {
 		t.Fatalf("重排不该改当前账号，实际 %q（err=%v）", string(b), err)
 	}
 }
+
+func TestAccountTagOrderPersistsWithoutChangingAccounts(t *testing.T) {
+	setupStore(t, []Account{{PlayerID: "1", Tags: []string{"原标签"}}})
+	before, err := loadAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := saveAccountTagOrder([]string{" VIP ", "vip", "未分组", "1", "2", "3", "4", "5", "6", "7", "8", "9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 11 || got[0] != "VIP" || got[1] != "未分组" {
+		t.Fatalf("分组顺序不应受单账号八个标签限制：%v", got)
+	}
+	stored := loadConfig().AccountTagOrder
+	a, _ := json.Marshal(got)
+	b, _ := json.Marshal(stored)
+	if string(a) != string(b) {
+		t.Fatalf("顺序未落盘：%v", stored)
+	}
+	after, err := loadAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ = json.Marshal(before)
+	b, _ = json.Marshal(after)
+	if string(a) != string(b) {
+		t.Fatal("标签组顺序不应改写账号字段")
+	}
+}

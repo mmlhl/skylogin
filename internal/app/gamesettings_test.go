@@ -35,7 +35,7 @@ func TestSaveGameSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := saveGameSettings("2002", "Presentation", 120, "windowed"); err != nil {
+	if err := saveGameSettings("2002", "Presentation", 120, "windowed", nil); err != nil {
 		t.Fatalf("保存失败: %v", err)
 	}
 
@@ -58,21 +58,21 @@ func TestSaveGameSettings(t *testing.T) {
 	}
 
 	// 非法值必须拒绝：写进引擎不认的档位名，游戏启动时会当无效值处理
-	if err := saveGameSettings("2002", "Ultra", 120, ""); err == nil {
+	if err := saveGameSettings("2002", "Ultra", 120, "", nil); err == nil {
 		t.Fatal("不认识的画质档位应该被拒绝")
 	}
-	if err := saveGameSettings("2002", "Default", 45, ""); err == nil {
+	if err := saveGameSettings("2002", "Default", 45, "", nil); err == nil {
 		t.Fatal("不支持的帧率应该被拒绝")
 	}
-	if err := saveGameSettings("2002", "Default", 60, "borderless"); err == nil {
+	if err := saveGameSettings("2002", "Default", 60, "borderless", nil); err == nil {
 		t.Fatal("不认识的显示方式应该被拒绝")
 	}
-	if err := saveGameSettings("不存在", "Default", 60, ""); err == nil {
+	if err := saveGameSettings("不存在", "Default", 60, "", nil); err == nil {
 		t.Fatal("找不到账号应该报错")
 	}
 
 	// 清空 = 回到"跟随游戏"
-	if err := saveGameSettings("2002", "", 0, ""); err != nil {
+	if err := saveGameSettings("2002", "", 0, "", nil); err != nil {
 		t.Fatalf("清空失败: %v", err)
 	}
 	list, _ = loadAccounts()

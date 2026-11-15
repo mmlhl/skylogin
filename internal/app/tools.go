@@ -161,17 +161,18 @@ func settingsView() map[string]any {
 	}
 	found := fileExists(exe)
 	return map[string]any{
-		"skyExe":         exe,
-		"skyFound":       found,
-		"skyAuto":        auto,
-		"deviceId":       deviceIDForUI(),
-		"deviceIdSet":    true,
-		"deviceIdSource": deviceIDSource(),
-		"deviceInfo":     deviceInfoForUI(),
-		"closeLauncher":  c.CloseLauncherEnabled(),
-		"railWidth":      c.RailWidth,
-		"appBuild":       Build,
-		"appBuildTime":   BuildTime,
+		"skyExe":          exe,
+		"skyFound":        found,
+		"skyAuto":         auto,
+		"deviceId":        deviceIDForUI(),
+		"deviceIdSet":     true,
+		"deviceIdSource":  deviceIDSource(),
+		"deviceInfo":      deviceInfoForUI(),
+		"closeLauncher":   c.CloseLauncherEnabled(),
+		"accountTagOrder": normalizeTagOrder(c.AccountTagOrder),
+		"railWidth":       c.RailWidth,
+		"appBuild":        Build,
+		"appBuildTime":    BuildTime,
 		"release": map[string]string{
 			"github": release.GitHubURL,
 			"pan":    release.PanURL,
@@ -188,6 +189,8 @@ func settingsView() map[string]any {
 		"multiQualityFps":  c.MultiQualityFps,
 		"mouseArbiter":     c.MouseArbiterEnabled,
 		"mouseArbiterMin":  c.MouseArbiterMin,
+		"autoEnterPlay":    c.AutoEnterPlayEnabled(),
+		"multiAutoEnter":   c.MultiAutoEnterEnabled(),
 		"dataDir":          dataDir(),
 		"version":          Version,
 		"repo":             RepoURL,
@@ -203,7 +206,7 @@ func settingsView() map[string]any {
 }
 
 // applySettings 保存界面上改动的设置；传 nil 表示不改这一项。
-func applySettings(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int) error {
+func applySettings(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int, autoEnterPlay *bool, multiAutoEnter *bool) error {
 	return updateConfig(func(c *Config) error {
 		if skyExe != nil {
 			p := *skyExe
@@ -260,6 +263,12 @@ func applySettings(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, mul
 				*multiFps = 0
 			}
 			c.MultiQualityFps = *multiFps
+		}
+		if autoEnterPlay != nil {
+			c.AutoEnterPlay = autoEnterPlay
+		}
+		if multiAutoEnter != nil {
+			c.MultiAutoEnter = multiAutoEnter
 		}
 		return nil
 	})

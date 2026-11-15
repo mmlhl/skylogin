@@ -118,3 +118,31 @@ func allTagsView() []map[string]any {
 	}
 	return out
 }
+
+// normalizeTagOrder 与单行标签采用相同的名称规则，但分组总数不受单行八个的限制。
+// 不把“未分组”等用户可输入的名称当成系统保留字。
+func normalizeTagOrder(tags []string) []string {
+	out := []string{}
+	seen := map[string]bool{}
+	for _, raw := range tags {
+		clean := normalizeTags([]string{raw})
+		if len(clean) == 0 {
+			continue
+		}
+		key := strings.ToLower(clean[0])
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, clean[0])
+		}
+	}
+	return out
+}
+
+func saveAccountTagOrder(tags []string) ([]string, error) {
+	clean := normalizeTagOrder(tags)
+	err := updateConfig(func(c *Config) error { c.AccountTagOrder = clean; return nil })
+	if err != nil {
+		return nil, fmt.Errorf("保存标签顺序失败: %w", err)
+	}
+	return clean, nil
+}

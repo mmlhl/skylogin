@@ -6,7 +6,14 @@
  */
 
 /** 渠道：华为渠道 / 网易官方 / B站渠道 */
-export type Channel = "huawei" | "netease" | "bilibili" | "m4399" | "vivo" | "uc_platform" | "myapp";
+export type Channel =
+  | "huawei"
+  | "netease"
+  | "bilibili"
+  | "m4399"
+  | "vivo"
+  | "uc_platform"
+  | "myapp";
 
 /** 左栏里的一个账号（由 Go 侧的 accountView 组装） */
 export interface AccountView {
@@ -30,6 +37,8 @@ export interface AccountView {
   qualityFps?: number;
   /** 单开时的显示方式："" 跟随游戏 / "windowed" 窗口 / "fullscreen" 全屏 */
   displayMode?: string;
+  /** 这一行账号的自动进入开关：true/false 明确设置，null/undefined = 跟随全局 */
+  autoEnter?: boolean | null;
   /** 用户自己打的标签（多个，自由输入）；副本与原件各存各的 */
   tags?: string[];
   masked: string;
@@ -141,8 +150,13 @@ export interface Settings {
   mouseArbiter: boolean;
   /** 仲裁持续时长（分钟） */
   mouseArbiterMin: number;
+  /** 单开时自动点播放按钮进入游戏 */
+  autoEnterPlay: boolean;
+  /** 多开时自动点播放按钮进入游戏 */
+  multiAutoEnter: boolean;
   /** 左栏宽度（像素，0 表示用默认值） */
   railWidth: number;
+  accountTagOrder?: string[];
   /** 窗口标题 / 监控墙标签 / 列表的隐私打码开关（同一状态） */
   maskTitles: boolean;
   /** CI 注入的构建号（本地开发版 0）与构建时间 */
@@ -237,6 +251,8 @@ export interface LoginEntryView {
 
 /** `/api/state` 的完整返回 */
 export interface AppState {
+  /** 仅前端赋值：请求发起序号，用于拒绝旧轮询对保存字段的覆盖。 */
+  clientReadSequence?: number;
   accounts: AccountView[];
   /** 全部标签的聚合清单（名称 + 命中数），按首次出现顺序 */
   tags?: { name: string; count: number }[];
@@ -280,7 +296,6 @@ export interface ApiResult {
   [key: string]: unknown;
 }
 
-
 /** 启动组里的一个成员：账号 + 它在这套里的启动参数 */
 export interface GroupSlotView {
   accountKey: string;
@@ -299,6 +314,7 @@ export interface GroupSlotView {
   w?: number;
   h?: number;
   hasRect?: boolean;
+  zOrder?: number;
 }
 
 /** 一套启动组 */

@@ -12,9 +12,13 @@
  *   - types.ts：补上返回结构
  */
 import type { ApiResult, AppState, GameUpdateView, GroupView } from "./types";
+import type { LayoutRequest, LayoutPlan } from "../shellkit/contract";
 
 /** 通用请求：自动带 JSON 头、自动解析、失败抛错 */
-async function request<T = ApiResult>(path: string, init?: RequestInit): Promise<T> {
+async function request<T = ApiResult>(
+  path: string,
+  init?: RequestInit,
+): Promise<T> {
   const res = await fetch(path, {
     cache: "no-store",
     ...init,
@@ -28,17 +32,24 @@ async function request<T = ApiResult>(path: string, init?: RequestInit): Promise
     // 非 JSON（典型是路由不存在时的 404 纯文本）：不要抛给调用方去猜，
     // 统一转成 { ok:false } —— 抛错的话调用方没 catch 就会**静默失败**，
     // 用户看到的就是"设了没反应"（2026-11-11 画质保存就是这么丢的）。
-    return { ok: false, message: `接口返回异常（HTTP ${res.status}）：${path}` } as T;
+    return {
+      ok: false,
+      message: `接口返回异常（HTTP ${res.status}）：${path}`,
+    } as T;
   }
   if (!res.ok) {
-    const msg = (data as { message?: string })?.message || `请求失败（HTTP ${res.status}）`;
+    const msg =
+      (data as { message?: string })?.message ||
+      `请求失败（HTTP ${res.status}）`;
     return { ok: false, message: msg, ...(data as object) } as T;
   }
   return data as T;
 }
 
 /** 把参数拼成 query string（只保留非 undefined） */
-function qs(params: Record<string, string | number | boolean | undefined>): string {
+function qs(
+  params: Record<string, string | number | boolean | undefined>,
+): string {
   const u = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== "") u.set(k, String(v));
@@ -47,113 +58,159 @@ function qs(params: Record<string, string | number | boolean | undefined>): stri
   return s ? `?${s}` : "";
 }
 
+let stateReadSequence = 0;
+let latestStateSnapshot: AppState | undefined;
+export const latestStateReadSequence = () => stateReadSequence;
+
 export const api = {
   /** 拉取整个界面状态（左栏账号、扫码进度、设置、提示） */
-  state: () => request<AppState>("/api/state"),
+  state: async () => {
+    const sequence = ++stateReadSequence;
+    const data = await request<AppState>("/api/state");
+    // 轮询可以重叠，较早发出的慢响应不能把运行状态等其它字段整体带回旧快照。
+    if (latestStateSnapshot && sequence < (latestStateSnapshot.clientReadSequence ?? 0)) return latestStateSnapshot;
+    latestStateSnapshot = { ...data, clientReadSequence: sequence };
+    return latestStateSnapshot;
+  },
 
   /** 主窗口按钮：min / max（最大化与还原切换）/ close。
    *  窗口是无边框的，系统不再画标题栏，这三个动作由前端标题条触发。 */
   windowControl: (action: "min" | "max" | "close") =>
-    request("/api/window", { method: "POST", body: JSON.stringify({ action }) }),
+    request("/api/window", {
+      method: "POST",
+      body: JSON.stringify({ action }),
+    }),
 
   /** 让窗口进入系统拖动循环（标题条 mousedown 时调）。
    *  WebView2 的客户区被 Chromium 吃掉鼠标事件，页面里的拖拽不会变成窗口拖动。 */
   windowDrag: () =>
-    request("/api/window", { method: "POST", body: JSON.stringify({ action: "drag" }) }),
+    request("/api/window", {
+      method: "POST",
+      body: JSON.stringify({ action: "drag" }),
+    }),
 
   /** 挂起/恢复 WebView 渲染进程（窗口不可见时省内存）。
    *  挂起后页面状态保留，恢复不用重新加载。 */
   windowSuspend: (on: boolean) =>
-    request("/api/window", { method: "POST", body: JSON.stringify({ action: on ? "suspend" : "resume" }) }),
+    request("/api/window", {
+      method: "POST",
+      body: JSON.stringify({ action: on ? "suspend" : "resume" }),
+    }),
 
   /** 启动游戏：Go 会关掉发烧平台、取票、冒充平台窗口 */
   launch: () => request("/api/launch", { method: "POST" }),
 
-	/** 多开：每个账号起一个客户端；带 cols/rows 时窗口就绪后渐进平铺；w/h 自定义窗口尺寸；
-	 *  display "cascade" = 窗口堆叠（文件窗式错开），"fullscreen" = 全屏（不排列，切换靠监控墙） */
-	launchMulti: (
-		ids: string[],
-		layout?: { cols: number; rows: number },
-		size?: { w: number; h: number },
-		display?: "tile" | "cascade" | `cascade:${string}` | "fullscreen",
-		qualityMode?: string,
-		qualityFps?: number
-	) =>
-		request("/api/launch-multi", {
-			method: "POST",
-			body: JSON.stringify({
-				ids,
-				cols: layout?.cols,
-				rows: layout?.rows,
-				w: size?.w,
-				h: size?.h,
-				display: display && display !== "tile" ? display : undefined,
-				qualityMode,
-				qualityFps,
-			}),
-		}),
+  /** 多开：每个账号起一个客户端；带 cols/rows 时窗口就绪后渐进平铺；w/h 自定义窗口尺寸；
+   *  display "cascade" = 窗口堆叠（文件窗式错开），"fullscreen" = 全屏（不排列，切换靠监控墙） */
+  launchMulti: (
+    ids: string[],
+    layout?: { cols: number; rows: number },
+    size?: { w: number; h: number },
+    display?: "tile" | "cascade" | `cascade:${string}` | "fullscreen",
+    qualityMode?: string,
+    qualityFps?: number,
+  ) =>
+    request("/api/launch-multi", {
+      method: "POST",
+      body: JSON.stringify({
+        ids,
+        cols: layout?.cols,
+        rows: layout?.rows,
+        w: size?.w,
+        h: size?.h,
+        display: display && display !== "tile" ? display : undefined,
+        qualityMode,
+        qualityFps,
+      }),
+    }),
 
-	/** 检查更新（构建号由后端注入，本地开发版为 0） */
-	releaseCheck: () => request("/api/release/check", { method: "POST" }),
+  /** 检查更新（构建号由后端注入，本地开发版为 0） */
+  releaseCheck: () => request("/api/release/check", { method: "POST" }),
 
-	/** 游戏版本：立刻重新比对一次（提示条上的「重新检查」） */
-	gameUpdateCheck: () =>
-		request<{ ok?: boolean; gameUpdate?: GameUpdateView }>("/api/gameupdate/check", { method: "POST" }),
+  /** 游戏版本：立刻重新比对一次（提示条上的「重新检查」） */
+  gameUpdateCheck: () =>
+    request<{ ok?: boolean; gameUpdate?: GameUpdateView }>(
+      "/api/gameupdate/check",
+      { method: "POST" },
+    ),
 
-	/** 游戏版本落后时：打开发烧平台本体让用户更新游戏（找不到本体时 Go 会开官网） */
-	gameUpdateOpenPlatform: () => request("/api/gameupdate/open-platform", { method: "POST" }),
+  /** 游戏版本落后时：打开发烧平台本体让用户更新游戏（找不到本体时 Go 会开官网） */
+  gameUpdateOpenPlatform: () =>
+    request("/api/gameupdate/open-platform", { method: "POST" }),
 
-	/** 增量拉取公告（since = 已见过的最大公告序号） */
-	releaseAnnouncements: (since: number) =>
-		request(`/api/release/announcements${qs({ since })}`, { method: "POST" }),
+  /** 增量拉取公告（since = 已见过的最大公告序号） */
+  releaseAnnouncements: (since: number) =>
+    request(`/api/release/announcements${qs({ since })}`, { method: "POST" }),
 
-	/** 记录公告已读序号 / 被忽略的更新构建号（存后端配置） */
-	releaseState: (annSeen: number, dismissedBuild: number, pendingBuild: number) =>
-		request("/api/release/state", { method: "POST", body: JSON.stringify({ annSeen, dismissedBuild, pendingBuild }) }),
+  /** 记录公告已读序号 / 被忽略的更新构建号（存后端配置） */
+  releaseState: (
+    annSeen: number,
+    dismissedBuild: number,
+    pendingBuild: number,
+  ) =>
+    request("/api/release/state", {
+      method: "POST",
+      body: JSON.stringify({ annSeen, dismissedBuild, pendingBuild }),
+    }),
 
-	/** 用系统浏览器打开下载渠道（白名单在 release 包里） */
-	openExternal: (url: string) => request("/api/openurl", { method: "POST", body: JSON.stringify({ url }) }),
+  /** 用系统浏览器打开下载渠道（白名单在 release 包里） */
+  openExternal: (url: string) =>
+    request("/api/openurl", { method: "POST", body: JSON.stringify({ url }) }),
 
-	/** 切换隐私打码（窗口标题 / 监控墙标签 / 列表显示同一开关） */
-	setMaskTitles: (on: boolean) =>
-		request("/api/ui/mask", { method: "POST", body: JSON.stringify({ on }) }),
+  /** 切换隐私打码（窗口标题 / 监控墙标签 / 列表显示同一开关） */
+  setMaskTitles: (on: boolean) =>
+    request("/api/ui/mask", { method: "POST", body: JSON.stringify({ on }) }),
 
-	/** 把正在运行的客户端窗口按 cols×rows 网格铺到主屏；w/h 自定义窗口尺寸 */
-	arrange: (cols: number, rows: number, size?: { w: number; h: number }) =>
-		request("/api/arrange", {
-			method: "POST",
-			body: JSON.stringify({ cols, rows, w: size?.w, h: size?.h }),
-		}),
+  /** 把正在运行的客户端窗口按 cols×rows 网格铺到主屏；w/h 自定义窗口尺寸 */
+  arrange: (cols: number, rows: number, size?: { w: number; h: number }) =>
+    request("/api/arrange", {
+      method: "POST",
+      body: JSON.stringify({ cols, rows, w: size?.w, h: size?.h }),
+    }),
 
-	/** 开/关监控墙（正在运行客户端的实时缩略图，点格子切到前台） */
-	wallToggle: () => request<ApiResult & { message?: string }>("/api/wall", { method: "POST" }),
+  /** 开/关监控墙（正在运行客户端的实时缩略图，点格子切到前台） */
+  wallToggle: () =>
+    request<ApiResult & { message?: string }>("/api/wall", { method: "POST" }),
 
-	/** 记住界面壳偏好（WebView2 端口随机，localStorage 记不住，存后端配置） */
-	saveShell: (shell: number) =>
-		request("/api/ui/shell", { method: "POST", body: JSON.stringify({ shell }) }),
+  /** 记住界面壳偏好（WebView2 端口随机，localStorage 记不住，存后端配置） */
+  saveShell: (shell: number) =>
+    request("/api/ui/shell", {
+      method: "POST",
+      body: JSON.stringify({ shell }),
+    }),
 
-	/** 读取界面壳偏好（没有记录时返回 -1） */
-	loadShell: () => request<ApiResult & { shell?: number }>("/api/ui/shell"),
+  /** 读取界面壳偏好（没有记录时返回 -1） */
+  loadShell: () => request<ApiResult & { shell?: number }>("/api/ui/shell"),
 
   /** 切换当前账号 */
-  selectAccount: (id: string) => request(`/api/accounts/select${qs({ id })}`, { method: "POST" }),
+  selectAccount: (id: string) =>
+    request(`/api/accounts/select${qs({ id })}`, { method: "POST" }),
 
   /** 改账号别名 */
   renameAccount: (id: string, name: string) =>
     request(`/api/accounts/rename${qs({ id, name })}`, { method: "POST" }),
 
   /** 停止这个账号正在运行的光遇 */
-  stopAccount: (id: string) => request(`/api/accounts/stop${qs({ id })}`, { method: "POST" }),
+  stopAccount: (id: string) =>
+    request(`/api/accounts/stop${qs({ id })}`, { method: "POST" }),
 
   /** 删除账号 */
-  deleteAccount: (id: string) => request(`/api/accounts/delete${qs({ id })}`, { method: "POST" }),
+  deleteAccount: (id: string) =>
+    request(`/api/accounts/delete${qs({ id })}`, { method: "POST" }),
 
   /** 保存某行账号的画质/帧率（账号级 = 具体档位） */
-  /** 保存账号级游戏设置：画质 / 帧率 / 显示方式（空/0 = 跟随游戏） */
-  setGameSettings: (id: string, mode: string, fps: number, display: string) =>
+  /** 保存账号级游戏设置：画质 / 帧率 / 显示方式（空/0 = 跟随游戏）
+   *  autoEnter = 这一行的自动进入开关：true/false 明确设置，null 跟随全局 */
+  setGameSettings: (
+    id: string,
+    mode: string,
+    fps: number,
+    display: string,
+    autoEnter?: boolean | null,
+  ) =>
     request("/api/accounts/gamesettings", {
       method: "POST",
-      body: JSON.stringify({ id, mode, fps, display }),
+      body: JSON.stringify({ id, mode, fps, display, autoEnter }),
     }),
 
   /**
@@ -162,24 +219,42 @@ export const api = {
    * 返回里带最新的聚合清单，界面不用等下一轮轮询。
    */
   setAccountTags: (id: string, tags: string[]) =>
-    request<ApiResult & { tags?: { name: string; count: number }[] }>("/api/accounts/tags", {
-      method: "POST",
-      body: JSON.stringify({ id, tags }),
-    }),
+    request<ApiResult & { account?: { id: string; tags: string[] }; tags?: { name: string; count: number }[] }>(
+      "/api/accounts/tags",
+      {
+        method: "POST",
+        body: JSON.stringify({ id, tags }),
+      },
+    ),
 
   /** 按给定顺序重排账号行序（顺序就是账号文件的行序） */
   reorderAccounts: (ids: string[]) =>
-    request("/api/accounts/reorder", {
+    request<ApiResult & { ids?: string[] }>("/api/accounts/reorder", {
       method: "POST",
       body: JSON.stringify({ ids }),
     }),
 
+  setTagOrder: (tags: string[]) =>
+    request<ApiResult & { tagOrder?: string[] }>("/api/accounts/tag-order", {
+      method: "POST",
+      body: JSON.stringify({ tags }),
+    }),
+
+  planLayout: (body: LayoutRequest) =>
+    request<LayoutPlan>("/api/layout/plan", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   /** 新建/更新一套启动组（带 id = 更新）。返回里带最新清单，省一次轮询 */
   saveGroup: (g: GroupView) =>
-    request<ApiResult & { id?: string; groups?: GroupView[] }>("/api/groups/save", {
-      method: "POST",
-      body: JSON.stringify(g),
-    }),
+    request<ApiResult & { id?: string; groups?: GroupView[] }>(
+      "/api/groups/save",
+      {
+        method: "POST",
+        body: JSON.stringify(g),
+      },
+    ),
 
   /** 删除一套启动组（不存在也算成功） */
   deleteGroup: (id: string) =>
@@ -202,12 +277,28 @@ export const api = {
   clientRects: () =>
     request<{
       ok?: boolean;
-      rects?: { id: string; name: string; x: number; y: number; w: number; h: number; fullscreen?: boolean }[];
+      message?: string;
+      screenW?: number;
+      screenH?: number;
+      workArea?: { x: number; y: number; w: number; h: number };
+      rects?: {
+        id: string;
+        name: string;
+        x: number;
+        y: number;
+        w: number;
+        h: number;
+        fullscreen?: boolean;
+        zOrder?: number;
+      }[];
     }>("/api/clients/rects"),
 
   /** 创建一条账号的副本（name 为空时后端自动起名，region 为空表示副本先不选区） */
   duplicateAccount: (id: string, name: string, region = "") =>
-    request("/api/accounts/duplicate", { method: "POST", body: JSON.stringify({ id, name, region }) }),
+    request("/api/accounts/duplicate", {
+      method: "POST",
+      body: JSON.stringify({ id, name, region }),
+    }),
 
   /** 设置账号的所选渠道（仅网易官方账号；空值 = 先不选） */
   setAccountRegion: (id: string, region: string) =>
@@ -231,10 +322,14 @@ export const api = {
    * 没存密码（扫码 / 官方登录窗进来的）会返回 ok:false，调用方改成弹输入框。
    */
   reloginAccount: (id: string) =>
-    request<{ ok?: boolean; message?: string; result?: { name?: string; canHost?: boolean } }>(
-      "/api/accounts/relogin",
-      { method: "POST", body: JSON.stringify({ id }) }
-    ),
+    request<{
+      ok?: boolean;
+      message?: string;
+      result?: { name?: string; canHost?: boolean };
+    }>("/api/accounts/relogin", {
+      method: "POST",
+      body: JSON.stringify({ id }),
+    }),
 
   /**
    * 寄宿池状态：哪些账号能当宿主、槽里现在记着谁、还有没有空槽。
@@ -252,7 +347,10 @@ export const api = {
   /** 网易扫码：开始（Go 去 MPay 申请二维码） */
   /** 网易扫码：开始（Go 去 MPay 申请二维码）。host 非空表示指定寄宿到哪个平台账号的槽 */
   startScan: (host = "") =>
-    request(`/api/scan/start${host ? `?host=${encodeURIComponent(host)}` : ""}`, { method: "POST" }),
+    request(
+      `/api/scan/start${host ? `?host=${encodeURIComponent(host)}` : ""}`,
+      { method: "POST" },
+    ),
 
   /** 网易扫码：停止 */
   stopScan: () => request("/api/scan/stop", { method: "POST" }),
@@ -265,7 +363,10 @@ export const api = {
    * （后端少一个渠道，前端就不会传这个 key）。
    */
   startChannelLogin: (key: string, targetUserID = "") =>
-    request(`/api/${key}/login/start`, { method: "POST", body: JSON.stringify({ targetUserId: targetUserID }) }),
+    request(`/api/${key}/login/start`, {
+      method: "POST",
+      body: JSON.stringify({ targetUserId: targetUserID }),
+    }),
 
   /** 渠道网页登录进度（waiting / done / failed） */
   channelLoginStatus: (key: string) => request(`/api/${key}/login/status`),
@@ -276,11 +377,17 @@ export const api = {
    * 立即返回，进度走 channelLoginStatus；需要用户输入时 status 里带 ask。
    */
   startProtocolLogin: (key: string, method = "password") =>
-    request("/api/channel/login/start", { method: "POST", body: JSON.stringify({ channel: key, method }) }),
+    request("/api/channel/login/start", {
+      method: "POST",
+      body: JSON.stringify({ channel: key, method }),
+    }),
 
   /** 提交上一步 ask 的答案（表单各字段或选项的 value） */
   answerChannelAsk: (key: string, values: Record<string, string>) =>
-    request("/api/channel/login/answer", { method: "POST", body: JSON.stringify({ channel: key, values }) }),
+    request("/api/channel/login/answer", {
+      method: "POST",
+      body: JSON.stringify({ channel: key, values }),
+    }),
 
   /**
    * 取消正在进行的协议登录。
@@ -289,7 +396,10 @@ export const api = {
    * 否则后端 tracker 会占着 5 分钟，用户再点就是"没反应"。
    */
   cancelChannelLogin: (key: string) =>
-    request("/api/channel/login/cancel", { method: "POST", body: JSON.stringify({ channel: key }) }),
+    request("/api/channel/login/cancel", {
+      method: "POST",
+      body: JSON.stringify({ channel: key }),
+    }),
 
   /** 保存设置（只传要改的字段） */
   saveSettings: (payload: {
@@ -301,13 +411,24 @@ export const api = {
     multiQualityFps?: number;
     mouseArbiter?: boolean;
     mouseArbiterMin?: number;
-  }) => request("/api/settings", { method: "POST", body: JSON.stringify(payload) }),
+    /** 单开时自动点播放按钮进入游戏 */
+    autoEnterPlay?: boolean;
+    /** 多开时自动点播放按钮进入游戏 */
+    multiAutoEnter?: boolean;
+  }) =>
+    request("/api/settings", { method: "POST", body: JSON.stringify(payload) }),
 
   /** 选择游戏 exe（会弹系统文件框） */
-  pickSkyPath: () => request<ApiResult & { path?: string }>(`/api/settings/pick-path${qs({})}`, { method: "POST" }),
+  pickSkyPath: () =>
+    request<ApiResult & { path?: string }>(`/api/settings/pick-path${qs({})}`, {
+      method: "POST",
+    }),
 
   /** 选择多开镜像目录（会弹系统文件夹框） */
-  pickFolder: () => request<ApiResult & { path?: string }>("/api/settings/pick-folder", { method: "POST" }),
+  pickFolder: () =>
+    request<ApiResult & { path?: string }>("/api/settings/pick-folder", {
+      method: "POST",
+    }),
 
   /**
    * 重新注册设备号。
@@ -328,7 +449,10 @@ export const api = {
 
   /** 记住左栏宽度（拖完调一次） */
   setRailWidth: (width: number) =>
-    request("/api/ui/rail-width", { method: "POST", body: JSON.stringify({ width }) }),
+    request("/api/ui/rail-width", {
+      method: "POST",
+      body: JSON.stringify({ width }),
+    }),
 
   /** 打开日志文件夹 */
   openLogs: () => request("/api/open-logs", { method: "POST" }),
@@ -338,7 +462,10 @@ export const api = {
    * targetUserId 非空表示给已有账号刷新凭证（后端会校验账号 id 是否一致）。
    */
   webLoginStart: (targetUserId = "") =>
-    request("/api/web-login/start", { method: "POST", body: JSON.stringify({ targetUserId }) }),
+    request("/api/web-login/start", {
+      method: "POST",
+      body: JSON.stringify({ targetUserId }),
+    }),
 
   /** 网页登录进度（等待/成功/失败） */
   webLoginStatus: () => request("/api/web-login/status"),
@@ -348,43 +475,53 @@ export const api = {
    * targetUserId 非空表示给已有账号刷新凭证（后端会校验账号 id 是否一致）。
    */
   mpayLoginStart: (targetUserId = "") =>
-    request("/api/mpay-login/start", { method: "POST", body: JSON.stringify({ targetUserId }) }),
+    request("/api/mpay-login/start", {
+      method: "POST",
+      body: JSON.stringify({ targetUserId }),
+    }),
 
   /** 保存官方登录窗的调试参数（设置页「开发者调试」） */
-  saveMpayDebug: (dll: string, game: string, skipLogout: boolean, dataPath: string) =>
+  saveMpayDebug: (
+    dll: string,
+    game: string,
+    skipLogout: boolean,
+    dataPath: string,
+  ) =>
     request("/api/mpay/debug", {
       method: "POST",
       body: JSON.stringify({ dll, game, skipLogout, dataPath }),
     }),
 
   /** 渠道服游戏内扫码：强制用游戏身份开窗，渠道服 App 也能扫 */
-  mpayChannelStart: () => request("/api/mpay-login/channel-start", { method: "POST", body: "{}" }),
+  mpayChannelStart: () =>
+    request("/api/mpay-login/channel-start", { method: "POST", body: "{}" }),
 
   /** 账号密码登录进度 */
   mpayLoginStatus: () =>
-    request<{ phase?: string; message?: string; account?: string; userId?: string }>("/api/mpay-login/status"),
+    request<{
+      phase?: string;
+      message?: string;
+      account?: string;
+      userId?: string;
+    }>("/api/mpay-login/status"),
 
   /** 取消账号密码登录（结束子进程） */
   mpayLoginCancel: () => request("/api/mpay-login/cancel", { method: "POST" }),
 
   /** 手机号登录：发送验证码 */
   smsSend: (mobile: string) =>
-    request("/api/sms/send", { method: "POST", body: JSON.stringify({ mobile }) }),
+    request("/api/sms/send", {
+      method: "POST",
+      body: JSON.stringify({ mobile }),
+    }),
 
   /**
    * 手机号登录：校验验证码并保存账号。
    * targetUserId 非空表示刷新已有账号，后端会校验登录的是不是同一个账号。
    */
   smsLogin: (mobile: string, code: string, targetUserId = "") =>
-    request("/api/sms/login", { method: "POST", body: JSON.stringify({ mobile, code, targetUserId }) }),
+    request("/api/sms/login", {
+      method: "POST",
+      body: JSON.stringify({ mobile, code, targetUserId }),
+    }),
 };
-
-
-
-
-
-
-
-
-
-

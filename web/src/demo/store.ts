@@ -5,13 +5,26 @@
  * 是 contract.ts 的直接实现，专门用来验证「同一套功能，四套 UI」。
  */
 import { reactive } from "vue";
+import { mockLayoutPlan } from "./layoutPlan";
 import { demoUi } from "../shellkit/ui";
-import { LAYOUT_NONE, recommendLayout, type Account, type GridLayout, type LaunchGroup, type LauncherStore, type NewAccountDraft } from "../shellkit/contract";
+import {
+  layoutLabel,
+  type Account,
+  type LaunchGroup,
+  type LauncherStore,
+  type NewAccountDraft,
+} from "../shellkit/contract";
 
 let seq = 100;
 const nextId = () => `demo${(seq++).toString().padStart(8, "0")}`;
 
-function account(p: Partial<Account> & { name: string; channel: Account["channel"]; fullId: string }): Account {
+function account(
+  p: Partial<Account> & {
+    name: string;
+    channel: Account["channel"];
+    fullId: string;
+  },
+): Account {
   return {
     id: nextId(),
     playerId: p.playerId || p.fullId,
@@ -31,11 +44,33 @@ function account(p: Partial<Account> & { name: string; channel: Account["channel
 
 const state = reactive({
   accounts: [
-    account({ name: "示例玩家", channel: "huawei", fullId: "1100000000000001", level: "7", current: true }),
-    account({ name: "13800138000", channel: "netease", fullId: "aedemo0000000000", running: true, runSeconds: 42 * 60 }),
-    account({ name: "归墟行者", channel: "huawei", fullId: "253f0000000007a", cred: "expired" }),
-    account({ name: "云野常客", channel: "netease", fullId: "8c11000000000033" }),
+    account({
+      name: "示例玩家",
+      channel: "huawei",
+      fullId: "1100000000000001",
+      level: "7",
+      current: true,
+    }),
+    account({
+      name: "13800138000",
+      channel: "netease",
+      fullId: "aedemo0000000000",
+      running: true,
+      runSeconds: 42 * 60,
+    }),
+    account({
+      name: "归墟行者",
+      channel: "huawei",
+      fullId: "253f0000000007a",
+      cred: "expired",
+    }),
+    account({
+      name: "云野常客",
+      channel: "netease",
+      fullId: "8c11000000000033",
+    }),
   ] as Account[],
+  tagOrder: [] as string[],
   maskAll: true,
   multiQualityMode: "",
   multiQualityFps: 0,
@@ -61,8 +96,32 @@ state.groups.push({
   screenH: 1080,
   updated: "今天 21:04",
   slots: [
-    { accountKey: state.accounts[0].id, name: "示例玩家", mode: "", fps: 0, display: "", disabled: false, x: 0, y: 0, w: 960, h: 540, hasRect: true },
-    { accountKey: state.accounts[1].id, name: "13800138000", mode: "LowPower", fps: 30, display: "", disabled: false, x: 960, y: 540, w: 960, h: 540, hasRect: true },
+    {
+      accountKey: state.accounts[0].id,
+      name: "示例玩家",
+      mode: "",
+      fps: 0,
+      display: "",
+      disabled: false,
+      x: 0,
+      y: 0,
+      w: 960,
+      h: 540,
+      hasRect: true,
+    },
+    {
+      accountKey: state.accounts[1].id,
+      name: "13800138000",
+      mode: "LowPower",
+      fps: 30,
+      display: "",
+      disabled: false,
+      x: 960,
+      y: 540,
+      w: 960,
+      h: 540,
+      hasRect: true,
+    },
   ],
 });
 state.groups.push({
@@ -81,7 +140,19 @@ state.groups.push({
   screenH: 0,
   updated: "11-08",
   slots: [
-    { accountKey: state.accounts[2].id, name: "归墟行者", mode: "", fps: 0, display: "", disabled: false, x: 0, y: 0, w: 0, h: 0, hasRect: false },
+    {
+      accountKey: state.accounts[2].id,
+      name: "归墟行者",
+      mode: "",
+      fps: 0,
+      display: "",
+      disabled: false,
+      x: 0,
+      y: 0,
+      w: 0,
+      h: 0,
+      hasRect: false,
+    },
   ],
 });
 
@@ -103,6 +174,34 @@ if (!g.__demoTicker) {
   }, 1000);
 }
 
+export const accountDemo = { delay: 0, tagsError: "", reorderError: "", tagOrderError: "", calls: [] as { action: string; value: unknown }[] };
+(window as unknown as { __accountDemo: typeof accountDemo }).__accountDemo = accountDemo;
+function normalizeDemoTags(tags: string[], limit = 8): string[] {
+  const result: string[] = [], seen = new Set<string>();
+  for (const raw of tags) {
+    const tag = [...raw.trim()].slice(0, 16).join("");
+    const key = tag.toLowerCase();
+    if (!tag || seen.has(key)) continue;
+    seen.add(key); result.push(tag);
+    if (result.length >= limit) break;
+  }
+  return result;
+}
+let accountSaveQueue: Promise<unknown> = Promise.resolve();
+function saveDemoAccount(action: "tags" | "reorder" | "tagOrder", value: unknown, apply: () => void): Promise<boolean> {
+  const run = async () => {
+    accountDemo.calls.push({ action, value });
+    const error = accountDemo[`${action}Error`];
+    if (accountDemo.delay) await new Promise((resolve) => setTimeout(resolve, accountDemo.delay));
+    if (error) { toast(error); return false; }
+    try { apply(); return true; }
+    catch (e) { toast(e instanceof Error ? e.message : "保存失败"); return false; }
+  };
+  const result = accountSaveQueue.then(run, run);
+  accountSaveQueue = result;
+  return result;
+}
+
 export const store: LauncherStore = {
   get accounts() {
     return state.accounts;
@@ -110,13 +209,19 @@ export const store: LauncherStore = {
   get groups() {
     return state.groups;
   },
-  saveGroup(g) {
-    const at = state.groups.findIndex((x) => x.id === g.id);
-    if (at >= 0) state.groups[at] = g;
-    else state.groups.push({ ...g, id: `g${state.groups.length + 1}` });
-    toast("已保存启动组（演示）");
+  async planLayout(body) {
+    return mockLayoutPlan(body);
   },
-  deleteGroup(id) {
+  async saveGroup(g) {
+    const saved = JSON.parse(
+      JSON.stringify({ ...g, id: g.id || `g${Date.now()}` }),
+    ) as LaunchGroup;
+    const at = state.groups.findIndex((x) => x.id === saved.id);
+    if (at >= 0) state.groups[at] = saved;
+    else state.groups.push(saved);
+    return saved;
+  },
+  async deleteGroup(id) {
     const at = state.groups.findIndex((x) => x.id === id);
     if (at >= 0) state.groups.splice(at, 1);
   },
@@ -126,7 +231,12 @@ export const store: LauncherStore = {
     return { ok: true, message: "演示模式不启动" };
   },
   async captureRects() {
-    return [];
+    return {
+      rects: [],
+      screenW: 1920,
+      screenH: 1080,
+      workArea: { x: 0, y: 0, w: 1920, h: 1040 },
+    };
   },
   get current() {
     return state.accounts.find((a) => a.current);
@@ -152,11 +262,14 @@ export const store: LauncherStore = {
   },
 
   launch(id) {
-    const acc = state.accounts.find((a) => a.id === (id ?? state.accounts.find((x) => x.current)?.id));
+    const acc = state.accounts.find(
+      (a) => a.id === (id ?? state.accounts.find((x) => x.current)?.id),
+    );
     if (!acc) return void toast("还没有账号，先添加一个");
     if (acc.running) return;
     const other = state.accounts.find((a) => a.running && a.id !== acc.id);
-    if (other) return void toast(`游戏全局单实例：${other.name} 正在运行，请用「多开」`);
+    if (other)
+      return void toast(`游戏全局单实例：${other.name} 正在运行，请用「多开」`);
     acc.cred = "ok"; // 启动时自动刷新凭证
     acc.running = true;
     acc.runSeconds = 0;
@@ -187,37 +300,60 @@ export const store: LauncherStore = {
     }
   },
 
-    setTags(id, tags) {
-    const a = state.accounts.find((x) => x.id === id);
-    if (a) a.tags = tags;
+  setTags(id, tags) {
+    const draft = [...tags];
+    return saveDemoAccount("tags", { id, tags: draft }, () => {
+      const a = state.accounts.find((x) => x.id === id);
+      if (!a) throw new Error("找不到这个账号");
+      a.tags = normalizeDemoTags(draft);
+    });
+  },
+  get tagOrder() { return state.tagOrder; },
+  setTagOrder(tags) {
+    const draft = [...tags];
+    return saveDemoAccount("tagOrder", draft, () => { state.tagOrder = normalizeDemoTags(draft, Infinity); });
   },
 
   reorder(ids) {
-    const byId = new Map(state.accounts.map((a) => [a.id, a]));
-    const next = ids.map((id) => byId.get(id)).filter((a): a is Account => !!a);
-    for (const a of state.accounts) if (!next.includes(a)) next.push(a);
-    state.accounts.splice(0, state.accounts.length, ...next);
+    const draft = [...ids];
+    return saveDemoAccount("reorder", draft, () => {
+      if (!draft.length) throw new Error("缺少顺序");
+      const byId = new Map(state.accounts.map((a) => [a.id, a]));
+      const next = [...new Set(draft)].map((id) => byId.get(id)).filter((a): a is Account => !!a);
+      for (const a of state.accounts) if (!next.includes(a)) next.push(a);
+      state.accounts.splice(0, state.accounts.length, ...next);
+    });
   },
 
-  setAccountQuality(id, mode, fps) {
-      const acc = state.accounts.find((a) => a.id === id);
-      if (acc) acc.qualityMode = mode;
-      if (acc) acc.qualityFps = fps;
-    },
+  setAccountQuality(id, mode, fps, _display, autoEnter) {
+    const acc = state.accounts.find((a) => a.id === id);
+    if (acc) acc.qualityMode = mode;
+    if (acc) acc.qualityFps = fps;
+    if (acc) acc.autoEnter = autoEnter ?? null;
+  },
 
-    setRailWidth() {},
+  setRailWidth() {},
 
   duplicate(id, name, region = "") {
     const acc = state.accounts.find((a) => a.id === id);
     if (!acc) return;
-    const n = state.accounts.filter((a) => a.playerId === acc.playerId && a.copyKey).length + 1;
+    const n =
+      state.accounts.filter((a) => a.playerId === acc.playerId && a.copyKey)
+        .length + 1;
     const copy: Account = {
       ...acc,
       id: acc.playerId + "-" + (n + 1),
       copyKey: acc.playerId + "-" + (n + 1),
       name: name || acc.name + " · 副本" + n,
       region: region,
-      regionLabel: region === "ios" ? "iOS 区" : region === "android" ? "安卓区" : region === "harmony" ? "鸿蒙区" : "",
+      regionLabel:
+        region === "ios"
+          ? "iOS 区"
+          : region === "android"
+            ? "安卓区"
+            : region === "harmony"
+              ? "鸿蒙区"
+              : "",
       current: false,
     };
     state.accounts.push(copy);
@@ -228,7 +364,14 @@ export const store: LauncherStore = {
     const acc = state.accounts.find((a) => a.id === id);
     if (!acc) return;
     acc.region = region;
-    acc.regionLabel = region === "ios" ? "iOS 区" : region === "android" ? "安卓区" : region === "harmony" ? "鸿蒙区" : "";
+    acc.regionLabel =
+      region === "ios"
+        ? "iOS 区"
+        : region === "android"
+          ? "安卓区"
+          : region === "harmony"
+            ? "鸿蒙区"
+            : "";
   },
 
   remove(id) {
@@ -256,11 +399,15 @@ export const store: LauncherStore = {
   },
 
   invertSelect() {
-    state.selectedIds = state.accounts.filter((a) => !state.selectedIds.includes(a.id)).map((a) => a.id);
+    state.selectedIds = state.accounts
+      .filter((a) => !state.selectedIds.includes(a.id))
+      .map((a) => a.id);
   },
 
   selectRunning() {
-    state.selectedIds = state.accounts.filter((a) => a.running).map((a) => a.id);
+    state.selectedIds = state.accounts
+      .filter((a) => a.running)
+      .map((a) => a.id);
     if (!state.selectedIds.length) toast("没有正在运行的账号");
   },
 
@@ -269,13 +416,17 @@ export const store: LauncherStore = {
   },
 
   bulkLaunch() {
-    const ids = state.accounts.filter((a) => state.selectedIds.includes(a.id) && !a.running).map((a) => a.id);
+    const ids = state.accounts
+      .filter((a) => state.selectedIds.includes(a.id) && !a.running)
+      .map((a) => a.id);
     if (!ids.length) return void toast("选中的账号都在运行中");
     this.multiLaunch(ids);
   },
 
   bulkStop() {
-    const running = state.accounts.filter((a) => state.selectedIds.includes(a.id) && a.running);
+    const running = state.accounts.filter(
+      (a) => state.selectedIds.includes(a.id) && a.running,
+    );
     if (!running.length) return void toast("选中的账号没有在运行的");
     for (const a of running) {
       a.running = false;
@@ -285,12 +436,17 @@ export const store: LauncherStore = {
   },
 
   bulkRemove() {
-    const picked = state.accounts.filter((a) => state.selectedIds.includes(a.id));
+    const picked = state.accounts.filter((a) =>
+      state.selectedIds.includes(a.id),
+    );
     if (!picked.length) return;
     const names = picked.map((a) => a.name);
-    state.accounts = state.accounts.filter((a) => !state.selectedIds.includes(a.id));
+    state.accounts = state.accounts.filter(
+      (a) => !state.selectedIds.includes(a.id),
+    );
     state.selectedIds = [];
-    if (!state.accounts.some((a) => a.current) && state.accounts[0]) state.accounts[0].current = true;
+    if (!state.accounts.some((a) => a.current) && state.accounts[0])
+      state.accounts[0].current = true;
     toast(`已删除 ${names.length} 个账号：${names.join("、")}`);
   },
 
@@ -301,7 +457,8 @@ export const store: LauncherStore = {
       return;
     }
     const pool = ["暮土新丁", "禁阁巡游", "圣岛农夫", "遇境过客", "霞谷滑手"];
-    const name = draft.name?.trim() || pool[state.accounts.length % pool.length];
+    const name =
+      draft.name?.trim() || pool[state.accounts.length % pool.length];
     const fullId = nextId() + "fe";
     const acc = account({ name, channel: draft.channel, fullId });
     state.accounts.push(acc);
@@ -310,29 +467,27 @@ export const store: LauncherStore = {
   },
 
   multiLaunch(ids, layout, size, display) {
-    const picked = state.accounts.filter((a) => ids.includes(a.id) && !a.running);
+    const picked = state.accounts.filter(
+      (a) => ids.includes(a.id) && !a.running,
+    );
     if (!picked.length) return void toast("所选账号都在运行中");
     for (const a of picked) {
       a.cred = "ok";
       a.running = true;
       a.runSeconds = 0;
     }
-    if (display === "fullscreen") {
-      toast(`多开已启动 ${picked.length} 个客户端，全屏（用监控墙切换）`);
-      return;
-    }
-    if (display === "cascade") {
-      toast(`多开已启动 ${picked.length} 个客户端，窗口堆叠（每个都露出标题条）`);
-      return;
-    }
-    const lay = layout ?? (picked.length > 1 ? recommendLayout(picked.length) : LAYOUT_NONE);
-    const layText = lay.cols > 0 ? `，按${lay.label}平铺` : "";
-    const sizeText = size ? `，窗口 ${size.w}×${size.h}` : "";
-    toast(`多开已启动 ${picked.length} 个客户端${layText}${sizeText}`);
+    const plan = mockLayoutPlan({ count: picked.length, mode: display || "" });
+    toast(`演示模式：${picked.length} 个客户端，${layoutLabel(plan.mode)}`);
   },
 
   multiDefaults() {
-    return { qualityMode: state.multiQualityMode, fps: state.multiQualityFps, arbiter: true, arbiterMin: 3 };
+    return {
+      qualityMode: state.multiQualityMode,
+      fps: state.multiQualityFps,
+      arbiter: true,
+      arbiterMin: 3,
+      autoEnter: true,
+    };
   },
 
   saveMultiDefaults(qualityMode, fps, arbiter, arbiterMin) {

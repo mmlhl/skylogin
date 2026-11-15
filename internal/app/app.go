@@ -231,6 +231,7 @@ func RunUI(title string) error {
 		DeleteGroup:     deleteGroup,
 		LaunchGroup:     launchGroup,
 		ClientRects:     clientRects,
+		LayoutPlan:      win.CurrentLayoutPlan,
 		GameSettings:    saveGameSettings,
 		HeadlessLogin:   HeadlessLoginAccount,
 		HostPool:        func() any { return HostPoolStatus() },
@@ -241,8 +242,8 @@ func RunUI(title string) error {
 			return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
 		},
 		Settings: settingsView,
-		SaveSettings: func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int) error {
-			return applySettings(skyExe, deviceID, mirrorDir, closeLauncher, multiQuality, multiFps, mouseArbiter, arbiterMin)
+		SaveSettings: func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int, autoEnterPlay *bool, multiAutoEnter *bool) error {
+			return applySettings(skyExe, deviceID, mirrorDir, closeLauncher, multiQuality, multiFps, mouseArbiter, arbiterMin, autoEnterPlay, multiAutoEnter)
 		},
 		MpayChannelStart: StartChannelScanLogin,
 		ChannelScanInfo:  ChannelScanInfo,
@@ -287,10 +288,10 @@ func RunUI(title string) error {
 				return exec.Command("rundll32", "url.dll,FileProtocolHandler", u).Start()
 			})
 		},
-		Version:              func() string { return Version },
-		SaveRailWidth:        saveRailWidth,
-		SaveShell:            saveShell,
-		LoadShell:            loadShellIndex,
+		Version:       func() string { return Version },
+		SaveRailWidth: saveRailWidth,
+		SaveShell:     saveShell,
+		LoadShell:     loadShellIndex,
 		PickPath: func() (string, error) {
 			return win.PickExeFile("选择光遇主程序 sky.exe")
 		},
@@ -520,6 +521,7 @@ func toStr(v any) string {
 // 退出路径有三条（关窗口、托盘退出、正常返回），都走这里，
 // 保证即使目录删不掉，也不会在磁盘上留下一个被换过的浏览器。
 func cleanupOnExit() {
+	win.CleanupWallBackgroundPreview()
 	sky := resolveSkyPath()
 	if sky == "" {
 		return
@@ -528,6 +530,3 @@ func cleanupOnExit() {
 	restoreAllShims(sky, root)
 	fever.RemoveMirrors(sky, root)
 }
-
-
-

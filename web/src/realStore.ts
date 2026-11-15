@@ -2,19 +2,18 @@
  * 真实后端的 LauncherStore 实现：contract → /api/*。
  *
  * 数据来源：useAppState 每秒轮询的 state（Go 是唯一真相来源），
- * 动作都是异步发请求：失败立刻 toast，成功后等下一次轮询刷出新状态。
+ * 标签与排序保存会等待确认并立即采用规范化响应，其它动作仍由轮询对齐。
  * 「运行时长」后端没有，这里按 running 翻转的时间点本地推算。
  */
 import { reactive, watch } from "vue";
-import { api } from "./api/client";
+import { api, latestStateReadSequence } from "./api/client";
 import { state } from "./composables/useAppState";
 import { maskId, maskName } from "./composables/useMask";
 import {
-  recommendLayout,
+  canonicalLayout,
+  layoutLabel,
   type Account,
   type Channel,
-  LAYOUT_NONE,
-  type GridLayout,
   type LaunchGroup,
   type LauncherStore,
 } from "./shellkit/contract";
@@ -24,7 +23,12 @@ export interface RealStoreHooks {
   /** 添加账号：打开渠道/登录方式选择（真实登录流程从那里走） */
   onAdd?: () => void;
   /** 刷新凭证：存过密码的号直接静默重登，没存密码的才按渠道打开登录方式 */
-  onRefresh?: (acc: { accountId: string; name: string; channel: Channel; loginUser?: string }) => void;
+  onRefresh?: (acc: {
+    accountId: string;
+    name: string;
+    channel: Channel;
+    loginUser?: string;
+  }) => void;
   /** 打开设置面板 */
   onOpenSettings?: () => void;
 }
@@ -33,6 +37,7 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
   const st = reactive({
     accounts: [] as Account[],
     groups: [] as LaunchGroup[],
+    tagOrder: [] as string[],
     maskAll: true,
     selectedIds: [] as string[],
     toasts: [] as { id: number; text: string }[],
@@ -51,7 +56,41 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
     }, 2600);
   }
 
+  type SavedOverlay<T> = { value: T; pending: boolean; fence: number };
+  const tagOverlays = new Map<string, SavedOverlay<string[]>>();
+  let orderOverlay: SavedOverlay<string[]> | undefined;
+  let tagOrderOverlay: SavedOverlay<string[]> | undefined;
+  let selectionOverlay: SavedOverlay<string | undefined> | undefined;
+  let confirmedSelection: string | undefined;
+  let selectionIntent = 0;
+  let selectionQueue: Promise<unknown> = Promise.resolve();
+  let lastAccountRead = 0;
+  let saveQueue: Promise<unknown> = Promise.resolve();
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  const sortByIds = <T extends { id: string }>(list: T[], ids: string[]) => {
+    const ranks = new Map([...new Set(ids)].map((id, i) => [id, i]));
+    return [...list].sort((a, b) => (ranks.get(a.id) ?? ids.length) - (ranks.get(b.id) ?? ids.length));
+  };
+  // 保存串行执行，失败只提示一次；后续操作不能被较早的响应或回滚覆盖。
+  function enqueueSave(operation: () => Promise<boolean>): Promise<boolean> {
+    const result = saveQueue.then(operation, operation);
+    saveQueue = result.catch(() => undefined);
+    return result;
+  }
+
   function sync() {
+    const sequence = state.clientReadSequence ?? 0;
+    const stale = sequence < lastAccountRead;
+    lastAccountRead = Math.max(lastAccountRead, sequence);
+    // 保存结束后发起的新观测已越过屏障，应接纳服务端后续修改，而非永久等待值相等。
+    const canRelease = <T>(overlay: SavedOverlay<T> | undefined) => !!overlay && !overlay.pending && !stale && sequence > overlay.fence;
+    if (canRelease(selectionOverlay)) selectionOverlay = undefined;
+    if (canRelease(orderOverlay)) orderOverlay = undefined;
+    if (canRelease(tagOrderOverlay)) tagOrderOverlay = undefined;
+    for (const [id, overlay] of tagOverlays) if (canRelease(overlay)) tagOverlays.delete(id);
+    const previousCurrent = st.accounts.find((a) => a.current)?.id;
+    if (!selectionOverlay && !stale) confirmedSelection = state.accounts.find((a) => a.current)?.id;
+    const previousTags = new Map(st.accounts.map((a) => [a.id, a.tags]));
     const now = Date.now();
     const list: Account[] = state.accounts.map((a) => {
       if (a.running && !startedAt.has(a.id)) startedAt.set(a.id, now);
@@ -68,7 +107,7 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
         cred: a.credState === "expired" ? "expired" : "ok",
         running: !!a.running,
         runSeconds: a.running && begin ? Math.floor((now - begin) / 1000) : 0,
-        current: a.current,
+        current: selectionOverlay ? a.id === selectionOverlay.value : stale ? a.id === previousCurrent : a.current,
         region: a.region,
         // 被寄宿的号：渠道由扫码设备固定，详情页不显示选区按钮。
         // 这两个字段以前漏了透传，界面上就一直是"可选区"的样子。
@@ -81,11 +120,12 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
         playerId: a.playerId,
         copyKey: a.copyKey,
         // 标签：后端给的是数组（nil 已经转成 []），这里再兜一次底
-        tags: a.tags ?? [],
+        tags: tagOverlays.get(a.id)?.value ?? (stale ? previousTags.get(a.id) : undefined) ?? a.tags ?? [],
         createdAt: a.createdAt,
         lastLoginTs: a.lastLogin,
         qualityMode: a.qualityMode,
         qualityFps: a.qualityFps,
+        displayMode: a.displayMode,
         // 详情页：登录环境与时间（Go 侧已经在 accountView 里格式化成串了）
         mpayPath: a.mpayPath,
         mpayVersion: a.mpayVersion,
@@ -100,6 +140,11 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
         lastError: a.lastError,
       };
     });
+    const desiredOrder = orderOverlay?.value ?? (stale ? st.accounts.map((a) => a.id) : undefined);
+    if (desiredOrder) list.splice(0, list.length, ...sortByIds(list, desiredOrder));
+    const incomingTags = state.settings.accountTagOrder ?? [];
+    const nextTagOrder = tagOrderOverlay?.value ?? (stale ? st.tagOrder : incomingTags);
+    if (!same(st.tagOrder, nextTagOrder)) st.tagOrder = [...nextTagOrder];
     // 墙按钮 / API 改了打码状态时，列表跟随（每秒轮询对齐一次）
     st.maskAll = state.settings.maskTitles;
     for (const k of [...startedAt.keys()]) {
@@ -110,7 +155,7 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
       st.accounts.splice(0, st.accounts.length, ...list);
     }
   }
-  watch(() => state.accounts, sync, { immediate: true });
+  watch(() => [state.accounts, state.settings.accountTagOrder], sync, { immediate: true });
 
   /**
    * 启动组：把后端视图映射成契约结构。
@@ -124,7 +169,7 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
     return list.map((g) => ({
       id: g.id,
       name: g.name,
-      layout: g.layout === "cascade" || g.layout === "fullscreen" ? g.layout : "tile",
+      layout: canonicalLayout(g.layout),
       cols: g.cols || 2,
       rows: g.rows || 2,
       defMode: g.defMode ?? "",
@@ -149,12 +194,17 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
         w: s.w ?? 0,
         h: s.h ?? 0,
         hasRect: !!s.hasRect,
+        zOrder: s.zOrder,
       })),
     }));
   }
-  watch(() => state.groups, () => {
-    st.groups.splice(0, st.groups.length, ...mapGroups());
-  }, { immediate: true, deep: true });
+  watch(
+    () => state.groups,
+    () => {
+      st.groups.splice(0, st.groups.length, ...mapGroups());
+    },
+    { immediate: true, deep: true },
+  );
 
   const find = (id: string) => st.accounts.find((a) => a.id === id);
   const currentId = () => st.accounts.find((a) => a.current)?.id;
@@ -190,18 +240,38 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
     },
 
     select(id) {
-      void api.selectAccount(id).then((r) => {
-        if (r.ok === false) toast(r.message || "切换失败");
-      });
+      const intent = ++selectionIntent;
+      selectionOverlay = { value: id, pending: true, fence: latestStateReadSequence() };
+      sync();
+      const run = async () => {
+        if (intent !== selectionIntent) return;
+        try {
+          const r = await api.selectAccount(id);
+          if (r.ok === false) throw new Error(r.message || "切换失败");
+          confirmedSelection = id;
+          if (intent === selectionIntent) selectionOverlay = { value: id, pending: false, fence: latestStateReadSequence() };
+        } catch (e) {
+          if (intent === selectionIntent) {
+            selectionOverlay = { value: confirmedSelection, pending: false, fence: latestStateReadSequence() };
+            toast(e instanceof Error ? e.message : "切换失败");
+          }
+        }
+        sync();
+      };
+      selectionQueue = selectionQueue.then(run, run);
     },
 
     launch(id) {
       const target = id ?? currentId();
       if (!target) return toast("还没有账号，先添加一个");
       void (async () => {
-        if (target !== currentId()) {
+        await selectionQueue;
+        if (target !== confirmedSelection) {
           const s = await api.selectAccount(target);
           if (s.ok === false) return toast(s.message || "切换失败");
+          confirmedSelection = target;
+          selectionOverlay = { value: target, pending: false, fence: latestStateReadSequence() };
+          sync();
         }
         const r = await api.launch();
         if (r.ok === false) toast(r.message || "启动失败");
@@ -219,7 +289,12 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
       const a = find(id);
       if (!a) return;
       const openPicker = () =>
-        hooks.onRefresh?.({ accountId: a.id, name: a.name, channel: a.channel, loginUser: a.loginUser });
+        hooks.onRefresh?.({
+          accountId: a.id,
+          name: a.name,
+          channel: a.channel,
+          loginUser: a.loginUser,
+        });
 
       // 存过密码的号：直接静默重登，不用再让用户输一遍账号密码。
       // 被寄宿的号连密码都不用：它的票来自宿主的平台槽，槽位票能换回一条新凭证
@@ -254,77 +329,138 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
     },
 
     setTags(id, tags) {
-      // 先本地生效（拖动/删除标签要立刻看到），失败再靠每秒轮询纠正回来
-      const hit = st.accounts.find((a) => a.id === id);
-      if (hit) hit.tags = tags;
-      void api.setAccountTags(id, tags).then((r) => {
-        if (r.ok === false) toast(r.message || "保存标签失败");
+      const draft = [...tags];
+      return enqueueSave(async () => {
+        const before = [...(find(id)?.tags ?? [])];
+        const overlay = { value: draft, pending: true, fence: latestStateReadSequence() };
+        tagOverlays.set(id, overlay);
+        sync();
+        try {
+          const r = await api.setAccountTags(id, draft);
+          if (r.ok === false || !r.account || r.account.id !== id || !Array.isArray(r.account.tags)) throw new Error(r.message || "保存标签失败：未收到确认结果");
+          overlay.value = [...r.account.tags];
+          overlay.pending = false;
+          overlay.fence = latestStateReadSequence();
+          sync();
+          return true;
+        } catch (e) {
+          overlay.value = before;
+          overlay.pending = false;
+          overlay.fence = latestStateReadSequence();
+          sync();
+          toast(e instanceof Error ? e.message : "保存标签失败");
+          return false;
+        }
+      });
+    },
+
+    get tagOrder() { return st.tagOrder; },
+    setTagOrder(tags) {
+      const draft = [...tags];
+      return enqueueSave(async () => {
+        const before = [...st.tagOrder];
+        tagOrderOverlay = { value: draft, pending: true, fence: latestStateReadSequence() };
+        sync();
+        try {
+          const r = await api.setTagOrder(draft);
+          if (r.ok === false || !Array.isArray(r.tagOrder)) throw new Error(r.message || "保存标签顺序失败：未收到确认结果");
+          tagOrderOverlay = { value: [...r.tagOrder], pending: false, fence: latestStateReadSequence() };
+          sync();
+          return true;
+        } catch (e) {
+          tagOrderOverlay = { value: before, pending: false, fence: latestStateReadSequence() };
+          sync();
+          toast(e instanceof Error ? e.message : "保存标签顺序失败");
+          return false;
+        }
       });
     },
 
     reorder(ids) {
-      // 同一份顺序先应用到本地，避免"松手后列表跳一下再回来"
-      const byId = new Map(st.accounts.map((a) => [a.id, a]));
-      const next = ids.map((id) => byId.get(id)).filter((a): a is Account => !!a);
-      for (const a of st.accounts) if (!next.includes(a)) next.push(a);
-      st.accounts.splice(0, st.accounts.length, ...next);
-      void api.reorderAccounts(ids).then((r) => {
-        if (r.ok === false) toast(r.message || "保存顺序失败");
+      const draft = [...ids];
+      return enqueueSave(async () => {
+        const before = st.accounts.map((a) => a.id);
+        orderOverlay = { value: draft, pending: true, fence: latestStateReadSequence() };
+        sync();
+        try {
+          const r = await api.reorderAccounts(draft);
+          if (r.ok === false || !Array.isArray(r.ids)) throw new Error(r.message || "保存顺序失败：未收到确认结果");
+          orderOverlay = { value: [...r.ids], pending: false, fence: latestStateReadSequence() };
+          sync();
+          return true;
+        } catch (e) {
+          orderOverlay = { value: before, pending: false, fence: latestStateReadSequence() };
+          sync();
+          toast(e instanceof Error ? e.message : "保存顺序失败");
+          return false;
+        }
       });
     },
 
-    setAccountQuality(id, mode, fps, display = "") {
-      // 画质 / 帧率 / 显示方式一起存：三项都是"这行账号的游戏设置"，
-      // 分三次请求只会多出两次半写状态。
-      void api.setGameSettings(id, mode, fps, display).then((r) => {
+    setAccountQuality(id, mode, fps, display = "", autoEnter) {
+      // 画质 / 帧率 / 显示方式 / 自动进入一起存：都是"这行账号的游戏设置"，
+      // 分几次请求只会多出几次半写状态。
+      void api.setGameSettings(id, mode, fps, display, autoEnter).then((r) => {
         if (r.ok === false) toast(r.message || "保存失败");
       });
     },
 
-    saveGroup(g) {
-      void api.saveGroup(g as never).then((r) => {
-        if (r.ok === false) {
-          toast(r.message || "保存启动组失败");
-          return;
-        }
-        // 本地先合进去：新建的组要能立刻出现在左边列表里，不用等下一轮轮询
-        const id = r.id || g.id;
-        const next = st.groups.slice();
-        const at = next.findIndex((x) => x.id === id);
-        const merged = { ...g, id };
-        if (at >= 0) next[at] = merged;
-        else next.push(merged);
-        st.groups.splice(0, st.groups.length, ...next);
-      });
+    async planLayout(body) {
+      const r = await api.planLayout(body);
+      if (r.ok === false || !Array.isArray(r.rects))
+        throw new Error(r.message || "无法规划窗口布局，请重试");
+      return r;
     },
 
-    deleteGroup(id) {
-      const at = st.groups.findIndex((x) => x.id === id);
-      if (at >= 0) st.groups.splice(at, 1);
-      void api.deleteGroup(id).then((r) => {
-        if (r.ok === false) toast(r.message || "删除启动组失败");
-      });
+    async saveGroup(g) {
+      const r = await api.saveGroup(g);
+      if (r.ok === false) throw new Error(r.message || "保存启动组失败");
+      const id = r.id || g.id;
+      if (!id) throw new Error("保存未完成，请重试");
+      // 优先采用服务端规范化结果，避免把未被采用的值显示为已保存。
+      const saved = JSON.parse(
+        JSON.stringify(r.groups?.find((x) => x.id === id) ?? { ...g, id }),
+      ) as LaunchGroup;
+      if (r.groups)
+        st.groups.splice(0, st.groups.length, ...(r.groups as LaunchGroup[]));
+      else {
+        const at = st.groups.findIndex((x) => x.id === id);
+        if (at >= 0) st.groups[at] = saved;
+        else st.groups.push(saved);
+      }
+      return saved;
+    },
+
+    async deleteGroup(id) {
+      const r = await api.deleteGroup(id);
+      if (r.ok === false) throw new Error(r.message || "删除启动组失败");
+      if (r.groups)
+        st.groups.splice(0, st.groups.length, ...(r.groups as LaunchGroup[]));
+      else {
+        const at = st.groups.findIndex((x) => x.id === id);
+        if (at >= 0) st.groups.splice(at, 1);
+      }
     },
 
     async launchGroup(id) {
       const r = await api.launchGroup(id);
       // 后端的 message 是给用户看的整句（含"按位置摆放"/"位置已失效"这类关键信息），
       // 别在这里改写成通用文案，否则用户不知道窗口为什么会乱。
-      toast(r.message || (r.ok === false ? "启动失败" : "已启动"));
       return { ok: r.ok !== false, message: r.message };
     },
 
     async captureRects() {
       const r = await api.clientRects();
-      return (r.rects ?? []).map((x) => ({
-        id: x.id,
-        name: x.name,
-        x: x.x,
-        y: x.y,
-        w: x.w,
-        h: x.h,
-        fullscreen: !!x.fullscreen,
-      }));
+      if (r.ok === false) throw new Error(r.message || "读取窗口位置失败");
+      return {
+        screenW: r.screenW ?? 0,
+        screenH: r.screenH ?? 0,
+        workArea: r.workArea,
+        rects: (r.rects ?? []).map((x) => ({
+          ...x,
+          fullscreen: !!x.fullscreen,
+        })),
+      };
     },
 
     setRailWidth(width: number) {
@@ -368,7 +504,9 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
     },
 
     invertSelect() {
-      st.selectedIds = st.accounts.filter((a) => !st.selectedIds.includes(a.id)).map((a) => a.id);
+      st.selectedIds = st.accounts
+        .filter((a) => !st.selectedIds.includes(a.id))
+        .map((a) => a.id);
     },
 
     selectRunning() {
@@ -381,17 +519,25 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
     },
 
     bulkLaunch() {
-      const ids = st.accounts.filter((a) => st.selectedIds.includes(a.id) && !a.running).map((a) => a.id);
+      const ids = st.accounts
+        .filter((a) => st.selectedIds.includes(a.id) && !a.running)
+        .map((a) => a.id);
       if (!ids.length) return toast("选中的账号都在运行中");
       store.multiLaunch(ids);
     },
 
     bulkStop() {
-      const ids = st.accounts.filter((a) => st.selectedIds.includes(a.id) && a.running).map((a) => a.id);
+      const ids = st.accounts
+        .filter((a) => st.selectedIds.includes(a.id) && a.running)
+        .map((a) => a.id);
       if (!ids.length) return toast("选中的账号没有在运行的");
       void Promise.all(ids.map((id) => api.stopAccount(id))).then((rs) => {
         const fail = rs.filter((r) => r.ok === false).length;
-        toast(fail ? `已停止 ${rs.length - fail} 个，${fail} 个失败` : `已停止 ${rs.length} 个客户端`);
+        toast(
+          fail
+            ? `已停止 ${rs.length - fail} 个，${fail} 个失败`
+            : `已停止 ${rs.length} 个客户端`,
+        );
       });
     },
 
@@ -399,36 +545,45 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
       const picked = st.accounts.filter((a) => st.selectedIds.includes(a.id));
       if (!picked.length) return;
       const names = picked.map((a) => a.name);
-      void Promise.all(picked.map((a) => api.deleteAccount(a.id))).then((rs) => {
-        const fail = rs.filter((r) => r.ok === false).length;
-        if (!fail) st.selectedIds = [];
-        toast(fail ? `删除了 ${rs.length - fail} 个，${fail} 个失败` : `已删除 ${names.length} 个账号`);
-      });
+      void Promise.all(picked.map((a) => api.deleteAccount(a.id))).then(
+        (rs) => {
+          const fail = rs.filter((r) => r.ok === false).length;
+          if (!fail) st.selectedIds = [];
+          toast(
+            fail
+              ? `删除了 ${rs.length - fail} 个，${fail} 个失败`
+              : `已删除 ${names.length} 个账号`,
+          );
+        },
+      );
     },
 
     multiLaunch(ids, layout, size, display, ovMode, ovFps) {
       const ready = ids.filter((id) => !find(id)?.running);
       if (!ready.length) return toast("所选账号都在运行中");
-      if (ready.length === 1) return store.launch(ready[0]);
-      // display 可以带方案后缀（"cascade:dual"），判断用前缀；全屏不带排列方案
-      const fullscreen = display === "fullscreen";
-      const cascade = typeof display === "string" && display.startsWith("cascade");
-      const lay = fullscreen ? LAYOUT_NONE : (layout ?? recommendLayout(ready.length));
+
       void (async () => {
-        const r = await api.launchMulti(ready, lay.cols > 0 ? lay : undefined, size, display, ovMode, ovFps);
-        if (r.ok === false) return toast(r.message || "多开失败");
-        const modeText =
-          fullscreen
-            ? "，全屏（用监控墙或 Alt+Tab 切换）"
-            : cascade
-              ? "，窗口堆叠（每个都露出标题条）"
-              : lay.cols > 0
-                ? `，将按${lay.label}平铺`
-                : "";
-        const sizeText = !fullscreen && size ? `，窗口 ${size.w}×${size.h}` : "";
-        // 游戏窗口最小 1024×720，3 个以上屏幕必然互相遮挡——提示用监控墙
-        const wallHint = ready.length >= 3 ? "；有遮挡可用「监控墙」查看全部" : "";
-        toast(`多开已启动 ${ready.length} 个客户端${modeText}${sizeText}${wallHint}`);
+        try {
+          const plan = await store.planLayout({
+            count: ready.length,
+            mode: display || "",
+          });
+          const r = await api.launchMulti(
+            ready,
+            undefined,
+            undefined,
+            plan.mode,
+            ovMode,
+            ovFps,
+          );
+          if (r.ok === false) return toast(r.message || "多开失败");
+          toast(
+            r.message ||
+              `已启动 ${ready.length} 个客户端，${layoutLabel(plan.mode)}${ready.length >= 3 ? "；可用监控墙切换" : ""}`,
+          );
+        } catch (e) {
+          toast(e instanceof Error ? e.message : "窗口规划失败，请重试");
+        }
       })();
     },
 
@@ -438,18 +593,22 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
         fps: state.settings.multiQualityFps,
         arbiter: state.settings.mouseArbiter,
         arbiterMin: state.settings.mouseArbiterMin,
+        autoEnter: state.settings.multiAutoEnter,
       };
     },
 
-    saveMultiDefaults(qualityMode, fps, arbiter, arbiterMin) {
-      void api.saveSettings({
-        multiQualityMode: qualityMode,
-        multiQualityFps: fps,
-        mouseArbiter: arbiter,
-        mouseArbiterMin: arbiterMin,
-      }).then((r) => {
-        if (r.ok === false) toast(r.message || "保存失败");
-      });
+    saveMultiDefaults(qualityMode, fps, arbiter, arbiterMin, autoEnter) {
+      void api
+        .saveSettings({
+          multiQualityMode: qualityMode,
+          multiQualityFps: fps,
+          mouseArbiter: arbiter,
+          mouseArbiterMin: arbiterMin,
+          multiAutoEnter: autoEnter,
+        })
+        .then((r) => {
+          if (r.ok === false) toast(r.message || "保存失败");
+        });
     },
 
     openSettings() {
@@ -457,7 +616,13 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
     },
 
     toggleWall() {
-      void api.wallToggle().then((r) => toast(r.message || (r.ok === false ? "监控墙开关失败" : "监控墙已更新")));
+      void api
+        .wallToggle()
+        .then((r) =>
+          toast(
+            r.message || (r.ok === false ? "监控墙开关失败" : "监控墙已更新"),
+          ),
+        );
     },
 
     openRunning() {

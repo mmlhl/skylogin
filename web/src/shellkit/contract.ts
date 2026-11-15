@@ -8,7 +8,14 @@
  * 壳本身对用哪套实现毫无感知。
  */
 
-export type Channel = "huawei" | "netease" | "bilibili" | "m4399" | "vivo" | "uc_platform" | "myapp";
+export type Channel =
+  | "huawei"
+  | "netease"
+  | "bilibili"
+  | "m4399"
+  | "vivo"
+  | "uc_platform"
+  | "myapp";
 export type CredState = "ok" | "expired";
 
 export interface Account {
@@ -49,6 +56,8 @@ export interface Account {
   qualityFps?: number;
   /** 单开时的显示方式："" 跟随游戏 / "windowed" 窗口 / "fullscreen" 全屏 */
   displayMode?: string;
+  /** 这一行的自动进入开关：true/false 明确设置，null/undefined = 跟随全局 */
+  autoEnter?: boolean | null;
   /** 副本键（"PlayerID-2" 样式）；空 = 原始行 */
   copyKey?: string;
   /** 用户自己打的标签（多个，自由输入）。副本与原件各存各的。 */
@@ -115,37 +124,74 @@ export interface NewAccountDraft {
   name?: string;
 }
 
-/**
- * 多开时的窗口排列方案。
- *
- * 只用正方形网格：16:9 的屏幕被均分成 n×n 时，每一格恰好也是 16:9，
- * 游戏窗口铺进去不会变形。两个窗口 = 四分屏占两格（960×540），
- * 五到九个 = 九宫格占 N 格（640×360），以此类推。
- */
+/** 兼容旧调用方的网格参数；新界面不再由网格推算窗口尺寸。 */
 export interface GridLayout {
   key: string;
   label: string;
   cols: number;
   rows: number;
-  /** 该方案最多容纳的窗口数 */
   max: number;
 }
 
-export const LAYOUTS: GridLayout[] = [
-  { key: "fullscreen", label: "全屏", cols: 1, rows: 1, max: 1 },
-  { key: "quad-2", label: "四分屏 · 占两格", cols: 2, rows: 2, max: 2 },
-  { key: "quad-3", label: "四分屏 · 占三格", cols: 2, rows: 2, max: 3 },
-  { key: "quad", label: "四分屏", cols: 2, rows: 2, max: 4 },
-  { key: "grid-3", label: "九宫格", cols: 3, rows: 3, max: 9 },
-  { key: "grid-4", label: "十六宫格", cols: 4, rows: 4, max: 16 },
-];
-
-export const LAYOUT_NONE: GridLayout = { key: "none", label: "不排列", cols: 0, rows: 0, max: Number.MAX_SAFE_INTEGER };
-
-/** 按窗口数推荐最小能装下的网格。 */
-export function recommendLayout(count: number): GridLayout {
-  return LAYOUTS.find((l) => l.max >= count) ?? LAYOUT_NONE;
+/** 统一窗口规划接口；正式界面只消费后端矩形，不另算尺寸。 */
+export type LayoutMode =
+  | "tile"
+  | "cascade:cols"
+  | "cascade:rows"
+  | "fullscreen";
+export interface LayoutRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  zOrder?: number;
 }
+export interface LayoutRequest {
+  count: number;
+  mode: string;
+  cols?: number;
+  rows?: number;
+  w?: number;
+  h?: number;
+}
+export interface LayoutPlan {
+  ok: boolean;
+  mode: LayoutMode;
+  requestedMode: string;
+  recommendedMode: LayoutMode;
+  feasible: boolean;
+  reason: string;
+  message: string;
+  screenW: number;
+  screenH: number;
+  workArea: LayoutRect;
+  minW: number;
+  minH: number;
+  minSource: string;
+  rects: LayoutRect[];
+  options: {
+    id: LayoutMode;
+    label: string;
+    description: string;
+    enabled: boolean;
+    reason?: string;
+  }[];
+}
+export const canonicalLayout = (mode: string): LayoutMode =>
+  mode === "fullscreen"
+    ? "fullscreen"
+    : mode === "cascade:rows" || mode === "cascade:fan"
+      ? "cascade:rows"
+      : mode.startsWith("cascade")
+        ? "cascade:cols"
+        : "tile";
+export const layoutLabel = (mode: string): string =>
+  ({
+    tile: "窗口并排",
+    "cascade:cols": "标题易切换",
+    "cascade:rows": "画面多露出",
+    fullscreen: "专注全屏",
+  })[canonicalLayout(mode)];
 
 /** 启动组里的一个成员：账号 + 它在这套里的启动参数 */
 export interface LaunchSlot {
@@ -165,6 +211,8 @@ export interface LaunchSlot {
   h: number;
   /** false = 这套没记过位置，启动时按排列方式算 */
   hasRect: boolean;
+  /** 正数越大越靠前；旧数据缺省由后端按成员顺序补齐。 */
+  zOrder?: number;
 }
 
 /**
@@ -174,7 +222,7 @@ export interface LaunchSlot {
 export interface LaunchGroup {
   id: string;
   name: string;
-  layout: "tile" | "cascade" | "fullscreen";
+  layout: LayoutMode | "cascade" | `cascade:${string}`;
   cols: number;
   rows: number;
   defMode: string;
@@ -200,9 +248,10 @@ export interface CapturedRect {
   h: number;
   /** 全屏窗口记下来就是整屏，界面要提醒用户先切成窗口 */
   fullscreen: boolean;
+  zOrder?: number;
 }
 
-/** 界面壳允许调用的全部功能。 */export interface LauncherStore {
+/** 界面壳允许调用的全部功能。 */ export interface LauncherStore {
   readonly accounts: Account[];
   readonly current: Account | undefined;
   readonly runningAccounts: Account[];
@@ -259,26 +308,39 @@ export interface CapturedRect {
   ): void;
   /** 保存某行账号自己的画质/帧率（账号级就是具体档位，无"跟随"项）。 */
   /** 保存账号级游戏设置：画质 / 帧率 / 显示方式（空/0 = 跟随游戏） */
-  setAccountQuality(id: string, mode: string, fps: number, display?: string): void;
+  setAccountQuality(
+    id: string,
+    mode: string,
+    fps: number,
+    display?: string,
+    /** 自动进入：true/false 明确设置，null = 跟随全局 */
+    autoEnter?: boolean | null,
+  ): void;
   /**
    * 保存某个账号的标签（整组替换）。
    * 副本与原件各存各的——传的是哪一行，就只改那一行。
    */
-  setTags(id: string, tags: string[]): void;
+  setTags(id: string, tags: string[]): Promise<boolean>;
+  /** 标签分组顺序独立保存，不改变账号本身的标签。 */
+  readonly tagOrder: string[];
+  setTagOrder(tags: string[]): Promise<boolean>;
   /**
    * 按给定顺序重排账号（整表顺序）。
    * 没提到的行由后端按原相对顺序补在末尾，所以筛选后只传可见的也不会丢号。
    */
-  reorder(ids: string[]): void;
+  reorder(ids: string[]): Promise<boolean>;
   /** 保存账号列表宽度（分界线拖拽结束）。 */
   setRailWidth(width: number): void;
+
+  /** 获取可执行布局、推荐及不可用原因。 */
+  planLayout(request: LayoutRequest): Promise<LayoutPlan>;
 
   /** 全部启动组（后端是唯一真相来源） */
   readonly groups: LaunchGroup[];
   /** 新建/更新一套启动组（带 id = 更新） */
-  saveGroup(g: LaunchGroup): void;
+  saveGroup(g: LaunchGroup): Promise<LaunchGroup>;
   /** 删除一套启动组 */
-  deleteGroup(id: string): void;
+  deleteGroup(id: string): Promise<void>;
   /**
    * 按一套启动组拉起客户端（后端先停旧的再拉新的，然后按记录的位置摆）。
    * 返回的 message 可以直接 toast。
@@ -288,11 +350,29 @@ export interface CapturedRect {
    * 读当前运行中窗口的坐标（按启动顺序）。
    * 给「记住当前各窗口位置」用；没有客户端在跑时返回空数组。
    */
-  captureRects(): Promise<CapturedRect[]>;
+  captureRects(): Promise<{
+    rects: CapturedRect[];
+    screenW: number;
+    screenH: number;
+    workArea?: { x: number; y: number; w: number; h: number };
+  }>;
 
   /** 多开默认（画质 / 帧率 / 鼠标仲裁）：多开弹窗和设置面板读写的是同一份 */
-  multiDefaults(): { qualityMode: string; fps: number; arbiter: boolean; arbiterMin: number };
-  saveMultiDefaults(qualityMode: string, fps: number, arbiter?: boolean, arbiterMin?: number): void;
+  multiDefaults(): {
+    qualityMode: string;
+    fps: number;
+    arbiter: boolean;
+    arbiterMin: number;
+    /** 多开时是否自动点播放按钮进入游戏 */
+    autoEnter: boolean;
+  };
+  saveMultiDefaults(
+    qualityMode: string,
+    fps: number,
+    arbiter?: boolean,
+    arbiterMin?: number,
+    autoEnter?: boolean,
+  ): void;
 
   /** 打开设置面板（由实现方决定弹什么） */
   openSettings(): void;
@@ -332,4 +412,3 @@ export function fmtRun(seconds: number): string {
   if (m < 60) return `${m} 分钟`;
   return `${Math.floor(m / 60)} 小时 ${String(m % 60).padStart(2, "0")} 分`;
 }
-

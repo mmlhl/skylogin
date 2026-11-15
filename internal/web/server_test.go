@@ -20,7 +20,7 @@ func newTestServer() *Server {
 		Rename:   func(string, string) error { return nil },
 		Delete:   func(string) error { return nil },
 		Settings: func() map[string]any { return map[string]any{"version": "test"} },
-		SaveSettings: func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int) error {
+		SaveSettings: func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int, autoEnterPlay *bool, multiAutoEnter *bool) error {
 			return nil
 		},
 		Cleanup:     func(accounts, cache, logs bool) ([]string, error) { return []string{"x"}, nil },
@@ -171,11 +171,13 @@ func TestDeviceCustomEndpoint(t *testing.T) {
 func TestGameSettingsRoute(t *testing.T) {
 	var gotID, gotMode, gotDisplay string
 	var gotFps int
+	var gotAutoEnter *bool
 	called := false
 	srv := New(Hooks{
-		GameSettings: func(id, mode string, fps int, display string) error {
+		GameSettings: func(id, mode string, fps int, display string, autoEnter *bool) error {
 			called = true
 			gotID, gotMode, gotFps, gotDisplay = id, mode, fps, display
+			gotAutoEnter = autoEnter
 			return nil
 		},
 	})
@@ -183,7 +185,7 @@ func TestGameSettingsRoute(t *testing.T) {
 	defer ts.Close()
 
 	resp, err := http.Post(ts.URL+"/api/accounts/gamesettings", "application/json",
-		strings.NewReader(`{"id":"a1","mode":"Presentation","fps":120,"display":"windowed"}`))
+		strings.NewReader(`{"id":"a1","mode":"Presentation","fps":120,"display":"windowed","autoEnter":true}`))
 	if err != nil {
 		t.Fatalf("请求失败: %v", err)
 	}
@@ -197,5 +199,8 @@ func TestGameSettingsRoute(t *testing.T) {
 	}
 	if !called || gotID != "a1" || gotMode != "Presentation" || gotFps != 120 || gotDisplay != "windowed" {
 		t.Fatalf("回调参数不对: id=%q mode=%q fps=%d display=%q", gotID, gotMode, gotFps, gotDisplay)
+	}
+	if gotAutoEnter == nil || !*gotAutoEnter {
+		t.Fatalf("自动进入开关没传到后端: %v", gotAutoEnter)
 	}
 }

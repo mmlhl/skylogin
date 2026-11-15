@@ -35,6 +35,8 @@ type Config struct {
 	// 多开镜像目录（第 2 个客户端从这里启动）。空 = 游戏所在盘的 \SkyLoginMirror。
 	MirrorDir string `json:"mirror_dir,omitempty"`
 
+	// 标签分组的显式顺序，新标签由界面追加，不改账号本身的标签。
+	AccountTagOrder []string `json:"account_tag_order,omitempty"`
 	// 左栏宽度（像素）。用户能拖，拖完存这里；0 表示用默认值。
 	RailWidth int `json:"rail_width,omitempty"`
 
