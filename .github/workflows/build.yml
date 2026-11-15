@@ -89,9 +89,11 @@ jobs:
         id: notes
         shell: pwsh
         run: |
-          # 更新说明只有一个来源：仓库根目录的 RELEASE_NOTES.md。
-          # Release 正文和更新服务里的 changelog 都用它，保证两处永远一致；
-          # 没有这个文件时才按提交记录拼（老行为）。
+          # 公告只有一份来源：仓库根目录的 RELEASE_NOTES.md，客户端更新弹窗和
+          # 更新服务里的 changelog 都用它——两处永远一致。
+          # Release 页面可以再给一份更详细的 RELEASE_FULL.md；没有这个文件就
+          # 退回公告内容，不会出现"Release 里什么都没有"。
+          # 两个文件都没有时才按提交记录拼（老行为）。
           if (Test-Path RELEASE_NOTES.md) {
             $notes = ((Get-Content RELEASE_NOTES.md -Encoding utf8) | Where-Object { $_.Trim() }) -join "`n"
           } else {
@@ -99,10 +101,19 @@ jobs:
             $lines = if ($prev) { git log --oneline "$prev..HEAD" | Where-Object { $_ -notmatch '^[0-9a-f]{7} (ci|docs)[:(（]' -and $_ -notmatch '诊断' } } else { @() }
             $notes = ($lines | ForEach-Object { $_ -replace '^[0-9a-f]{7} ', '- ' }) -join "`n"
           }
+          if (Test-Path RELEASE_FULL.md) {
+            $full = ((Get-Content RELEASE_FULL.md -Encoding utf8) | Where-Object { $_.Trim() }) -join "`n"
+          } else {
+            $full = $notes
+          }
           "notes<<NOTE" >> $env:GITHUB_OUTPUT
           $notes >> $env:GITHUB_OUTPUT
           "NOTE" >> $env:GITHUB_OUTPUT
-          Write-Host "更新说明:"; Write-Host $notes
+          "full<<FULL" >> $env:GITHUB_OUTPUT
+          $full >> $env:GITHUB_OUTPUT
+          "FULL" >> $env:GITHUB_OUTPUT
+          Write-Host "公告（弹窗 / changelog）:"; Write-Host $notes
+          Write-Host "Release 正文:"; Write-Host $full
 
       - name: 构建 exe
         shell: pwsh
@@ -151,7 +162,7 @@ jobs:
             ## 光遇账号登录器 v${{ steps.ver.outputs.version }}
 
             ### 本次更新
-            ${{ steps.notes.outputs.notes }}
+            ${{ steps.notes.outputs.full }}
 
             ### 使用说明
 
