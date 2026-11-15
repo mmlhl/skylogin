@@ -3,18 +3,20 @@
  * 壳 03 · 控制台：图标栏 + 账号列表 + 详情面板，类 Linear。
  * 信息密度最高，运行中的客户端在详情页统一管理。
  */
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   Flame, LayoutGrid, Monitor, Settings, Eye, EyeOff, Plus, Pencil, Play, Square,
   Layers, RefreshCw, CopyPlus, SlidersHorizontal, ChevronDown,
   // 视图切换是文字分段（.vseg），不用图标——图标表意实测失败
-  ArrowUpDown,
+  ArrowUpDown, ArrowUp, ArrowDown, GripVertical, Search, X, Check, LayoutDashboard,
 } from "lucide-vue-next";
 import type { Account, LauncherStore } from "../contract";
+import { orderedAccountTags, tagIdentity, replaceAccountSubsequence, matchesAccount, accountTimeBucket, type AccountListView, type AccountSection, type AccountSort } from "../accountList";
 import LaunchGroups from "../../components/LaunchGroups.vue";
 
 const props = defineProps<{ store: LauncherStore }>();
-const store = props.store;import { demoUi } from "../ui";
+const store = props.store;
+import { demoUi } from "../ui";
 import { state as appState } from "../../composables/useAppState";
 import { channelLabel, fmtRun } from "../contract";
 
@@ -31,7 +33,9 @@ const view = ref<"accounts" | "groups">("accounts");
 
 const railWidth = ref(appState.settings.railWidth >= 220 ? appState.settings.railWidth : 264);
 const dragging = ref(false);
+let cleanupDivider: (() => void) | undefined;
 function onDividerDown(e: MouseEvent) {
+  cleanupDivider?.();
   e.preventDefault();
   dragging.value = true;
   const startX = e.clientX;
@@ -43,273 +47,320 @@ function onDividerDown(e: MouseEvent) {
     dragging.value = false;
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
+    window.removeEventListener("blur", up);
+    cleanupDivider = undefined;
     store.setRailWidth(railWidth.value);
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
+  window.addEventListener("blur", up);
+  cleanupDivider = () => {
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+    window.removeEventListener("blur", up);
+    dragging.value = false;
+  };
 }
+function resizeRail(delta: number) {
+  railWidth.value = Math.min(520, Math.max(220, railWidth.value + delta));
+  store.setRailWidth(railWidth.value);
+}
+function resetRail() { railWidth.value = 288; store.setRailWidth(288); }
+onUnmounted(() => cleanupDivider?.());
 const expired = computed(() => cur.value?.cred === "expired");
 const runningSelf = computed(() => !!cur.value?.running);
 
-/* ───────────────── 账号列表的四种视图 ─────────────────
- * 用户 2026-11-15 定的规则：
- *   渠道 / 添加时间 是**单值**维度 → 用分段：每个号只出现一次
- *   标签 是**多值**维度 → 用分组：一个号有几个标签就在几个组里出现
- *   平铺 是不分组的老样子，顺序可以自己拖
- * 所以"重复出现"只可能来自标签视图，而且只是同一行的投影，不是新数据。
- */
-type ListView = "flat" | "tag" | "channel" | "time";
+/* 列表的分组身份、文件顺序和标签组顺序各自独立，避免同名标签被误认为系统分组。 */
+type ListView = AccountListView;
 const VIEW_TABS: { k: ListView; label: string; tip: string }[] = [
-  { k: "flat", label: "平铺", tip: "一行一个号，顺序可拖动" },
-  { k: "tag", label: "标签", tip: "多标签的号每组各出现一次" },
-  { k: "channel", label: "渠道", tip: "按渠道分组" },
-  { k: "time", label: "时间", tip: "按添加时间分组" },
+  { k: "flat", label: "平铺", tip: "每个账号只显示一次" },
+  { k: "tag", label: "标签", tip: "多标签账号会在各标签组中显示" },
+  { k: "channel", label: "渠道", tip: "按渠道查看账号" },
+  { k: "time", label: "时间", tip: "按添加时间查看账号" },
 ];
-const SORTS: { k: "custom" | "name" | "recent"; label: string; tip: string }[] = [
-  { k: "custom", label: "自定义", tip: "手动拖动的顺序" },
-  { k: "name", label: "名称", tip: "按名称排序" },
-  { k: "recent", label: "最近登录", tip: "按最近登录排序" },
+const SORTS: { k: AccountSort; label: string; tip: string }[] = [
+  { k: "custom", label: "手动顺序", tip: "拖动左侧手柄调整，自动保存" },
+  { k: "name", label: "名称", tip: "按账号名称查看，不改变手动顺序" },
+  { k: "recent", label: "最近登录", tip: "最近登录在前，未登录过的放最后" },
+  { k: "running", label: "运行优先", tip: "运行中的账号在前，其余保持手动顺序" },
 ];
 const listView = ref<ListView>("flat");
-const flatSort = ref<"custom" | "name" | "recent">("custom");
+const flatSort = ref<AccountSort>("custom");
 const sortOpen = ref(false);
-const sortLabel = computed(() => SORTS.find((s) => s.k === flatSort.value)?.label ?? "自定义");
-const collapsedTags = ref<string[]>([]);
-const UNTAGGED = "未分组";
+const search = ref("");
+const collapsed = ref<string[]>([]);
+const orderSaving = ref(false);
+const tagOrderSaving = ref(false);
+const listMessage = ref("");
+const listError = ref(false);
+const listBusy = computed(() => orderSaving.value || tagOrderSaving.value);
+const sortLabel = computed(() => listView.value === "flat" ? SORTS.find((s) => s.k === flatSort.value)?.label : ({ tag: "标签顺序", channel: "按渠道", time: "按时间" })[listView.value]);
+const tagOrderDraft = ref<string[] | null>(null);
+const groupOrder = computed(() => orderedAccountTags(store.accounts, tagOrderDraft.value ?? store.tagOrder ?? []));
+const visibleAccounts = computed(() => store.accounts.filter((a) => matchesAccount(a, search.value, channelLabel)));
+const selectedCount = computed(() => store.accounts.filter((a) => store.selectedIds.includes(a.id)).length);
 const CHANNEL_ORDER = ["华为渠道", "网易官方", "B站渠道", "4399渠道", "vivo渠道"];
 const TIME_ORDER = ["最近 7 天", "8–30 天", "30 天以上"];
-
-// 排序菜单：点外面关掉。只挂一个 document 监听，比给每个按钮做 blur 可靠
-function closeSort() {
-  sortOpen.value = false;
-}
-onMounted(() => document.addEventListener("click", closeSort));
-onUnmounted(() => document.removeEventListener("click", closeSort));
-
-/** 标签的显示顺序：跟后端聚合清单一致（首次出现），"未分组"永远在最后 */
-const groupOrder = ref<string[]>([]);
-watch(
-  () => (appState.tags ?? []).map((t) => t.name).join("|"),
-  () => {
-    // "未分组"不进 kept：它是在数据到达前就播进去的占位段，
-    // 如果跟着 kept 走，第一次真实标签到来时它还赖在第一位。
-    const names = [...new Set((appState.tags ?? []).map((t) => t.name))];
-    const kept = groupOrder.value.filter((t) => t !== UNTAGGED && names.includes(t));
-    groupOrder.value = [...kept, ...names.filter((t) => !kept.includes(t)), UNTAGGED];
-  },
-  { immediate: true }
-);
-
-function sorted(rows: Account[]) {
-  const out = [...rows];
-  // 排序只作用于"平铺"：标签/渠道/时间视图里顺序 = 文件顺序，
-  // 否则会出现"按名称排好了、拖一下又被排回去"的假拖动。
-  if (listView.value !== "flat") return out;
-  if (flatSort.value === "name") out.sort((a, b) => a.name.localeCompare(b.name, "zh"));
-  // 最近登录：没有时间戳的（从没成功启动过）排在最后
-  if (flatSort.value === "recent") out.sort((a, b) => (b.lastLoginTs ?? 0) - (a.lastLoginTs ?? 0));
-  return out;
-}
-
-/** 添加时间分成三段：最近一周 / 一个月内 / 更早 */
-function timeBucket(a: Account) {
-  const t = a.createdAt ?? 0;
-  if (!t) return "30 天以上";
-  const days = (Date.now() / 1000 - t) / 86400;
-  return days <= 7 ? "最近 7 天" : days <= 30 ? "8–30 天" : "30 天以上";
-}
-
-const sections = computed<{ key: string; rows: Account[]; draggable: boolean }[]>(() => {
-  const accs = store.accounts;
+const displayName = (a: Account) => store.maskAll ? a.maskedName : a.name;
+const sections = computed<AccountSection[]>(() => {
+  const accs = visibleAccounts.value;
   if (listView.value === "flat") {
-    return [{ key: "", rows: sorted(accs), draggable: true }];
+    const rows = [...accs];
+    if (flatSort.value === "name") rows.sort((a, b) => a.name.localeCompare(b.name, "zh"));
+    if (flatSort.value === "recent") rows.sort((a, b) => (b.lastLoginTs ?? 0) - (a.lastLoginTs ?? 0));
+    if (flatSort.value === "running") rows.sort((a, b) => Number(b.running) - Number(a.running));
+    return [{ key: "flat", label: "", rows, draggable: flatSort.value === "custom" }];
   }
   if (listView.value === "tag") {
-    return groupOrder.value.map((tag) => ({
-      key: tag,
-      rows: sorted(tag === UNTAGGED ? accs.filter((a) => !a.tags.length) : accs.filter((a) => a.tags.includes(tag))),
-      // 组内可以调顺序；跨组移动没有意义（那等于改标签），所以只认同组
-      draggable: true,
-    })).filter((s) => s.rows.length); // 标签删空后段要消失，别留一个"0"
+    const groups: AccountSection[] = groupOrder.value.map((tag) => ({
+      key: "tag:" + tagIdentity(tag), label: tag, tag,
+      rows: accs.filter((a) => a.tags.some((t) => tagIdentity(t) === tagIdentity(tag))), draggable: true,
+    }));
+    groups.push({ key: "system:untagged", label: "未分组", untagged: true, rows: accs.filter((a) => !a.tags.length), draggable: true });
+    return groups.filter((s) => s.rows.length);
   }
   if (listView.value === "channel") {
-    const names = Array.from(new Set(accs.map((a) => channelLabel(a.channel))));
+    const names = [...new Set(accs.map((a) => channelLabel(a.channel)))];
     const order = [...CHANNEL_ORDER.filter((n) => names.includes(n)), ...names.filter((n) => !CHANNEL_ORDER.includes(n))];
-    return order.map((name) => ({
-      key: name,
-      rows: sorted(accs.filter((a) => channelLabel(a.channel) === name)),
-      draggable: false,
-    }));
+    return order.map((name) => ({ key: "channel:" + name, label: name, rows: accs.filter((a) => channelLabel(a.channel) === name), draggable: false }));
   }
-  return TIME_ORDER.map((k) => ({
-    key: k,
-    rows: sorted(accs.filter((a) => timeBucket(a) === k)),
-    draggable: false,
-  })).filter((s) => s.rows.length);
+  return TIME_ORDER.map((label) => ({ key: "time:" + label, label, rows: accs.filter((a) => accountTimeBucket(a) === label), draggable: false })).filter((s) => s.rows.length);
+});
+const listHint = computed(() => {
+  if (listBusy.value) return "正在保存顺序…";
+  if (listMessage.value) return listMessage.value;
+  if (search.value.trim()) return `找到 ${visibleAccounts.value.length} / ${store.accounts.length} 个账号`;
+  if (listView.value === "tag") return "多标签账号会出现在各组";
+  if (listView.value !== "flat") return "分组查看 · 切换视图保留勾选";
+  return flatSort.value === "custom" ? "拖动手柄排序，松手自动保存" : "仅改变查看方式，手动顺序保留";
 });
 
-/** 标签视图里，行内只显示"别的标签"：当前这一组的标签已经由组头表达了 */
-function tagsOf(a: Account, group: string) {
-  return listView.value === "tag" ? a.tags.filter((t) => t !== group) : a.tags;
+function tagsOf(a: Account, group: AccountSection) {
+  return group.tag ? a.tags.filter((t) => tagIdentity(t) !== tagIdentity(group.tag!)) : a.tags;
 }
-
-/** 行的悬停提示：只解释两类"看起来不对劲"的时刻——
- *  标签视图里同一个号出现多次（是投影不是重复数据），
- *  和排序视图里拖不动（顺序由规则决定，不是卡了）。 */
-function rowTitle(a: Account) {
-  if (listView.value === "tag" && a.tags.length > 1) {
-    return "多标签账号，每组各出现一次";
+function rowTitle(a: Account, sec: AccountSection) {
+  const tags = a.tags.length ? `标签：${a.tags.join("、")}` : "无标签";
+  return `${displayName(a)}\n${a.running ? "运行中" : a.cred === "expired" ? "凭证过期" : "就绪"} · ${channelLabel(a.channel)}\n${tags}${sec.tag && a.tags.length > 1 ? "\n这是同一账号在不同标签组中的显示" : ""}`;
+}
+function closeSort() { sortOpen.value = false; }
+async function openSort() {
+  if (listView.value !== "flat" || listBusy.value) return;
+  sortOpen.value = true;
+  await nextTick();
+  document.querySelector<HTMLButtonElement>(".sortmenu button.on")?.focus();
+}
+function onSortKeys(e: KeyboardEvent) {
+  const items = Array.from(document.querySelectorAll<HTMLButtonElement>(".sortmenu button"));
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    const at = items.indexOf(document.activeElement as HTMLButtonElement);
+    items[(at + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus();
   }
-  if (listView.value === "flat" && flatSort.value !== "custom") {
-    return `按${sortLabel.value}排序，不能拖动`;
-  }
-  if (listView.value === "channel" || listView.value === "time") {
-    return "分组视图，不能拖动";
-  }
-  return undefined;
 }
-
-function toggleTag(tag: string) {
-  const i = collapsedTags.value.indexOf(tag);
-  if (i >= 0) collapsedTags.value.splice(i, 1);
-  else collapsedTags.value.push(tag);
+function toggleSection(key: string) {
+  if (collapsed.value.includes(key)) collapsed.value = collapsed.value.filter((k) => k !== key);
+  else collapsed.value.push(key);
 }
-
-/* ── 点段头 = 选中这一组 ──
- * 段头是列表里最大的点击目标，留给最常用的动作：把整组变成批量操作的目标
- * （配合底部批量条：多开 / 停止 / 删除）。折叠退到左侧箭头上。
- * 再点一次 = 取消这一组；与其它组的选择互不影响，可以连点多组。 */
-function secSelectedAll(sec: { rows: Account[] }) {
-  return sec.rows.length > 0 && sec.rows.every((a) => store.selectedIds.includes(a.id));
-}
-function toggleSelectSec(sec: { rows: Account[] }) {
+function sectionSelected(sec: AccountSection) { return sec.rows.filter((a) => store.selectedIds.includes(a.id)).length; }
+function secSelectedAll(sec: AccountSection) { return sec.rows.length > 0 && sectionSelected(sec) === sec.rows.length; }
+function toggleSelectSec(sec: AccountSection) {
   const target = !secSelectedAll(sec);
-  for (const a of sec.rows) {
-    if (store.selectedIds.includes(a.id) !== target) store.toggleSelect(a.id);
-  }
+  for (const a of sec.rows) if (store.selectedIds.includes(a.id) !== target) store.toggleSelect(a.id);
 }
+function clearSelection() { for (const id of [...store.selectedIds]) store.toggleSelect(id); }
+async function moveTagGroup(sec: AccountSection, delta: number) {
+  if (!sec.tag || listBusy.value || search.value.trim()) return;
+  const next = [...groupOrder.value];
+  const from = next.findIndex((t) => tagIdentity(t) === tagIdentity(sec.tag!));
+  const to = from + delta;
+  if (to < 0 || to >= next.length) return;
+  [next[from], next[to]] = [next[to]!, next[from]!];
+  tagOrderSaving.value = true;
+  tagOrderDraft.value = next;
+  listMessage.value = "";
+  try {
+    const ok = await store.setTagOrder(next);
+    listMessage.value = ok ? "标签组顺序已保存" : "标签组顺序未保存，请重试";
+    listError.value = !ok;
+  } catch {
+    listMessage.value = "标签组顺序未保存，请重试"; listError.value = true;
+  } finally { tagOrderDraft.value = null; tagOrderSaving.value = false; }
+}
+function tagGroupIndex(sec: AccountSection) { return groupOrder.value.findIndex((t) => tagIdentity(t) === tagIdentity(sec.tag ?? "")); }
 
-/* 拖动排序：只改顺序，不改内容（后端按整表顺序落盘） */
-/* ───────────── 拖动排序（指针事件 + FLIP 位移） ─────────────
- * 为什么不用 HTML5 的 draggable：
- *   1. 它自带一张"整行截图"的幽灵图，样式不受控，松手前看不出落点；
- *   2. dragover 每移动一像素就触发一次，行一多就掉帧；
- *   3. 没有位移动画，行是"跳"过去的，手感像十年前的网页。
- * 现在的做法：pointerdown 记起点 → 移动超过 4px 才进入拖拽（否则当成点击选中）
- * → 实时把这一行插到指针位置，其余行用 CSS transform 过渡让位（FLIP）。
- * 只允许"自定义顺序"下拖：按名称/最近登录排出来的顺序是算出来的，
- * 让人拖完再被规则覆盖回去，才是真的手感差。
- */
+/* 拖动仅从手柄开始：勾选、选号、触屏滚动都不再意外改变账号顺序。 */
 const listScroll = ref<HTMLElement | null>(null);
 const draggingId = ref("");
 const dragSec = ref("");
-/** 拖动过程中"这一段"的临时顺序（只影响显示，松手才落盘） */
 const dragIds = ref<string[]>([]);
-let dragStartY = 0;
-let dragArmed = false;
-let dragSecKey = "";
-let dragAccountId = "";
-
-function canDragSec(sec: { draggable: boolean }) {
-  if (!sec.draggable) return false;
-  // 平铺：只有"自定义"顺序能拖（按名称/最近登录是算出来的，拖了也会被排回去）
-  // 标签：顺序恒为文件顺序，可以拖
-  return listView.value === "tag" || flatSort.value === "custom";
+let dragSession: { id: string; key: string; pointer: number; startY: number; y: number; x: number; ids: string[]; active: boolean } | null = null;
+let scrollFrame = 0;
+let savedCursor = "";
+let savedSelect = "";
+let suppressClick = false;
+let suppressTimer: ReturnType<typeof setTimeout> | undefined;
+const orderPreview = ref<string[] | null>(null);
+function canDragSec(sec: AccountSection) { return sec.draggable && sec.rows.length > 1 && !listBusy.value; }
+function sectionElement(key: string) {
+  return Array.from(listScroll.value?.querySelectorAll<HTMLElement>(".sect") ?? []).find((s) => s.dataset.sec === key);
 }
-
-function onRowPointerDown(e: PointerEvent, sec: { key: string; rows: Account[]; draggable: boolean }, a: Account) {
-  if (e.button !== 0 || !canDragSec(sec)) return;
-  const el = e.target as HTMLElement;
-  // 复选框、按钮上的按下不算拖拽
-  if (el.closest("input, button")) return;
-  dragStartY = e.clientY;
-  dragArmed = false;
-  dragSecKey = sec.key;
-  dragAccountId = a.id;
-  dragIds.value = sec.rows.map((x) => x.id);
-  window.addEventListener("pointermove", onRowPointerMove);
-  window.addEventListener("pointerup", onRowPointerUp, { once: true });
+function onRowPointerDown(e: PointerEvent, sec: AccountSection, a: Account) {
+  if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || !canDragSec(sec)) return;
+  cancelDrag();
+  e.preventDefault(); e.stopPropagation();
+  savedCursor = document.body.style.cursor;
+  savedSelect = document.body.style.userSelect;
+  dragSession = { id: a.id, key: sec.key, pointer: e.pointerId, startY: e.clientY, y: e.clientY, x: e.clientX, ids: sec.rows.map((x) => x.id), active: false };
+  dragIds.value = [...dragSession.ids];
+  window.addEventListener("pointermove", onRowPointerMove, { passive: false });
+  window.addEventListener("pointerup", onRowPointerUp);
+  window.addEventListener("pointercancel", cancelDrag);
+  window.addEventListener("blur", cancelDrag);
 }
-
-function onRowPointerMove(e: PointerEvent) {
-  if (!dragArmed && Math.abs(e.clientY - dragStartY) < 4) return;
-  if (!dragArmed) {
-    dragArmed = true;
-    draggingId.value = dragAccountId;
-    dragSec.value = dragSecKey;
-    document.body.style.cursor = "grabbing";
-  }
-  // 指针在滚动区边缘时自动滚动：行多的时候不滚动根本拖不到顶/底
-  const box = listScroll.value;
-  if (box) {
-    const r = box.getBoundingClientRect();
-    if (e.clientY < r.top + 28) box.scrollTop -= 10;
-    else if (e.clientY > r.bottom - 28) box.scrollTop += 10;
-  }
-  const rows = Array.from(box?.querySelectorAll<HTMLElement>(`[data-sec="${cssEscape(dragSecKey)}"] .lrow`) ?? []);
-  if (!rows.length) return;
-  // 落点 = 第一个"指针还没越过它中线"的行之前；都越过了就放最后
+function updateDragPosition() {
+  const d = dragSession;
+  if (!d?.active) return;
+  const rows = Array.from(sectionElement(d.key)?.querySelectorAll<HTMLElement>(".lrow") ?? []);
   let at = rows.length;
   for (let i = 0; i < rows.length; i++) {
-    const r = rows[i].getBoundingClientRect();
-    if (e.clientY < r.top + r.height / 2) {
-      at = i;
-      break;
-    }
+    const r = rows[i]!.getBoundingClientRect();
+    if (d.y < r.top + r.height / 2) { at = i; break; }
   }
-  const rest = dragIds.value.filter((id) => id !== dragAccountId);
-  const from = dragIds.value.indexOf(dragAccountId);
-  if (from < at) at -= 1; // 自己占了一格，后面的位置要回退一位
-  if (at < 0) at = 0;
-  if (at > rest.length) at = rest.length;
-  const next = [...rest];
-  next.splice(at, 0, dragAccountId);
-  if (next.join("|") !== dragIds.value.join("|")) dragIds.value = next;
+  const from = dragIds.value.indexOf(d.id);
+  const next = dragIds.value.filter((id) => id !== d.id);
+  if (from < at) at--;
+  next.splice(Math.max(0, Math.min(next.length, at)), 0, d.id);
+  if (JSON.stringify(next) !== JSON.stringify(dragIds.value)) dragIds.value = next;
 }
-
-function onRowPointerUp() {
+function scrollDrag() {
+  const d = dragSession;
+  const box = listScroll.value;
+  if (!d?.active || !box) return;
+  const r = box.getBoundingClientRect();
+  if (d.x >= r.left && d.x <= r.right) {
+    if (d.y < r.top + 30) box.scrollTop -= 8;
+    else if (d.y > r.bottom - 30) box.scrollTop += 8;
+  }
+  updateDragPosition();
+  scrollFrame = requestAnimationFrame(scrollDrag);
+}
+function onRowPointerMove(e: PointerEvent) {
+  const d = dragSession;
+  if (!d || e.pointerId !== d.pointer) return;
+  d.y = e.clientY; d.x = e.clientX;
+  if (!d.active && Math.abs(e.clientY - d.startY) < 5) return;
+  e.preventDefault();
+  if (!d.active) {
+    d.active = true; draggingId.value = d.id; dragSec.value = d.key;
+    document.body.style.cursor = "grabbing"; document.body.style.userSelect = "none";
+    scrollFrame = requestAnimationFrame(scrollDrag);
+  }
+  updateDragPosition();
+}
+function cleanDrag() {
+  cancelAnimationFrame(scrollFrame);
   window.removeEventListener("pointermove", onRowPointerMove);
-  document.body.style.cursor = "";
-  const wasArmed = dragArmed;
-  const secKey = dragSecKey;
-  const tmp = dragIds.value;
-  draggingId.value = "";
-  dragSec.value = "";
-  dragArmed = false;
-  if (!wasArmed) return;
-
-  // 段内顺序 → 全局顺序：只在这段占用的那几个位置上做置换，
-  // 别的段的位置一律不动（标签视图里跨段移动没有意义，那等于改标签）。
-  const members = new Set(tmp);
-  let k = 0;
-  const global = store.accounts.map((a) => a.id).map((id) => (members.has(id) ? tmp[k++] : id));
-  // 拖完立刻生效；下一次轮询会拿服务端的顺序对齐
-  store.reorder(global);
-  void secKey;
+  window.removeEventListener("pointerup", onRowPointerUp);
+  window.removeEventListener("pointercancel", cancelDrag);
+  window.removeEventListener("blur", cancelDrag);
+  if (dragSession) { document.body.style.cursor = savedCursor; document.body.style.userSelect = savedSelect; }
+  dragSession = null; draggingId.value = ""; dragSec.value = ""; dragIds.value = [];
 }
-
-/** CSS.escape 在极老的 WebView 里没有，这里只处理标签名里可能出现的引号 */
-function cssEscape(s: string) {
-  return s.replace(/["\\]/g, "\\$&");
+function blockDragClick() {
+  suppressClick = true;
+  clearTimeout(suppressTimer);
+  suppressTimer = setTimeout(() => { suppressClick = false; }, 180);
 }
-
-/** 某一段当前要显示的顺序（拖动中用它，松手后回到 store 的顺序） */
-function rowsOf(sec: { key: string; rows: Account[] }) {
-  if (dragSec.value !== sec.key || !dragIds.value.length) return sec.rows;
-  const byId = new Map(sec.rows.map((a) => [a.id, a]));
-  return dragIds.value.map((id) => byId.get(id)).filter((a): a is Account => !!a);
+function cancelDrag() {
+  if (dragSession?.active) blockDragClick();
+  cleanDrag();
 }
-
-/* 标签编辑：改哪个号就只动哪个号（副本与原件的标签互相独立） */
-const tagDraft = ref("");
-function addTag(a: Account) {
-  const v = tagDraft.value.trim();
-  if (!v || a.tags.includes(v)) return;
-  store.setTags(a.id, [...a.tags, v]);
-  tagDraft.value = "";
+async function onRowPointerUp(e: PointerEvent) {
+  const d = dragSession;
+  if (!d || e.pointerId !== d.pointer) return;
+  const box = listScroll.value?.getBoundingClientRect();
+  const secBox = sectionElement(d.key)?.getBoundingClientRect();
+  const valid = d.active && box && secBox && e.clientX >= box.left && e.clientX <= box.right && e.clientY >= Math.max(box.top, secBox.top) && e.clientY <= Math.min(box.bottom, secBox.bottom);
+  const tmp = [...dragIds.value];
+  if (d.active) blockDragClick();
+  cleanDrag();
+  if (!valid || JSON.stringify(tmp) === JSON.stringify(d.ids)) return;
+  const liveIds = store.accounts.map((a) => a.id);
+  if (d.ids.some((id) => !liveIds.includes(id))) { listMessage.value = "账号列表已变化，请重新排序"; listError.value = true; return; }
+  const next = replaceAccountSubsequence(liveIds, tmp);
+  orderPreview.value = next;
+  orderSaving.value = true; listMessage.value = "";
+  try {
+    const ok = await store.reorder(next);
+    listMessage.value = ok ? "账号顺序已保存" : "顺序未保存，已恢复原顺序";
+    listError.value = !ok;
+  } catch { listMessage.value = "顺序未保存，已恢复原顺序"; listError.value = true; }
+  finally { orderPreview.value = null; orderSaving.value = false; }
 }
-function removeTag(a: Account, t: string) {
-  store.setTags(a.id, a.tags.filter((x) => x !== t));
+function selectRow(a: Account) { if (!suppressClick && !dragSession?.active) store.select(a.id); }
+function rowsOf(sec: AccountSection) {
+  const ids = dragSec.value === sec.key && dragSession?.active ? dragIds.value : orderPreview.value;
+  if (!ids || (listView.value === "flat" && flatSort.value !== "custom")) return sec.rows;
+  const map = new Map(sec.rows.map((a) => [a.id, a]));
+  return ids.map((id) => map.get(id)).filter((a): a is Account => !!a);
+}
+async function moveAccount(sec: AccountSection, a: Account, delta: number) {
+  if (!canDragSec(sec)) return;
+  const ids = sec.rows.map((x) => x.id); const at = ids.indexOf(a.id); const to = at + delta;
+  if (to < 0 || to >= ids.length) return;
+  [ids[at], ids[to]] = [ids[to]!, ids[at]!];
+  orderSaving.value = true; listMessage.value = "";
+  orderPreview.value = replaceAccountSubsequence(store.accounts.map((x) => x.id), ids);
+  try { const ok = await store.reorder(orderPreview.value); listError.value = !ok; listMessage.value = ok ? "账号顺序已保存" : "顺序未保存，已恢复原顺序"; }
+  catch { listError.value = true; listMessage.value = "顺序未保存，已恢复原顺序"; }
+  finally { orderPreview.value = null; orderSaving.value = false; }
+}
+function onGlobalKey(e: KeyboardEvent) { if (e.key === "Escape") { cancelDrag(); closeSort(); } }
+onMounted(() => { document.addEventListener("click", closeSort); window.addEventListener("keydown", onGlobalKey); });
+onUnmounted(() => { cancelDrag(); clearTimeout(suppressTimer); document.removeEventListener("click", closeSort); window.removeEventListener("keydown", onGlobalKey); });
+watch([listView, flatSort, search, view], () => { cancelDrag(); closeSort(); listMessage.value = ""; });
+watch(() => JSON.stringify(store.accounts.map((a) => [a.id, ...a.tags])), () => { if (dragSession) cancelDrag(); });
+
+/* 标签草稿按账号隔离；保存成功才清空，输入法回车不触发提交。 */
+const tagComposing = ref(false);
+const tagDrafts = ref<Record<string, string>>({});
+const tagSaving = ref<Record<string, boolean>>({});
+const tagMessages = ref<Record<string, string>>({});
+const tagErrors = ref<Record<string, boolean>>({});
+watch(() => cur.value?.id, () => { tagComposing.value = false; });
+watch(() => [cur.value?.id, cur.value ? tagDrafts.value[cur.value.id] : ""], () => {
+  const id = cur.value?.id;
+  if (id && !tagSaving.value[id]) { tagMessages.value[id] = ""; tagErrors.value[id] = false; }
+}, { flush: "sync" });
+const tagSuggestions = computed(() => {
+  const a = cur.value; if (!a || a.tags.length >= 8) return [];
+  const q = tagIdentity(tagDrafts.value[a.id] ?? "");
+  return groupOrder.value.filter((t) => !a.tags.some((x) => tagIdentity(x) === tagIdentity(t)) && (!q || tagIdentity(t).includes(q))).slice(0, 5);
+});
+async function addTag(a: Account, suggestion?: string) {
+  if (tagSaving.value[a.id]) return;
+  const draft = tagDrafts.value[a.id] ?? "";
+  const value = (suggestion ?? draft).trim();
+  const fail = (message: string) => { tagMessages.value[a.id] = message; tagErrors.value[a.id] = true; };
+  if (!value) return;
+  if ([...value].length > 16) return fail("每个标签最多 16 个字");
+  if (a.tags.some((t) => tagIdentity(t) === tagIdentity(value))) return fail("这个账号已有该标签");
+  if (a.tags.length >= 8) return fail("每个账号最多 8 个标签，请先移除一个");
+  tagSaving.value[a.id] = true; tagMessages.value[a.id] = "正在保存…"; tagErrors.value[a.id] = false;
+  try {
+    const ok = await store.setTags(a.id, [...a.tags, value]);
+    tagMessages.value[a.id] = ok ? "标签已保存" : "未保存，请重试"; tagErrors.value[a.id] = !ok;
+    if (ok && tagDrafts.value[a.id] === draft) tagDrafts.value[a.id] = "";
+  } catch { fail("未保存，请重试"); }
+  finally { tagSaving.value[a.id] = false; }
+}
+function onTagEnter(e: KeyboardEvent, a: Account) { if (e.isComposing || e.keyCode === 229) return; e.preventDefault(); void addTag(a); }
+async function removeTag(a: Account, tag: string) {
+  if (tagSaving.value[a.id]) return;
+  tagSaving.value[a.id] = true; tagMessages.value[a.id] = "正在保存…"; tagErrors.value[a.id] = false;
+  try { const ok = await store.setTags(a.id, a.tags.filter((t) => t !== tag)); tagMessages.value[a.id] = ok ? "标签已移除" : "未保存，请重试"; tagErrors.value[a.id] = !ok; }
+  catch { tagMessages.value[a.id] = "未保存，请重试"; tagErrors.value[a.id] = true; }
+  finally { tagSaving.value[a.id] = false; }
 }
 
 // 被寄宿的号：找出提供槽位的那个宿主账号，给用户看名字而不是一串 ID。
@@ -318,7 +369,7 @@ const hostName = computed(() => {
   const id = cur.value?.hostedBy;
   if (!id) return "";
   const hit = store.accounts.find((x) => x.playerId === id || x.fullId === id);
-  return hit ? hit.name : `已删除的账号 ${id.slice(0, 6)}…`;
+  return hit ? displayName(hit) : `已删除的账号 ${store.maskAll ? '***' : id.slice(0, 6) + '…'}`;
 });
 
 // 详情默认只露最常用的四项，其余收在「更多信息」里（换账号时保持展开状态，
@@ -387,26 +438,28 @@ const lastCheckText = computed(() => {
            第一行：标题 + 排序（非平铺时禁用占位，不消失——消失会让打码键跳位）
            第二行：文字分段切换视图。图标版实测看不出功能，文字不用猜。 -->
       <div class="lhead">
-        <span class="lname">账号</span>
+        <span class="lname">账号 <em>{{ store.accounts.length }}</em></span>
         <div class="sortwrap">
           <button
             class="sortbtn"
             :class="{ on: sortOpen }"
-            :disabled="listView !== 'flat'"
-            :title="listView === 'flat' ? '列表排序' : '排序只在平铺视图可用'"
+            :disabled="listView !== 'flat' || listBusy"
+            :title="listView === 'flat' ? '选择查看顺序，不改动已保存的手动顺序' : '分组查看时，账号仍沿用手动顺序'"
+            aria-haspopup="menu" :aria-expanded="sortOpen"
+            @keydown.down.prevent="openSort"
             @click.stop="sortOpen = !sortOpen"
           >
             <ArrowUpDown /><span>{{ sortLabel }}</span>
           </button>
-          <div v-if="sortOpen && listView === 'flat'" class="sortmenu">
+          <div v-if="sortOpen && listView === 'flat'" class="sortmenu" role="menu" aria-label="账号查看顺序" @keydown="onSortKeys">
             <button
               v-for="o in SORTS"
               :key="o.k"
               :class="{ on: flatSort === o.k }"
-              :title="o.tip"
+              :title="o.tip" role="menuitemradio" :aria-checked="flatSort === o.k"
               @click.stop="flatSort = o.k; sortOpen = false"
             >
-              {{ o.label }}
+              <span>{{ o.label }}</span><Check v-if="flatSort === o.k" />
             </button>
           </div>
         </div>
@@ -414,43 +467,48 @@ const lastCheckText = computed(() => {
           <EyeOff v-if="store.maskAll" :style="{ width: '14px', height: '14px' }" /><Eye v-else :style="{ width: '14px', height: '14px' }" />
         </button>
       </div>
-      <div class="vseg">
+      <div class="vseg" role="group" aria-label="账号分组方式">
         <button
           v-for="v in VIEW_TABS"
           :key="v.k"
           class="vtab"
           :class="{ on: listView === v.k }"
-          :title="v.tip"
+          :title="v.tip" :aria-pressed="listView === v.k" :disabled="listBusy"
           @click="listView = v.k"
         >
           {{ v.label }}
         </button>
       </div>
 
-      <p v-if="!store.accounts.length" class="lempty">还没有账号</p>
-      <div v-else ref="listScroll" class="rows">
+      <div class="listsearch">
+        <Search aria-hidden="true" /><input v-model="search" aria-label="搜索账号或标签" placeholder="搜索账号、标签或渠道" :disabled="listBusy" />
+        <button v-if="search" class="searchclear" aria-label="清空搜索" @click="search = ''"><X /></button>
+      </div>
+      <div class="listcontext" :class="{ error: listError && !!listMessage }" role="status" :title="listHint"><span>{{ listHint }}</span></div>
+      <div v-if="selectedCount" class="listselection"><span>已勾选 {{ selectedCount }} 个账号</span><button @click="clearSelection">清空勾选</button></div>
+      <p v-if="!store.accounts.length" class="lempty">还没有账号，添加后即可开始</p>
+      <div v-else-if="!visibleAccounts.length" class="lempty search-empty"><span>没有匹配的账号</span><button @click="search = ''">清空搜索</button></div>
+      <div v-else ref="listScroll" class="rows" :class="{ busy: listBusy }" :aria-busy="listBusy">
         <section v-for="sec in sections" :key="listView + sec.key" class="sect" :data-sec="sec.key">
           <div
-            v-if="sec.key"
+            v-if="sec.label"
             class="shead"
-            :class="{ allon: secSelectedAll(sec) }"
-            :title="listView === 'tag' ? '点击选中整组；箭头折叠' : '点击选中整组'"
+            :class="{ allon: secSelectedAll(sec), partial: sectionSelected(sec) > 0 && !secSelectedAll(sec) }"
+            :title="secSelectedAll(sec) ? '取消勾选这一组' : '勾选这一组；多标签账号只计一次'"
             @click="toggleSelectSec(sec)"
           >
-            <button
-              v-if="listView === 'tag'"
-              class="chevbtn"
-              title="折叠 / 展开这一组"
-              @click.stop="toggleTag(sec.key)"
-            >
-              <ChevronDown class="chev" :class="{ closed: collapsedTags.includes(sec.key) }" />
-            </button>
-            <span class="sname">{{ sec.key }}</span>
+            <button class="chevbtn" :title="collapsed.includes(sec.key) ? '展开这一组' : '折叠这一组'" :aria-expanded="!collapsed.includes(sec.key)" @click.stop="toggleSection(sec.key)"><ChevronDown class="chev" :class="{ closed: collapsed.includes(sec.key) }" /></button>
+            <input class="section-check" type="checkbox" :checked="secSelectedAll(sec)" :indeterminate="sectionSelected(sec) > 0 && !secSelectedAll(sec)" :aria-label="'勾选' + sec.label + '组'" @click.stop @change="toggleSelectSec(sec)" />
+            <button class="sname" :title="sec.untagged ? '未添加标签的账号' : sec.label" @click.stop="toggleSelectSec(sec)">{{ sec.label }}<small v-if="sec.untagged">无标签</small></button>
             <em>{{ sec.rows.length }}</em>
+            <span v-if="listView === 'tag' && sec.tag" class="groupmoves">
+              <button :disabled="listBusy || !!search.trim() || tagGroupIndex(sec) === 0" :aria-label="'上移标签组：' + sec.label" :title="search.trim() ? '清空搜索后调整标签组顺序' : '上移标签组'" @click.stop="moveTagGroup(sec, -1)"><ArrowUp /></button>
+              <button :disabled="listBusy || !!search.trim() || tagGroupIndex(sec) === groupOrder.length - 1" :aria-label="'下移标签组：' + sec.label" :title="search.trim() ? '清空搜索后调整标签组顺序' : '下移标签组'" @click.stop="moveTagGroup(sec, 1)"><ArrowDown /></button>
+            </span>
           </div>
           <!-- TransitionGroup 提供位移过渡：拖动时其余行是"让位"而不是"跳位" -->
           <TransitionGroup
-            v-if="listView !== 'tag' || !collapsedTags.includes(sec.key)"
+            v-if="!collapsed.includes(sec.key)"
             name="rl"
             tag="div"
             class="rlist"
@@ -459,10 +517,10 @@ const lastCheckText = computed(() => {
               v-for="a in rowsOf(sec)"
               :key="a.id"
               class="lrow"
-              :class="{ on: a.current, dragging: draggingId === a.id }"
-              :title="rowTitle(a)"
-              @pointerdown="onRowPointerDown($event, sec, a)"
-              @click="store.select(a.id)"
+              :class="{ on: a.current, picked: store.selectedIds.includes(a.id), dragging: draggingId === a.id && dragSec === sec.key }"
+              :data-account-id="a.id" :title="rowTitle(a, sec)"
+              tabindex="0" role="button" :aria-label="'查看账号：' + displayName(a)" :aria-current="a.current ? 'true' : undefined"
+              @click="selectRow(a)" @keydown.enter.self.prevent="selectRow(a)" @keydown.space.self.prevent="store.toggleSelect(a.id)"
             >
               <input
                 class="sel"
@@ -472,15 +530,16 @@ const lastCheckText = computed(() => {
                 @click.stop
                 @change="store.toggleSelect(a.id)"
               />
+              <button v-if="sec.draggable && sec.rows.length > 1" class="rowgrip" :disabled="listBusy" :aria-label="'调整账号顺序：' + displayName(a)" title="拖动排序；Alt + 上下键微调" @pointerdown="onRowPointerDown($event, sec, a)" @click.stop @keydown.alt.up.prevent.stop="moveAccount(sec, a, -1)" @keydown.alt.down.prevent.stop="moveAccount(sec, a, 1)"><GripVertical /></button>
               <span class="ltxt">
                 <!-- 第一行：身份。名字是唯一主角，标签贴右缘——
                      身份和分类读成一条水平线，第二行只留状态 -->
                 <span class="l1">
                   <b>{{ store.maskAll ? a.maskedName : a.name }}</b>
                   <span v-if="a.copyKey" class="copybadge" title="副本：独立记录，凭证与原件共享">副本</span>
-                  <span v-if="tagsOf(a, sec.key).length" class="chips">
-                    <span v-for="t in tagsOf(a, sec.key).slice(0, 2)" :key="t" class="tagchip">{{ t }}</span>
-                    <span v-if="tagsOf(a, sec.key).length > 2" class="tagchip more">+{{ tagsOf(a, sec.key).length - 2 }}</span>
+                  <span v-if="tagsOf(a, sec).length" class="chips" :title="tagsOf(a, sec).join('、')">
+                    <span v-for="t in tagsOf(a, sec).slice(0, railWidth < 330 ? 1 : 2)" :key="t" class="tagchip" :title="t">{{ t }}</span>
+                    <span v-if="tagsOf(a, sec).length > (railWidth < 330 ? 1 : 2)" class="tagchip more">+{{ tagsOf(a, sec).length - (railWidth < 330 ? 1 : 2) }}</span>
                   </span>
                 </span>
                 <!-- 第二行：能不能用。状态词着色（运行=绿 / 过期=红），
@@ -504,7 +563,7 @@ const lastCheckText = computed(() => {
     </div>
 
     <!-- 拖动调节账号列表宽度 -->
-    <div class="splitter" :class="{ dragging }" @mousedown="onDividerDown"></div>
+    <div class="splitter" :class="{ dragging }" tabindex="0" role="separator" aria-label="账号列表宽度" aria-orientation="vertical" :aria-valuenow="railWidth" :aria-valuemin="220" :aria-valuemax="520" title="拖动调整列表宽度，双击还原" @mousedown="onDividerDown" @dblclick="resetRail" @keydown.left.prevent="resizeRail(-12)" @keydown.right.prevent="resizeRail(12)"></div>
 
     <div v-if="cur" class="det">
       <div class="dhead">
@@ -530,14 +589,17 @@ const lastCheckText = computed(() => {
 
       <!-- 标签：在这里改。列表只负责显示和筛选，编辑永远落在详情里 -->
       <div class="dsection">
-        <p class="dseclabel tight">标签</p>
-        <div class="tagrow">
-          <span v-for="t in cur.tags" :key="t" class="tagpick">
-            {{ t }}<button class="x" title="移除这个标签" @click="removeTag(cur, t)">×</button>
-          </span>
-          <input v-model="tagDraft" class="tagin" placeholder="输入标签后回车" @keyup.enter="addTag(cur)" />
+        <div class="tagheading"><p class="dseclabel tight">标签 <span>{{ cur.tags.length }}/8</span></p><span class="tagfeedback" :class="{ error: tagErrors[cur.id] }" role="status">{{ tagMessages[cur.id] }}</span></div>
+        <div class="tagrow" :aria-busy="!!tagSaving[cur.id]">
+          <span v-for="t in cur.tags" :key="t" class="tagpick" :title="t"><span>{{ t }}</span><button class="x" :aria-label="'移除标签：' + t" :disabled="tagSaving[cur.id]" @click="removeTag(cur, t)">×</button></span>
+          <span v-if="!cur.tags.length" class="tag-empty">还没有标签</span>
         </div>
-        <p class="regionnote">标签只存在本机，用来分组和筛选；副本与原件各存各的。</p>
+        <form class="tagadd" @submit.prevent="!tagComposing && addTag(cur)">
+          <input v-model="tagDrafts[cur.id]" class="tagin" aria-label="添加账号标签" :placeholder="cur.tags.length >= 8 ? '标签已满，可先移除一个' : '输入新标签，或选择下方已有标签'" :disabled="!!tagSaving[cur.id] || cur.tags.length >= 8" @compositionstart="tagComposing = true" @compositionend="tagComposing = false" @keydown.enter="onTagEnter($event, cur)" />
+          <button class="tagaddbtn" type="submit" :disabled="!!tagSaving[cur.id] || cur.tags.length >= 8 || !tagDrafts[cur.id]?.trim()"><Plus />添加</button>
+        </form>
+        <div v-if="tagSuggestions.length" class="tagsuggestions"><span>已有标签</span><button v-for="t in tagSuggestions" :key="t" :disabled="!!tagSaving[cur.id]" :title="'添加标签：' + t" @click="addTag(cur, t)">{{ t }}</button></div>
+        <p class="regionnote">每个标签最多 16 个字；仅保存在本机，副本单独设置。</p>
       </div>
 
       <!-- 其余信息默认收起来：日常只看"这个号是什么、什么时候加的、上次什么时候登的"，
@@ -646,16 +708,16 @@ const lastCheckText = computed(() => {
   opacity: 0.5;
 }
 .win {
-  --bg: #0e1013;
-  --s1: #15181d;
-  --s2: #1b1f26;
-  --tx: #eef1f4;
-  --dim: #98a2ae;
-  --faint: #64707c;
+  --bg: #09090a;
+  --s1: #101012;
+  --s2: #161619;
+  --tx: #f4f2ef;
+  --dim: #a5a29c;
+  --faint: #8f8c85;
   --line: rgba(255, 255, 255, 0.08);
   --line2: rgba(255, 255, 255, 0.14);
-  --acc: #6d9aef;
-  --on: #0b1526;
+  --acc: #d8b47c;
+  --on: #211c15;
   --ok: #7fc9a0;
   --okbg: rgba(127, 201, 160, 0.1);
   --bad: #e08d7c;
@@ -721,6 +783,9 @@ const lastCheckText = computed(() => {
   display: flex;
   flex-direction: column;
   width: 264px;
+  min-height: 0;
+  min-width: 220px;
+  overflow: hidden;
   border-right: 1px solid var(--line);
   background: var(--s1);
 }
@@ -853,7 +918,10 @@ const lastCheckText = computed(() => {
       没有头像方块：它只重复名字首字，不承载信息，去掉后名字是唯一主角。 ── */
 .rows {
   flex: 1;
-  overflow: auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
 }
 .sect + .sect {
   /* 段间只留 4px 呼吸：分隔本身交给段头色带 + 色带底边的线 */
@@ -870,9 +938,11 @@ const lastCheckText = computed(() => {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
+  min-height: 44px;
   height: 44px;
-  padding: 0 12px 0 10px;
+  box-sizing: border-box;
+  padding: 0 10px;
   border-bottom: 1px solid var(--line);
   cursor: pointer;
   transition: background-color 0.14s ease-out;
@@ -931,6 +1001,8 @@ const lastCheckText = computed(() => {
   min-width: 0;
 }
 .l1 b {
+  flex: 1;
+  min-width: 0;
   font-size: 13px;
   font-weight: 600;
   letter-spacing: -0.01em;
@@ -975,8 +1047,10 @@ const lastCheckText = computed(() => {
 }
 .chips {
   display: flex;
-  gap: 4px;
-  flex: none;
+  gap: 3px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 38%;
   margin-left: auto;
 }
 .ladd {
@@ -1263,7 +1337,20 @@ const lastCheckText = computed(() => {
   color: var(--tx);
 }
 .sname {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
   font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+  cursor: pointer;
 }
 .shead em {
   font-style: normal;
@@ -1275,7 +1362,7 @@ const lastCheckText = computed(() => {
   width: 12px;
   height: 12px;
   flex: none;
-  color: var(--dim); /* 折叠是段头唯一的动作，箭头别淡到看不见 */
+  color: var(--dim); /* 折叠箭头与组选择分开，点击含义保持明确 */
   transition: transform 0.15s ease-out;
 }
 .chev.closed {
@@ -1287,6 +1374,9 @@ const lastCheckText = computed(() => {
    字号 11px 是规范下限——标签是用户自己起的名，缩到 9.5px 就认不出了。 */
 .tagchip {
   height: 16px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   padding: 0 5px;
   border-radius: 4px;
   background: rgba(255, 255, 255, 0.07);
@@ -1297,11 +1387,13 @@ const lastCheckText = computed(() => {
   white-space: nowrap;
 }
 .tagchip.more {
+  flex: none;
   background: transparent;
   padding: 0 2px;
 }
 .copybadge {
   display: inline-block;
+  flex: none;
   height: 16px;
   padding: 0 5px;
   margin-left: 4px;
@@ -1362,4 +1454,65 @@ const lastCheckText = computed(() => {
 .tagin:focus {
   border-color: rgba(216, 180, 124, 0.5);
 }
+/* 控件保留稳定位置，长名字优先占用空间，辅助操作在悬停或键盘聚焦时显露。 */
+.lname { white-space: nowrap; color: var(--dim); font-size: 12px; letter-spacing: 0; }
+.lname em { margin-left: 4px; font-size: 11px; font-style: normal; color: var(--faint); font-variant-numeric: tabular-nums; }
+.lhead, .vseg, .listsearch, .listcontext, .listselection, .ladd { flex-shrink: 0; }
+.sortmenu { min-width: 128px; }
+.sortmenu button { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 30px; }
+.sortmenu button svg { width: 13px; height: 13px; }
+.listsearch { display: flex; align-items: center; gap: 7px; height: 30px; margin: 0 10px; padding: 0 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); }
+.listsearch:focus-within { border-color: color-mix(in srgb, var(--acc) 65%, transparent); }
+.listsearch > svg { width: 13px; height: 13px; flex: none; color: var(--faint); }
+.listsearch input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--tx); font: inherit; font-size: 11.5px; }
+.listsearch input::placeholder { color: var(--faint); }
+.searchclear { display: grid; place-items: center; flex: none; width: 18px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--dim); cursor: pointer; }
+.searchclear svg { width: 12px; height: 12px; }
+.listcontext { display: flex; align-items: center; min-height: 29px; padding: 3px 12px; box-sizing: border-box; color: var(--faint); font-size: 11px; }
+.listcontext span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.listcontext.error, .tagfeedback.error { color: var(--bad); }
+.listselection { display: flex; align-items: center; justify-content: space-between; gap: 5px; padding: 5px 12px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--acc) 7%, var(--s1)); color: var(--acc); font-size: 11px; }
+.listselection button, .search-empty button { padding: 0; border: 0; background: transparent; color: var(--dim); font: inherit; cursor: pointer; }
+.listselection button:hover, .search-empty button:hover { color: var(--acc); }
+.lempty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; margin: 15px; min-height: 80px; line-height: 1.6; }
+.rowgrip { display: grid; place-items: center; flex: none; width: 14px; height: 28px; padding: 0; margin: 0; border: 0; border-radius: 3px; background: transparent; color: var(--faint); opacity: 0.42; cursor: grab; touch-action: none; }
+.rowgrip svg { width: 13px; height: 13px; }
+.rowgrip:active { cursor: grabbing; }
+.rowgrip:disabled { cursor: wait; opacity: 0.25; }
+.lrow:hover .rowgrip, .rowgrip:focus-visible { opacity: 1; }
+.lrow:focus-visible { outline: 1px solid var(--acc); outline-offset: -2px; }
+.lrow:focus-within .sel, .rows:has(.sel:checked) .sel { opacity: 1; }
+.lrow.picked:not(.on) { background: color-mix(in srgb, var(--acc) 5%, var(--s1)); }
+.shead { gap: 5px; min-width: 0; height: 32px; padding-right: 8px; }
+.chevbtn, .shead em { flex-shrink: 0; }
+.section-check { flex: none; width: 12px; height: 12px; margin: 0 2px 0 0; accent-color: var(--acc); cursor: pointer; }
+.sname small { margin-left: 5px; font-size: 11px; font-weight: 400; color: var(--faint); }
+.groupmoves { display: flex; gap: 1px; flex: none; }
+.groupmoves button { display: grid; place-items: center; width: 18px; height: 22px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--dim); opacity: 0.6; cursor: pointer; }
+.groupmoves svg { width: 11px; height: 11px; }
+.groupmoves button:hover:not(:disabled) { opacity: 1; color: var(--acc); background: color-mix(in srgb, var(--acc) 10%, transparent); }
+.groupmoves button:disabled { opacity: 0.2; cursor: default; }
+.shead.partial .sname { color: var(--tx); }
+.tagheading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.tagheading .dseclabel { margin: 0; }
+.tagheading .dseclabel > span { margin-left: 6px; font-size: 11px; color: var(--faint); letter-spacing: 0; }
+.tagfeedback { min-height: 16px; margin-left: auto; font-size: 11px; color: var(--dim); }
+.tag-empty { font-size: 12px; color: var(--faint); }
+.tagpick { max-width: 100%; box-sizing: border-box; height: 27px; font-size: 12px; }
+.tagpick > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tagpick .x { flex: none; width: 20px; height: 20px; }
+.tagadd { display: flex; gap: 7px; max-width: 520px; margin-top: 10px; }
+.tagadd .tagin { flex: 1; min-width: 0; width: auto; height: 32px; font-size: 12px; border-radius: 7px; box-sizing: border-box; }
+.tagaddbtn { display: flex; align-items: center; justify-content: center; gap: 4px; flex: none; height: 32px; padding: 0 10px; border: 1px solid var(--line2); border-radius: 7px; background: var(--s2); color: var(--acc); font: inherit; font-size: 12px; cursor: pointer; }
+.tagaddbtn svg { width: 13px; height: 13px; }
+.tagaddbtn:disabled, .tagpick button:disabled { opacity: 0.4; cursor: default; }
+.tagsuggestions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 9px; font-size: 11px; color: var(--faint); }
+.tagsuggestions button { max-width: 155px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding: 3px 7px; border: 1px dashed var(--line2); border-radius: 5px; background: transparent; color: var(--dim); font: inherit; cursor: pointer; }
+.tagsuggestions button:hover:not(:disabled) { color: var(--acc); border-color: color-mix(in srgb, var(--acc) 45%, transparent); }
+.dhead > div { min-width: 0; width: 100%; }
+.dtitle { flex-wrap: wrap; min-width: 0; }
+.dtitle h3 { min-width: 0; overflow-wrap: anywhere; line-height: 1.4; }
+.dtitle .ico, .dtitle .pill { flex-shrink: 0; }
+button:focus-visible, input:focus-visible { outline: 1px solid var(--acc); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .rl-move { transition: none; } }
 </style>

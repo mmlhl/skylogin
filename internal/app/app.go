@@ -224,6 +224,7 @@ func RunUI(title string) error {
 		Duplicate:       duplicateAccount,
 		SetRegion:       setAccountRegion,
 		SetTags:         saveAccountTags,
+		SetTagOrder:     saveAccountTagOrder,
 		Tags:            allTagsView,
 		Reorder:         reorderAccounts,
 		Groups:          groupsView,

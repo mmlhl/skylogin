@@ -38,7 +38,7 @@ type Config struct {
 	// 标签分组的显式顺序，新标签由界面追加，不改账号本身的标签。
 	AccountTagOrder []string `json:"account_tag_order,omitempty"`
 	// 左栏宽度（像素）。用户能拖，拖完存这里；0 表示用默认值。
-	RailWidth int `json:"rail_width,omitempty"`
+	RailWidth       int      `json:"rail_width,omitempty"`
 
 	// 界面壳偏好：0=账号库 1=此刻 2=控制台 3=晨白（见前端 shellkit）。
 	// WebView2 每次端口随机，localStorage 记不住，所以存后端。
