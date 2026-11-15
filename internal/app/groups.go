@@ -20,13 +20,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"skylogin/internal/secretfile"
 	"skylogin/internal/web"
-	"skylogin/internal/win"
 )
 
 // groupsMu 串行化启动组文件的读-改-写（和账号文件同一个理由：整文件覆盖写）。
@@ -46,30 +46,32 @@ type GroupSlot struct {
 	Disabled   bool   `json:"disabled,omitempty"`
 	// 窗口位置（物理像素）。HasRect=false 表示"这套没记过位置"，
 	// 启动时按排列方式算，不去摆一个 0,0,0,0。
-	X          int  `json:"x,omitempty"`
-	Y          int  `json:"y,omitempty"`
-	W          int  `json:"w,omitempty"`
-	H          int  `json:"h,omitempty"`
-	HasRect    bool `json:"has_rect,omitempty"`
+	X       int  `json:"x,omitempty"`
+	Y       int  `json:"y,omitempty"`
+	W       int  `json:"w,omitempty"`
+	H       int  `json:"h,omitempty"`
+	HasRect bool `json:"has_rect,omitempty"`
+	// 层级与启动顺序独立：一为最底，越大越靠前；旧零值按槽位顺序补齐。
+	ZOrder int `json:"z_order,omitempty"`
 }
 
 // LaunchGroup 一套启动组。
 type LaunchGroup struct {
-	ID      string      `json:"id"`
-	Name    string      `json:"name"`
-	Layout  string      `json:"layout"` // tile / cascade / fullscreen
-	Cols    int         `json:"cols"`
-	Rows    int         `json:"rows"`
-	DefMode string      `json:"def_mode,omitempty"`
-	DefFps  int         `json:"def_fps,omitempty"`
-	DefDisp string      `json:"def_display,omitempty"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Layout  string `json:"layout"` // tile / cascade:cols / cascade:rows / fullscreen
+	Cols    int    `json:"cols"`
+	Rows    int    `json:"rows"`
+	DefMode string `json:"def_mode,omitempty"`
+	DefFps  int    `json:"def_fps,omitempty"`
+	DefDisp string `json:"def_display,omitempty"`
 	// 启动行为
-	StopFirst bool `json:"stop_first"`      // 启动前停掉正在跑的客户端（默认开）
-	NoAutoWall bool `json:"no_auto_wall"`   // 反向字段：缺省 = 自动开监控墙
-	GapSec    int  `json:"gap_sec,omitempty"`
+	StopFirst  bool `json:"stop_first"`   // 启动前停掉正在跑的客户端（默认开）
+	NoAutoWall bool `json:"no_auto_wall"` // 反向字段：缺省 = 自动开监控墙
+	GapSec     int  `json:"gap_sec,omitempty"`
 	// 内存里的当前屏幕尺寸（保存时记下，启动时对一对就知道位置还作不作数）
-	ScreenW int `json:"screen_w,omitempty"`
-	ScreenH int `json:"screen_h,omitempty"`
+	ScreenW int         `json:"screen_w,omitempty"`
+	ScreenH int         `json:"screen_h,omitempty"`
 	Slots   []GroupSlot `json:"slots"`
 
 	CreatedAt int64 `json:"created_at,omitempty"`
@@ -89,14 +91,18 @@ func normalizeGroup(g LaunchGroup) LaunchGroup {
 		g.Name = string([]rune(g.Name)[:24])
 	}
 	switch g.Layout {
-	case "tile", "cascade", "fullscreen":
+	case "tile", "cascade:cols", "cascade:rows", "fullscreen":
+	case "cascade", "dual":
+		g.Layout = "cascade:cols"
+	case "fan":
+		g.Layout = "cascade:rows"
 	default:
 		g.Layout = "tile"
 	}
-	if g.Cols < 1 || g.Cols > 4 {
+	if g.Cols < 1 || g.Cols > 16 {
 		g.Cols = 2
 	}
-	if g.Rows < 1 || g.Rows > 4 {
+	if g.Rows < 1 || g.Rows > 16 {
 		g.Rows = 2
 	}
 	if !validQualityModes[g.DefMode] {
@@ -108,11 +114,10 @@ func normalizeGroup(g LaunchGroup) LaunchGroup {
 	if !validDisplays[g.DefDisp] {
 		g.DefDisp = ""
 	}
-	if g.GapSec < 0 {
-		g.GapSec = 0
-	}
-	if g.GapSec > 30 {
-		g.GapSec = 30
+	// 游戏的全局单实例要求多开同时拉起；旧界面的间隔从未生效，新保存统一清除。
+	g.GapSec = 0
+	if g.ScreenW <= 0 || g.ScreenH <= 0 {
+		g.ScreenW, g.ScreenH = 0, 0
 	}
 	// 槽位：同一个 accountKey 只能占一个槽（副本是不同 key，可以各占一个），
 	// 位置不能是负数。
@@ -150,13 +155,32 @@ func normalizeGroup(g LaunchGroup) LaunchGroup {
 		slots = append(slots, s)
 	}
 	g.Slots = slots
+	normalizeSlotZOrders(g.Slots)
 	return g
+}
+
+// normalizeSlotZOrders 只改层级数字，不改槽位顺序；启动顺序仍由原数组决定。
+func normalizeSlotZOrders(slots []GroupSlot) {
+	order := make([]int, len(slots))
+	for i := range order {
+		order[i] = i
+	}
+	rank := func(i int) int {
+		if slots[i].ZOrder > 0 {
+			return slots[i].ZOrder
+		}
+		return i + 1
+	}
+	sort.SliceStable(order, func(i, j int) bool { return rank(order[i]) < rank(order[j]) })
+	for z, i := range order {
+		slots[i].ZOrder = z + 1
+	}
 }
 
 // saveGroupFromPayload 把前端传来的结构转成磁盘结构再存。
 //
-// 顺手量一次当前屏幕尺寸并记进去：成员的位置是"在这个分辨率下摆出来的"，
-// 换屏之后这套坐标就作废，启动时要退化成网格（详见 launch 那条链）。
+// 坐标基准属于位置记录，不能因为改名字、画质而变成当前屏幕尺寸，
+// 否则换屏后的旧坐标会被误判为仍然有效。
 func saveGroupFromPayload(p web.GroupPayload) (string, error) {
 	g := LaunchGroup{
 		ID:        p.ID,
@@ -171,6 +195,8 @@ func saveGroupFromPayload(p web.GroupPayload) (string, error) {
 		// 前端是"自动开监控墙"，磁盘上是反向字段
 		NoAutoWall: !p.AutoWall,
 		GapSec:     p.GapSec,
+		ScreenW:    p.ScreenW,
+		ScreenH:    p.ScreenH,
 	}
 	for _, s := range p.Slots {
 		g.Slots = append(g.Slots, GroupSlot{
@@ -184,9 +210,9 @@ func saveGroupFromPayload(p web.GroupPayload) (string, error) {
 			W:          s.W,
 			H:          s.H,
 			HasRect:    s.HasRect,
+			ZOrder:     s.ZOrder,
 		})
 	}
-	g.ScreenW, g.ScreenH = win.ScreenSize()
 	return saveGroup(g)
 }
 
@@ -227,6 +253,8 @@ func groupsView() []map[string]any {
 
 	out := make([]map[string]any, 0, len(list))
 	for _, g := range list {
+		g.Slots = append([]GroupSlot(nil), g.Slots...)
+		normalizeSlotZOrders(g.Slots)
 		slots := make([]map[string]any, 0, len(g.Slots))
 		missing := 0
 		for _, s := range g.Slots {
@@ -247,6 +275,7 @@ func groupsView() []map[string]any {
 				"disabled":   s.Disabled,
 				"x":          s.X, "y": s.Y, "w": s.W, "h": s.H,
 				"hasRect": s.HasRect,
+				"zOrder":  s.ZOrder,
 			})
 		}
 		out = append(out, map[string]any{
@@ -271,6 +300,21 @@ func groupsView() []map[string]any {
 	return out
 }
 
+// nextGroupID 必须在 groupsMu 内使用：删除组后列表长度会回退，不能拿长度作为唯一序号。
+func nextGroupID(list []LaunchGroup, stamp int64) string {
+	used := make(map[string]bool, len(list))
+	for _, g := range list {
+		used[g.ID] = true
+	}
+	for {
+		id := fmt.Sprintf("g%d", stamp)
+		if !used[id] {
+			return id
+		}
+		stamp++
+	}
+}
+
 // saveGroup 新建或更新一套启动组，返回它的 id。
 func saveGroup(g LaunchGroup) (string, error) {
 	g = normalizeGroup(g)
@@ -284,7 +328,7 @@ func saveGroup(g LaunchGroup) (string, error) {
 	}
 
 	if g.ID == "" {
-		g.ID = fmt.Sprintf("g%d", now*1000+int64(len(list)))
+		g.ID = nextGroupID(list, time.Now().UnixNano())
 		g.CreatedAt = now
 	}
 	g.UpdatedAt = now
@@ -295,6 +339,10 @@ func saveGroup(g LaunchGroup) (string, error) {
 		}
 		if g.CreatedAt == 0 {
 			g.CreatedAt = list[i].CreatedAt
+		}
+		// 兼容旧调用方漏传基准：宁可沿用旧屏幕，也不能把旧位置认作当前屏幕。
+		if g.ScreenW == 0 || g.ScreenH == 0 {
+			g.ScreenW, g.ScreenH = list[i].ScreenW, list[i].ScreenH
 		}
 		list[i] = g
 		replaced = true

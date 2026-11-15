@@ -4,13 +4,18 @@
  * 一屏只有一个动作，账号切换收进底部 chips。
  */
 import { computed } from "vue";
-import { Square, Layers, Eye, EyeOff, Settings, Pencil, Play, Plus, RefreshCw, LayoutDashboard, SlidersHorizontal } from "lucide-vue-next";
+import { Square, Layers, Eye, EyeOff, Settings, Pencil, Play, Plus, RefreshCw, LayoutDashboard, SlidersHorizontal, ArrowUp, ArrowDown } from "lucide-vue-next";
+import { useAccountBrowser } from "../useAccountBrowser";
+import AccountBrowserBar from "../AccountBrowserBar.vue";
+import AccountSectionHeader from "../AccountSectionHeader.vue";
+import AccountTags from "../AccountTags.vue";
 import type { LauncherStore } from "../contract";
 
 const props = defineProps<{ store: LauncherStore }>();
 const store = props.store;import { demoUi } from "../ui";
 import { channelLabel, fmtRun } from "../contract";
 
+const browser = useAccountBrowser(store);
 const cur = computed(() => store.current);
 const runningSelf = computed(() => !!cur.value?.running);
 const expired = computed(() => cur.value?.cred === "expired");
@@ -22,6 +27,7 @@ const expired = computed(() => cur.value?.cred === "expired");
     <div class="stage">
       <!-- 监控墙 / 设置并排：之前两个都是绝对定位同一坐标，互相盖住 -->
       <div class="c2row">
+        <button class="btn groups-entry" @click="demoUi.openGroups()"><Layers />启动组</button>
         <button class="ico c2" title="监控墙（实时小窗）" @click="store.toggleWall()"><LayoutDashboard /></button>
         <button class="ico c2" title="设置" @click="store.openSettings()"><Settings /></button>
       </div>
@@ -42,6 +48,7 @@ const expired = computed(() => cur.value?.cred === "expired");
           <button class="ico" title="修改别名" @click="demoUi.openRename(cur.id)"><Pencil /></button>
         </div>
         <p class="fmeta mono">{{ store.maskAll ? cur.maskedId : cur.fullId }}<template v-if="cur.level"> · 等级 {{ cur.level }}</template></p>
+        <AccountTags :store="store" :account="cur" editable />
 
         <p v-if="expired" class="fstatus bad">登录凭证已过期，刷新后即可启动</p>
         <p v-else-if="runningSelf" class="fstatus ok">已运行 {{ fmtRun(cur.runSeconds) }}，游戏正在路上</p>
@@ -63,19 +70,23 @@ const expired = computed(() => cur.value?.cred === "expired");
     </div>
 
     <div class="queue">
-      <span class="qlabel">切换账号</span>
-      <div class="qchips">
-        <button
-          v-for="a in store.accounts"
-          :key="a.id"
-          class="qchip"
-          :class="{ on: a.current, warn: a.cred === 'expired' }"
-          @click="store.select(a.id)"
-        >
-          <i>{{ a.name.slice(0, 1) }}</i>{{ store.maskAll ? a.maskedName : a.name }}
-          <em v-if="a.running" class="dot ok live qdot" />
-        </button>
-        <button class="qchip add" title="添加账号" @click="store.addAccount()"><Plus /></button>
+      <div class="queue-head"><span class="qlabel">切换账号</span><button class="ico" title="添加账号" @click="store.addAccount()"><Plus /></button></div>
+      <AccountBrowserBar :browser="browser" :store="store" />
+      <div class="queue-sections">
+        <section v-for="sec in browser.sections.value" :key="sec.key" class="queue-section">
+          <AccountSectionHeader v-if="browser.view.value !== 'flat'" :browser="browser" :section="sec" />
+          <div v-if="!browser.isCollapsed(sec)" class="qchips">
+            <div v-for="(a, index) in sec.rows" :key="a.id" class="queue-item" :data-account-id="a.id">
+              <input type="checkbox" :checked="store.selectedIds.includes(a.id)" :aria-label="'勾选：' + browser.displayName(a)" @change="store.toggleSelect(a.id)" />
+              <button class="qchip" :class="{ on: a.current, warn: a.cred === 'expired' }" :aria-pressed="a.current" :title="browser.displayName(a) + ' · ' + channelLabel(a.channel) + (a.tags.length ? ' · ' + a.tags.join('、') : '')" @click="store.select(a.id)">
+                <i>{{ browser.displayName(a).slice(0, 1) }}</i><span class="qname">{{ browser.displayName(a) }}</span>
+                <em v-if="a.running" class="dot ok live qdot" />
+              </button>
+              <div v-if="sec.draggable" class="queue-moves"><button title="账号上移" :disabled="browser.busy.value || index === 0" @click="browser.moveAccount(sec, a.id, -1)"><ArrowUp /></button><button title="账号下移" :disabled="browser.busy.value || index === sec.rows.length - 1" @click="browser.moveAccount(sec, a.id, 1)"><ArrowDown /></button></div>
+            </div>
+          </div>
+        </section>
+        <p v-if="!browser.visibleCount.value" class="queue-empty">{{ store.accounts.length ? '没有找到匹配账号，试试其他关键词' : '还没有账号，点击上方加号添加' }}</p>
       </div>
     </div>
   </div>
@@ -298,4 +309,30 @@ const expired = computed(() => cur.value?.cred === "expired");
   width: 14px;
   height: 14px;
 }
+/* 账号多时只滚动底部队列，主操作仍在可见范围内。 */
+.stage { overflow:auto; padding:48px 48px 24px; }
+.focus { width:100%; min-width:0; margin:auto 0; }
+.ftitle { min-width:0; }
+.ftitle h1 { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:clamp(26px,5vw,54px); }
+.ftitle > button { flex:none; }
+.fmeta { overflow-wrap:anywhere; }
+.facts { flex-wrap:wrap; }
+.queue { display:flex; flex-direction:column; align-items:stretch; gap:0; max-height:42%; min-height:168px; padding:9px 24px 12px; }
+.queue-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:4px; }
+.queue :deep(.account-browser-bar) { padding:0 0 7px; }
+.queue-sections { min-height:0; overflow:auto; }
+.queue-section { min-width:0; }
+.qchips { align-items:stretch; gap:7px; padding:3px 0 8px; }
+.queue-item { display:flex; align-items:center; gap:5px; min-width:0; max-width:100%; }
+.queue-item > input { flex:none; width:13px; height:13px; margin:0; accent-color:var(--acc); }
+.qchip { min-width:0; max-width:260px; }
+.qchip i { flex:none; }
+.qname { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.queue-moves { display:flex; flex-direction:column; flex:none; }
+.queue-moves button { display:grid; place-items:center; padding:0; width:18px; height:18px; background:transparent; border:0; color:var(--dim); cursor:pointer; }
+.queue-moves svg { width:12px; height:12px; }
+.queue-moves button:disabled { opacity:.25; cursor:default; }
+.queue-empty { color:var(--dim); font-size:12px; }
+.queue button:focus-visible,.queue input:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+@media (max-width:700px) { .stage { padding:48px 24px 20px; } .queue { padding-left:16px; padding-right:16px; } .queue-item { max-width:100%; } .qchip { max-width:min(260px,calc(100vw - 85px)); } }
 </style>

@@ -4,12 +4,17 @@
  * 每个账号一条全宽横幅，展开的那条露出操作，运行 / 过期内联处理。
  */
 import { ref, watch } from "vue";
-import { Square, Layers, Plus, Eye, EyeOff, Settings, Pencil, Play, RefreshCw, ChevronDown, LayoutDashboard, SlidersHorizontal } from "lucide-vue-next";
-import type { LauncherStore } from "../contract";
+import { Square, Layers, Plus, Eye, EyeOff, Settings, Pencil, Play, RefreshCw, ChevronDown, LayoutDashboard, SlidersHorizontal, ArrowUp, ArrowDown } from "lucide-vue-next";
+import { channelLabel, fmtRun, type Account, type LauncherStore } from "../contract";
+import { demoUi } from "../ui";
+import { useAccountBrowser } from "../useAccountBrowser";
+import AccountBrowserBar from "../AccountBrowserBar.vue";
+import AccountSectionHeader from "../AccountSectionHeader.vue";
+import AccountTags from "../AccountTags.vue";
 
 const props = defineProps<{ store: LauncherStore }>();
-const store = props.store;import { demoUi } from "../ui";
-import { channelLabel, fmtRun, type Account } from "../contract";
+const store = props.store;
+const browser = useAccountBrowser(store);
 
 const openId = ref(store.current?.id ?? "");
 watch(
@@ -19,7 +24,11 @@ watch(
   }
 );
 function toggle(a: Account) {
-  openId.value = openId.value === a.id ? "" : a.id;
+  if (openId.value === a.id) openId.value = "";
+  else {
+    openId.value = a.id;
+    store.select(a.id);
+  }
 }
 </script>
 
@@ -28,6 +37,7 @@ function toggle(a: Account) {
     <div class="toolbar">
       <h2>账号</h2>
       <div class="tools">
+        <button class="btn groups-entry" @click="demoUi.openGroups()"><Layers />启动组</button>
         <button class="btn" @click="demoUi.openMulti()"><Layers />多开</button>
         <button class="btn soft" @click="store.addAccount()"><Plus />添加账号</button>
         <span class="tsep" />
@@ -39,44 +49,58 @@ function toggle(a: Account) {
       </div>
     </div>
 
+    <AccountBrowserBar class="browserbar" :browser="browser" :store="store" />
+
     <div class="deck">
-      <div v-for="a in store.accounts" :key="a.id" class="banner" :class="{ open: openId === a.id, run: a.running, bad: a.cred === 'expired' }">
-        <div class="brow" @click="toggle(a)">
-          <input
-            type="checkbox"
-            class="sel"
-            :checked="store.selectedIds.includes(a.id)"
-            title="选中该账号"
-            @click.stop
-            @change="store.toggleSelect(a.id)"
-          />
-          <span class="bava">{{ a.name.slice(0, 1) }}</span>
-          <span class="btxt">
-            <b>{{ store.maskAll ? a.maskedName : a.name }}</b>
-            <i>{{ channelLabel(a.channel) }} · <span class="mono">{{ store.maskAll ? a.maskedId : a.fullId }}</span></i>
-          </span>
-          <span v-if="a.running" class="bpill live"><em class="dot ok live" />运行中 · {{ fmtRun(a.runSeconds) }}</span>
-          <span v-else-if="a.cred === 'expired'" class="bpill exp"><em class="dot bad" />凭证过期</span>
-          <span v-else class="bpill ok"><em class="dot ok" />就绪</span>
-          <button v-if="a.running" class="btn sm" @click.stop="store.stop(a.id)"><Square />停止</button>
-          <button v-else-if="a.cred === 'expired'" class="btn sm danger" @click.stop="store.refreshCred(a.id)"><RefreshCw />刷新凭证</button>
-          <ChevronDown v-else-if="openId !== a.id" class="bchev" />
-        </div>
-        <div v-if="openId === a.id" class="bbody">
-          <p class="bmeta">
-            <template v-if="a.level">等级 {{ a.level }} · </template>
-            {{ a.cred === "expired" ? "登录凭证已过期" : "已登录，凭证会在启动时自动刷新" }}
-          </p>
-          <div class="bacts">
-            <button v-if="a.running" class="btn primary stop" @click="store.stop(a.id)"><Square />停止运行</button>
-            <button v-else class="btn primary" @click="store.launch(a.id)"><Play />启动光遇</button>
-            <button class="btn" @click="store.refreshCred(a.id)"><RefreshCw />刷新凭证</button>
-            <button class="btn" @click="demoUi.openMulti()"><Layers />多开</button>
-            <button class="ico" title="游戏设置（画质 / 帧率）" @click="demoUi.openQuality(a.id)"><SlidersHorizontal /></button>
-            <button class="ico" title="修改别名" @click="demoUi.openRename(a.id)"><Pencil /></button>
+      <p v-if="!browser.visibleCount.value" class="empty">{{ store.accounts.length ? '没有匹配的账号，试试其他搜索条件' : '还没有账号，添加一个开始吧' }}</p>
+      <section v-for="sec in browser.sections.value" :key="sec.key" class="account-section">
+        <AccountSectionHeader v-if="browser.view.value !== 'flat'" :browser="browser" :section="sec" />
+        <div v-if="!browser.isCollapsed(sec)" class="section-banners">
+          <div v-for="(a, index) in sec.rows" :key="a.id" class="banner" :class="{ open: openId === a.id, current: a.current, picked: store.selectedIds.includes(a.id), run: a.running, bad: a.cred === 'expired' }">
+            <div class="brow" tabindex="0" :aria-label="'展开账号：' + browser.displayName(a)" :aria-expanded="openId === a.id" @keydown.enter.self.prevent="toggle(a)" @keydown.space.self.prevent="toggle(a)" @click="toggle(a)">
+              <input
+                type="checkbox"
+                class="sel"
+                :checked="store.selectedIds.includes(a.id)"
+                title="选中该账号"
+                @click.stop
+                @change="store.toggleSelect(a.id)"
+              />
+              <span class="bava">{{ browser.displayName(a).slice(0, 1) }}</span>
+              <div class="btxt">
+                <b :title="browser.displayName(a)">{{ browser.displayName(a) }}</b>
+                <i :title="browser.displayId(a)">{{ channelLabel(a.channel) }} · <span class="mono">{{ browser.displayId(a) }}</span></i>
+                <div v-if="openId !== a.id" class="collapsed-tags" @click.stop><AccountTags :store="store" :account="a" /></div>
+              </div>
+              <span class="account-order">
+                <button class="ico" title="上移账号" :disabled="browser.busy.value || !sec.draggable || index === 0" @click.stop="browser.moveAccount(sec, a.id, -1)"><ArrowUp /></button>
+                <button class="ico" title="下移账号" :disabled="browser.busy.value || !sec.draggable || index === sec.rows.length - 1" @click.stop="browser.moveAccount(sec, a.id, 1)"><ArrowDown /></button>
+              </span>
+              <span v-if="a.running" class="bpill live"><em class="dot ok live" />运行中 · {{ fmtRun(a.runSeconds) }}</span>
+              <span v-else-if="a.cred === 'expired'" class="bpill exp"><em class="dot bad" />凭证过期</span>
+              <span v-else class="bpill ok"><em class="dot ok" />就绪</span>
+              <button v-if="a.running" class="btn sm" @click.stop="store.stop(a.id)"><Square />停止</button>
+              <button v-else-if="a.cred === 'expired'" class="btn sm danger" @click.stop="store.refreshCred(a.id)"><RefreshCw />刷新凭证</button>
+              <ChevronDown v-else-if="openId !== a.id" class="bchev" />
+            </div>
+            <div v-if="openId === a.id" class="bbody">
+              <div class="body-tags" @click.stop><AccountTags :store="store" :account="a" editable /></div>
+              <p class="bmeta">
+                <template v-if="a.level">等级 {{ a.level }} · </template>
+                {{ a.cred === "expired" ? "登录凭证已过期" : "已登录，凭证会在启动时自动刷新" }}
+              </p>
+              <div class="bacts">
+                <button v-if="a.running" class="btn primary stop" @click="store.stop(a.id)"><Square />停止运行</button>
+                <button v-else class="btn primary" @click="store.launch(a.id)"><Play />启动光遇</button>
+                <button class="btn" @click="store.refreshCred(a.id)"><RefreshCw />刷新凭证</button>
+                <button class="btn" @click="demoUi.openMulti()"><Layers />多开</button>
+                <button class="ico" title="游戏设置（画质 / 帧率）" @click="demoUi.openQuality(a.id)"><SlidersHorizontal /></button>
+                <button class="ico" title="修改别名" @click="demoUi.openRename(a.id)"><Pencil /></button>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
+      </section>
       <button class="addcard" @click="store.addAccount()"><Plus />添加账号</button>
     </div>
   </div>
@@ -130,6 +154,38 @@ function toggle(a: Account) {
   background: var(--line2);
 }
 
+.win .browserbar {
+  padding: 0 36px 14px;
+}
+.empty {
+  margin: 12px 0;
+  color: var(--faint);
+  font-size: 13px;
+}
+.account-section {
+  min-width: 0;
+}
+.section-banners {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.account-order {
+  display: flex;
+  flex: none;
+  gap: 2px;
+}
+.account-order button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.collapsed-tags {
+  min-width: 0;
+  margin-top: 5px;
+}
+.body-tags {
+  margin-top: 12px;
+}
 .deck {
   flex: 1;
   min-height: 0;
@@ -140,6 +196,7 @@ function toggle(a: Account) {
   padding: 4px 36px 24px;
 }
 .banner {
+  min-width: 0;
   flex: none;
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -197,6 +254,9 @@ function toggle(a: Account) {
   gap: 1px;
 }
 .btxt b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 14.5px;
   font-weight: 600;
   letter-spacing: -0.01em;
@@ -210,6 +270,7 @@ function toggle(a: Account) {
   text-overflow: ellipsis;
 }
 .bpill {
+  flex: none;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -237,6 +298,7 @@ function toggle(a: Account) {
   background: var(--badbg);
 }
 .bchev {
+  flex: none;
   width: 16px;
   height: 16px;
   color: var(--faint);
@@ -251,6 +313,7 @@ function toggle(a: Account) {
   color: var(--dim);
 }
 .bacts {
+  flex-wrap: wrap;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -282,4 +345,20 @@ function toggle(a: Account) {
   color: var(--acc);
   border-color: color-mix(in srgb, var(--acc) 40%, transparent);
 }
+@media (max-width: 720px) {
+  .brow {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .btxt {
+    flex-basis: calc(100% - 80px);
+  }
+  .account-order {
+    margin-left: auto;
+  }
+}
+.banner.current { box-shadow:inset 3px 0 0 var(--acc); }
+.banner.picked { background:color-mix(in srgb,var(--acc) 5%,var(--s1)); }
+.brow:focus-visible,.banner button:focus-visible { outline:2px solid var(--acc); outline-offset:2px; border-radius:8px; }
+.banner:focus-within .sel { opacity:1; }
 </style>

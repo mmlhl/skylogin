@@ -184,11 +184,18 @@ func handleTicket(h *fever.Host, req fever.TicketRequest) bool {
 		}
 		clientsMu.Lock()
 		slot.lastTicket = time.Now()
-		if slot.ticketSent.IsZero() {
+		// 只有首张票才开"自动进入"的时间窗：重试发票时游戏可能已经在大厅，
+		// 那会儿再去点画面没有意义。
+		firstTicket := slot.ticketSent.IsZero()
+		if firstTicket {
 			slot.ticketSent = slot.lastTicket
 		}
+		multi := slot.multi
 		clientsMu.Unlock()
 		logf("票据已发送（%s），等待游戏进入", displayName(*slot.acc))
+		if firstTicket {
+			scheduleAutoEnter(req.ProcessID, *slot.acc, multi, "平台签票成功")
+		}
 	}()
 	return true
 }
@@ -355,18 +362,20 @@ func startClient(acc Account, dev *device.ClientProfile, ticket, channel string)
 		// 走镜像的（副本行）由 makeIndependentPrefs 在建镜像时写。
 		applySingleLaunchPrefs(acc, filepath.Dir(exe))
 	}
-	return launchAt(acc, dev, ticket, channel, launchExe, "", 0, -1)
+	return launchAt(acc, dev, ticket, channel, launchExe, "", 0, -1, false)
 }
 
 // launchAt 用指定目录启动并登记（多开时目录已提前建好，这里只管拉进程）。
 // order 是窗口排列用的顺序号（多开按用户勾选的先后传入），-1 表示不指定、
-// 由 registerClient 按注册顺序补。
-func launchAt(acc Account, dev *device.ClientProfile, ticket, channel, launchExe string, ovMode string, ovFps int, order int64) (string, error) {
+// 由 registerClient 按注册顺序补；multi 表示这一轮是多开（决定自动进入
+// 读哪个默认开关：账号自己的 > 多开默认 > 单开默认）。
+func launchAt(acc Account, dev *device.ClientProfile, ticket, channel, launchExe string, ovMode string, ovFps int, order int64, multi bool) (string, error) {
+	acc = wallLaunchSettings(acc, ovMode, ovFps)
 	p, err := startSkyPidFn(launchExe)
 	if err != nil {
 		// 直接启动失败（通常是权限），退回提权启动；这种方式拿不到 pid
 		if elevated, e2 := startSkyFn(launchExe); e2 == nil {
-			slot := &multiSlot{acc: &acc, dev: dev, ticket: ticket, channel: channel, createdAt: time.Now(), seq: order}
+			slot := &multiSlot{acc: &acc, dev: dev, ticket: ticket, channel: channel, createdAt: time.Now(), seq: order, multi: multi}
 			clientsMu.Lock()
 			fellback = slot
 			clientsMu.Unlock()
@@ -378,7 +387,7 @@ func launchAt(acc Account, dev *device.ClientProfile, ticket, channel, launchExe
 		return "", fmt.Errorf("启动光遇失败: %w", err)
 	}
 
-	slot := &multiSlot{acc: &acc, dev: dev, ticket: ticket, channel: channel, seq: order}
+	slot := &multiSlot{acc: &acc, dev: dev, ticket: ticket, channel: channel, seq: order, multi: multi}
 	if ticket == "" {
 		// 没带预签票：启动后立刻并行签一张，等游戏来要时直接回，
 		// 避免 op13→op14 这段走网络导致游戏超时弹错误页。

@@ -15,6 +15,7 @@ import (
 	"skylogin/internal/fever"
 	"skylogin/internal/mpay"
 	"skylogin/internal/profile"
+	"skylogin/internal/win"
 )
 
 var (
@@ -301,6 +302,7 @@ type multiSlot struct {
 	channel    string
 	pid        uint32
 	seq        int64 // 启动顺序（窗口排列按这个顺序铺格子；-1 = 由 registerClient 按注册顺序分配）
+	multi      bool  // 这一轮是不是多开（决定自动进入读哪个默认开关）
 	createdAt  time.Time
 	firstReply time.Time // 本轮应答窗口起点（超过 replyWindow 重新计数）
 	ticketSent time.Time // 首张票成功发出的时间（排列时机的业务信号：发票=凭证链路通）
@@ -344,8 +346,8 @@ func launchMany(ids []string, ovMode string, ovFps int) (string, error) {
 			}
 		}
 	}
-	if len(picked) < 2 {
-		return "", fmt.Errorf("选中的账号不足两个")
+	if len(picked) < 1 {
+		return "", fmt.Errorf("没有选中可用账号")
 	}
 	for _, a := range picked {
 		if accountRunning(accountKey(a)) {
@@ -375,13 +377,13 @@ func launchMany(ids []string, ovMode string, ovFps int) (string, error) {
 	}
 	// 逐个验证 / 刷新凭证：判据是"现在真能出一张票"，顺手把票留作预签票
 	picked, tickets, channels, unverified := precheckLaunchable(picked, dev)
-	if len(picked) < 2 {
+	if len(picked) < 1 {
 		// 分清是"凭证真的坏了"还是"网络连不上"：两种情况的处理完全不同，
 		// 让用户去刷新凭证解决不了 DNS 问题。
 		if unverified > 0 {
 			return "", fmt.Errorf("有 %d 个账号这次没能验证凭证（网络或 DNS 异常），暂时无法多开，请检查网络后重试", unverified)
 		}
-		return "", fmt.Errorf("凭证有效的账号不足两个，无法多开（失效的请先刷新凭证）")
+		return "", fmt.Errorf("没有凭证有效的账号，无法多开（失效的请先刷新凭证）")
 	}
 
 	if err := ensureHostLocked(); err != nil {
@@ -392,6 +394,13 @@ func launchMany(ids []string, ovMode string, ovFps int) (string, error) {
 	// 这样启动前预写的窗口模式 / 画质 / 帧率才能覆盖到所有客户端），
 	// 再几乎同时把游戏拉起来：建目录要几十毫秒，夹在启动之间会让
 	// 第一个客户端的窗口先弹出来，后面的就被单实例检测拦下。
+	// 本次显示方式用于镜像与运行路由，不改账号文件；单成员也使用同一路径。
+	for i := range picked {
+		picked[i].DisplayMode = "windowed"
+		if nextFullscreen.Load() {
+			picked[i].DisplayMode = "fullscreen"
+		}
+	}
 	installs := make([]string, len(picked))
 	inMultiBatch.Store(true)
 	for i := range picked {
@@ -417,7 +426,7 @@ func launchMany(ids []string, ovMode string, ovFps int) (string, error) {
 			defer wg.Done()
 			// order 用勾选顺序（picked 的顺序），不用进程启动完成的先后：
 			// 并发拉起时谁先注册是不确定的，同样的账号组合每次排出来都不一样
-			_, err := launchAt(acc, dev, tk, ch, path, ovMode, ovFps, order)
+			_, err := launchAt(acc, dev, tk, ch, path, ovMode, ovFps, order, true)
 			if err == nil {
 				markAccountLaunched(accountKey(acc), "")
 			}
@@ -435,8 +444,8 @@ func launchMany(ids []string, ovMode string, ovFps int) (string, error) {
 		}
 		names = append(names, r.name)
 	}
-	if len(names) < 2 {
-		return "", fmt.Errorf("可用账号不足两个（启动失败）")
+	if len(names) < 1 {
+		return "", fmt.Errorf("没有账号启动成功（启动失败）")
 	}
 	// 启动成功后顺手滚一次会话凭证（和单开一致）。被寄宿的号如果自己那份
 	// 已经失效，这里会走寄宿续期把它养回来，下次就不用再靠槽位票。
@@ -473,23 +482,22 @@ func launchManyLayout(ids []string, cols, rows, w, h int, display string, ovMode
 	fullscreen := display == "fullscreen"
 	nextFullscreen.Store(fullscreen)
 	defer nextFullscreen.Store(false)
+	// 多开先挂闸门：自动进入要等这一批窗口排好、监控墙拉起来之后再计时
+	armAutoEnterBatch()
 	msg, err := launchMany(ids, ovMode, ovFps)
 	if err != nil {
+		// 没启动起来就没有"窗口稳定"可言，直接放行，别让等待方干等
+		releaseAutoEnterBatch()
 		return msg, err
 	}
-	switch {
-	case fullscreen:
+	groupLaunchGeneration.Add(1)
+	if fullscreen {
 		arrangeWhenReady(0, 0, 0, 0, "fullscreen")
-		return msg + "（全屏：用监控墙或 Alt+Tab 切换）", nil
-	case display == "cascade":
-		arrangeWhenReady(cols, rows, w, h, "cascade")
-		return msg + "（窗口堆叠：每个都露出标题条，点标题切换）", nil
+		return msg + "（专注全屏：通过监控墙或 Alt+Tab 切换）", nil
 	}
-	if cols >= 1 && rows >= 1 {
-		arrangeWhenReady(cols, rows, w, h, "tile")
-		msg = fmt.Sprintf("%s（将按 %d×%d 平铺）", msg, cols, rows)
-	}
-	return msg, nil
+	info := win.CurrentLayoutPlan(win.LayoutRequest{Count: len(runningPids()), Mode: display, Cols: cols, Rows: rows, W: w, H: h})
+	arrangeWhenReady(cols, rows, w, h, info.Mode)
+	return msg + "（" + info.Message + "）", nil
 }
 
 // precheckLaunchable 判断这批账号现在能不能启动，并把能出票的票带回来当预签票。

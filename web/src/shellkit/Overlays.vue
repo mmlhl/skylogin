@@ -4,11 +4,18 @@
  * 四种界面壳共用这一层；强调色跟随当前壳（--demo-acc，由 DesignDemo 注入）。
  */
 import { computed, ref, watch } from "vue";
-import { X, QrCode, MessageSquare, KeyRound, LayoutGrid } from "lucide-vue-next";
+import {
+  X,
+  QrCode,
+  MessageSquare,
+  KeyRound,
+  LayoutGrid,
+} from "lucide-vue-next";
 import type { LauncherStore } from "./contract";
 import LaunchGroups from "../components/LaunchGroups.vue";
 import { demoUi } from "./ui";
-import { LAYOUTS, LAYOUT_NONE, recommendLayout, channelLabel, fmtRun } from "./contract";
+import { channelLabel, fmtRun, layoutLabel } from "./contract";
+import { useLayoutPlan } from "../composables/useLayoutPlan";
 
 const props = defineProps<{ store: LauncherStore }>();
 const store = props.store;
@@ -17,18 +24,43 @@ const store = props.store;
 const addChannel = ref<"huawei" | "netease">("huawei");
 const addMethod = ref<"qrcode" | "sms" | "mpay">("qrcode");
 watch(addChannel, (c) => {
-  if (c === "netease" && addMethod.value !== "qrcode") addMethod.value = "qrcode";
+  if (c === "netease" && addMethod.value !== "qrcode")
+    addMethod.value = "qrcode";
 });
 type AddMethod = "qrcode" | "sms" | "mpay";
 // 渠道与方式的对应关系和真实后端一致：华为只有扫码；短信 / 密码窗口都是网易的
-const methods = computed<{ v: AddMethod; label: string; desc: string; icon: unknown }[]>(() =>
+const methods = computed<
+  { v: AddMethod; label: string; desc: string; icon: unknown }[]
+>(() =>
   addChannel.value === "huawei"
-    ? [{ v: "qrcode", label: "扫码登录", desc: "手机华为帐号扫码", icon: QrCode }]
-    : [
-        { v: "qrcode", label: "扫码登录", desc: "用光遇手游扫码", icon: QrCode },
-        { v: "sms", label: "手机号登录", desc: "手机号 + 短信验证码", icon: MessageSquare },
-        { v: "mpay", label: "账号密码登录", desc: "账号 / 手机号 + 密码", icon: KeyRound },
+    ? [
+        {
+          v: "qrcode",
+          label: "扫码登录",
+          desc: "手机华为帐号扫码",
+          icon: QrCode,
+        },
       ]
+    : [
+        {
+          v: "qrcode",
+          label: "扫码登录",
+          desc: "用光遇手游扫码",
+          icon: QrCode,
+        },
+        {
+          v: "sms",
+          label: "手机号登录",
+          desc: "手机号 + 短信验证码",
+          icon: MessageSquare,
+        },
+        {
+          v: "mpay",
+          label: "账号密码登录",
+          desc: "账号 / 手机号 + 密码",
+          icon: KeyRound,
+        },
+      ],
 );
 function confirmAdd() {
   store.addAccount({ channel: addChannel.value });
@@ -37,95 +69,89 @@ function confirmAdd() {
 
 /* ---- 多开 ---- */
 const picked = ref<string[]>([]);
-const layoutKey = ref<string>("quad");
-// 显示方式：窗口平铺（网格各占一块）/ 窗口堆叠（文件窗式错开）/ 全屏。
-// 超过 4 个只允许堆叠：平铺下去每格互相咬，不如堆叠每个都露标题条。
-const display = ref<"tile" | "cascade" | "fullscreen">("tile");
-const cascadeOnly = computed(() => toLaunch.value > 4);
+const chosenMode = ref("");
+const submitting = ref(false);
+const multiError = ref("");
+const previewAccounts = computed(() =>
+  store.accounts.filter((a) => picked.value.includes(a.id) && !a.running),
+);
+const layoutRequest = computed(() => ({
+  count: demoUi.multiOpen ? previewAccounts.value.length : 0,
+  mode: chosenMode.value,
+}));
+const planner = useLayoutPlan(store, layoutRequest);
+const layoutPlan = planner.result;
+const planLoading = planner.loading;
+const planError = planner.error;
+const shownName = (a: (typeof store.accounts)[number]) =>
+  store.maskAll ? a.maskedName : a.name;
+function previewRectStyle(r: {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  zOrder?: number;
+}) {
+  const p = layoutPlan.value;
+  return p
+    ? {
+        left: `${(r.x / p.screenW) * 100}%`,
+        top: `${(r.y / p.screenH) * 100}%`,
+        width: `${(r.w / p.screenW) * 100}%`,
+        height: `${(r.h / p.screenH) * 100}%`,
+        zIndex: r.zOrder || 1,
+      }
+    : {};
+}
 /* 画质 / 帧率 / 鼠标仲裁：和设置面板里的「多开默认」是同一份 */
 const qMode = ref("");
 const qFps = ref(0);
 const arbiterEnabled = ref(true);
 const arbiterMinText = ref("3");
-const arbiterMin = computed(() => Math.min(60, Math.max(1, Math.round(Number(arbiterMinText.value) || 3))));
+// 多开时是否自动点播放按钮（存到全局设置，账号详情里可单独覆盖）
+const autoEnterMulti = ref(true);
+const arbiterMin = computed(() =>
+  Math.min(60, Math.max(1, Math.round(Number(arbiterMinText.value) || 3))),
+);
 watch(
   () => demoUi.multiOpen,
   (open) => {
     if (!open) return;
     picked.value = demoUi.multiPreset.length
-      ? store.accounts.filter((a) => demoUi.multiPreset.includes(a.id)).map((a) => a.id)
-      : store.accounts.filter((a) => a.current || (!a.running && a.cred === "ok")).map((a) => a.id);
-    layoutKey.value = recommendLayout(Math.max(picked.value.filter((id) => !isRunning(id)).length, 1)).key;
-    // 打开时就按待启动数量定默认：>4 平铺放不下（引擎最小 1024×720），直接堆叠
-    display.value = picked.value.filter((id) => !isRunning(id)).length > 4 ? "cascade" : "tile";
+      ? store.accounts
+          .filter((a) => demoUi.multiPreset.includes(a.id))
+          .map((a) => a.id)
+      : store.accounts
+          .filter((a) => a.current || (!a.running && a.cred === "ok"))
+          .map((a) => a.id);
+    chosenMode.value = "";
+    multiError.value = "";
     const d = store.multiDefaults();
     qMode.value = d.qualityMode;
     qFps.value = d.fps;
     arbiterEnabled.value = d.arbiter;
     arbiterMinText.value = String(d.arbiterMin > 0 ? d.arbiterMin : 3);
-  }
+    autoEnterMulti.value = d.autoEnter ?? true;
+  },
 );
 function isRunning(id: string) {
   return store.accounts.find((a) => a.id === id)?.running ?? false;
 }
-const pickedCount = computed(() => picked.value.length);
-const toLaunch = computed(() => picked.value.filter((id) => !isRunning(id)).length);
-const recKey = computed(() => (toLaunch.value > 1 ? recommendLayout(toLaunch.value).key : LAYOUT_NONE.key));
-watch(pickedCount, () => {
-  layoutKey.value = recKey.value;
-  if (toLaunch.value > 4) display.value = "cascade"; // 超过 4 个只能窗口堆叠
-});
-const curLayout = computed(() => [...LAYOUTS, LAYOUT_NONE].find((l) => l.key === layoutKey.value) ?? LAYOUT_NONE);
-/* 自定义窗口尺寸：两项都 >0 才生效，缺省铺满格子 */
-const customW = ref("");
-const customH = ref("");
-const customSize = computed(() => {
-  const w = Math.round(Number(customW.value));
-  const h = Math.round(Number(customH.value));
-  return w > 0 && h > 0 ? { w, h } : undefined;
-});
+const toLaunch = computed(() => previewAccounts.value.length);
 function togglePick(id: string) {
   const i = picked.value.indexOf(id);
   if (i >= 0) picked.value.splice(i, 1);
   else picked.value.push(id);
 }
-// 档位名与游戏内一致（2026-10-29 逐档实测）：四档画质 + 30/60/120 帧
-// 堆叠方案（display=cascade 时可选）：icon 是 20×14 的小示意图（几块小矩形）
-const cascadeScheme = ref<"dual" | "rows" | "cols" | "fan">("dual");
-const cascadeSchemes = [
-  {
-    v: "dual" as const,
-    label: "双摞",
-    tip: "左右两组斜摞，默认",
-    icon: '<rect x="1" y="4" width="7" height="6" rx="1"/><rect x="2.5" y="2.5" width="7" height="6" rx="1"/><rect x="12" y="4" width="7" height="6" rx="1"/><rect x="13.5" y="2.5" width="7" height="6" rx="1"/>',
-  },
-  {
-    v: "rows" as const,
-    label: "两行横向",
-    tip: "上下两行，行内摊开",
-    icon: '<rect x="1" y="1.5" width="8" height="4.5" rx="1"/><rect x="11" y="1.5" width="8" height="4.5" rx="1"/><rect x="3.5" y="8" width="8" height="4.5" rx="1"/><rect x="13.5" y="8" width="8" height="4.5" rx="1"/>',
-  },
-  {
-    v: "cols" as const,
-    label: "两列竖向",
-    tip: "左右两列，列内摊开",
-    icon: '<rect x="1.5" y="1" width="7" height="5.5" rx="1"/><rect x="1.5" y="7.5" width="7" height="5.5" rx="1"/><rect x="11.5" y="1" width="7" height="5.5" rx="1"/><rect x="11.5" y="7.5" width="7" height="5.5" rx="1"/>',
-  },
-  {
-    v: "fan" as const,
-    label: "满扇形",
-    tip: "整摞对角摊开",
-    icon: '<rect x="1" y="8" width="8" height="5" rx="1"/><rect x="4" y="5" width="8" height="5" rx="1"/><rect x="7" y="2" width="8" height="5" rx="1"/>',
-  },
-];
-function pickScheme(v: "dual" | "rows" | "cols" | "fan") {
-  cascadeScheme.value = v;
-}
 // 档位名与游戏内一致（2026-10-29 逐档实测）：四档画质 + 30/60/120 帧。
 // 第一项是"账号配置"：用每个账号自己的画质/帧率（账号详情里设置），
 // 没配过的账号跟随游戏；其余档位是本次多开对所有客户端的硬覆盖。
 const qualityOpts = [
-  { v: "", label: "跟随游戏", tip: "按账号在「游戏设置」里的配置，没设则以游戏内为准" },
+  {
+    v: "",
+    label: "跟随游戏",
+    tip: "按账号在「游戏设置」里的配置，没设则以游戏内为准",
+  },
   { v: "LowPower", label: "省电", tip: "游戏内部档位 LowPower" },
   { v: "Default", label: "默认", tip: "游戏内部档位 Default" },
   { v: "HighQuality", label: "高画质", tip: "游戏内部档位 HighQuality" },
@@ -152,20 +178,34 @@ function pickArbiterMin() {
   arbiterMinText.value = String(arbiterMin.value);
   store.saveMultiDefaults("", 0, arbiterEnabled.value, arbiterMin.value);
 }
+// 自动进入：拿到票后的 10 秒内替用户点播放按钮，过时不候，避免在游戏里误点
+function pickAutoEnterMulti(v: boolean) {
+  autoEnterMulti.value = v;
+  store.saveMultiDefaults("", 0, arbiterEnabled.value, arbiterMin.value, v);
+}
 
-function confirmMulti() {
-  // 按账号列表的显示顺序发出去，不用勾选先后：窗口排列按传入顺序铺格子，
-  // 用点击顺序的话先点第三个再点第一个，排出来就是第三个在前——同样的
-  // 一组账号每次布局都不一样，找窗口时很别扭。
-  const ordered = store.accounts.filter((a) => picked.value.includes(a.id)).map((a) => a.id);
-  if (display.value === "fullscreen") {
-    store.multiLaunch(ordered, undefined, undefined, "fullscreen", qMode.value, qFps.value);
-  } else if (display.value === "cascade") {
-    store.multiLaunch(ordered, undefined, customSize.value, `cascade:${cascadeScheme.value}` as const, qMode.value, qFps.value);
-  } else {
-    store.multiLaunch(ordered, curLayout.value, customSize.value, "tile", qMode.value, qFps.value);
+async function confirmMulti() {
+  if (!toLaunch.value || submitting.value) return;
+  submitting.value = true;
+  multiError.value = "";
+  try {
+    const plan = await planner.ensure();
+    const ordered = previewAccounts.value.map((a) => a.id);
+    if (!ordered.length) throw new Error("没有待启动账号");
+    store.multiLaunch(
+      ordered,
+      undefined,
+      undefined,
+      plan.mode,
+      qMode.value,
+      qFps.value,
+    );
+    demoUi.multiOpen = false;
+  } catch (e) {
+    multiError.value = e instanceof Error ? e.message : "窗口规划失败，请重试";
+  } finally {
+    submitting.value = false;
   }
-  demoUi.multiOpen = false;
 }
 
 /* ---- 创建副本 ---- */
@@ -173,13 +213,23 @@ const dupName = ref("");
 // 副本自己的渠道：空 = 先不选（保留游戏里手选的旧行为）。
 // 只有网易官方账号能选——渠道服账号的渠道由渠道 SDK 决定。
 const dupRegion = ref("");
-const dupAccount = computed(() => store.accounts.find((a) => a.id === demoUi.dupId));
-const dupCanPickRegion = computed(() => dupAccount.value?.channel === "netease");
+const dupAccount = computed(() =>
+  store.accounts.find((a) => a.id === demoUi.dupId),
+);
+const dupCanPickRegion = computed(
+  () => dupAccount.value?.channel === "netease",
+);
 // 已有副本：同 PlayerID 且带副本键的记录（创建第 2 条起在弹窗里提醒）
 const dupExisting = computed(() =>
-  dupAccount.value ? store.accounts.filter((a) => a.playerId === dupAccount.value!.playerId && a.copyKey) : [],
+  dupAccount.value
+    ? store.accounts.filter(
+        (a) => a.playerId === dupAccount.value!.playerId && a.copyKey,
+      )
+    : [],
 );
-const dupDefaultName = computed(() => `${dupAccount.value?.name ?? ""}-副本${dupExisting.value.length + 1}`);
+const dupDefaultName = computed(
+  () => `${dupAccount.value?.name ?? ""}-副本${dupExisting.value.length + 1}`,
+);
 watch(
   () => demoUi.dupId,
   () => {
@@ -197,10 +247,19 @@ function confirmDup() {
 }
 
 /* ---- 游戏设置（账号级画质/帧率/显示方式，四种壳共用这一个弹窗） ---- */
-const qAccount = computed(() => store.accounts.find((a) => a.id === demoUi.qualityId));
+const qAccount = computed(() =>
+  store.accounts.find((a) => a.id === demoUi.qualityId),
+);
 const qModeRow = ref("");
 const qFpsRow = ref(0);
 const qDisplayRow = ref("");
+// 自动进入三态：null = 跟随全局（默认），true/false = 这一行单独指定
+const qAutoEnterRow = ref<boolean | null>(null);
+const autoEnterOpts = [
+  { v: null, label: "跟随全局", tip: "按「启动配置」/「多开」里的默认开关" },
+  { v: true, label: "开", tip: "这个号拿到票后就自动点进游戏" },
+  { v: false, label: "关", tip: "这个号不自动进入，停在登录界面" },
+];
 // 三项都保留「跟随游戏」：没设过的号不该被我们按一个默认档位钉死
 // （以前默认落到 Default/60，等于用户点一下保存就把游戏里的最高画质降级了）
 const accountQualityOpts = qualityOpts;
@@ -221,11 +280,18 @@ watch(
     qModeRow.value = qAccount.value?.qualityMode ?? "";
     qFpsRow.value = qAccount.value?.qualityFps ?? 0;
     qDisplayRow.value = qAccount.value?.displayMode ?? "";
+    qAutoEnterRow.value = qAccount.value?.autoEnter ?? null;
   },
 );
 function confirmQuality() {
   if (!demoUi.qualityId) return;
-  store.setAccountQuality(demoUi.qualityId, qModeRow.value, qFpsRow.value, qDisplayRow.value);
+  store.setAccountQuality(
+    demoUi.qualityId,
+    qModeRow.value,
+    qFpsRow.value,
+    qDisplayRow.value,
+    qAutoEnterRow.value,
+  );
   demoUi.qualityId = "";
 }
 
@@ -235,7 +301,7 @@ watch(
   () => demoUi.renameId,
   (id) => {
     renameText.value = store.accounts.find((a) => a.id === id)?.name ?? "";
-  }
+  },
 );
 function confirmRename() {
   if (demoUi.renameId) store.rename(demoUi.renameId, renameText.value);
@@ -254,11 +320,17 @@ function confirmRename() {
 
       <p class="mlabel">选择渠道</p>
       <div class="chans">
-        <button :class="{ on: addChannel === 'huawei' }" @click="addChannel = 'huawei'">
+        <button
+          :class="{ on: addChannel === 'huawei' }"
+          @click="addChannel = 'huawei'"
+        >
           <b>华为渠道</b>
           <i>手机扫码</i>
         </button>
-        <button :class="{ on: addChannel === 'netease' }" @click="addChannel = 'netease'">
+        <button
+          :class="{ on: addChannel === 'netease' }"
+          @click="addChannel = 'netease'"
+        >
           <b>网易官方</b>
           <i>官网网页扫码</i>
         </button>
@@ -266,7 +338,13 @@ function confirmRename() {
 
       <p class="mlabel">登录方式</p>
       <div class="meths">
-        <button v-for="m in methods" :key="m.v" class="meth" :class="{ on: addMethod === m.v }" @click="addMethod = m.v">
+        <button
+          v-for="m in methods"
+          :key="m.v"
+          class="meth"
+          :class="{ on: addMethod === m.v }"
+          @click="addMethod = m.v"
+        >
           <span class="methico"><component :is="m.icon" /></span>
           <span class="mtxt2">
             <b>{{ m.label }}</b>
@@ -276,7 +354,9 @@ function confirmRename() {
         </button>
       </div>
 
-      <p class="mhint">演示环境不弹真实二维码，点击「模拟扫码成功」完成添加。</p>
+      <p class="mhint">
+        演示环境不弹真实二维码，点击「模拟扫码成功」完成添加。
+      </p>
       <div class="mfoot">
         <button class="btn primary" @click="confirmAdd">模拟扫码成功</button>
       </div>
@@ -284,97 +364,153 @@ function confirmRename() {
   </div>
 
   <!-- 多开 -->
-  <div v-if="demoUi.multiOpen" class="mask" @click.self="demoUi.multiOpen = false">
+  <div
+    v-if="demoUi.multiOpen"
+    class="mask"
+    @click.self="demoUi.multiOpen = false"
+  >
     <div class="modal wide">
       <div class="mhead">
-        <b>多开<em v-if="toLaunch" class="mcount">{{ toLaunch }} 个待启动</em></b>
+        <b
+          >多开<em v-if="toLaunch" class="mcount"
+            >{{ toLaunch }} 个待启动</em
+          ></b
+        >
         <button class="mclose" @click="demoUi.multiOpen = false"><X /></button>
       </div>
 
       <p class="mlabel">选择账号</p>
       <div class="mlist">
         <label v-for="a in store.accounts" :key="a.id" class="mrow">
-          <input type="checkbox" :checked="picked.includes(a.id)" @change="togglePick(a.id)" />
-          <span class="ava">{{ a.name.slice(0, 1) }}</span>
+          <input
+            type="checkbox"
+            :checked="picked.includes(a.id)"
+            @change="togglePick(a.id)"
+          />
+          <span class="ava">{{ shownName(a).slice(0, 1) }}</span>
           <span class="mtxt">
-            <b>{{ a.name }}</b>
+            <b>{{ shownName(a) }}</b>
             <i>
               <em v-if="a.running" class="dot ok live" />
               <em v-else-if="a.cred === 'expired'" class="dot bad" />
-              {{ a.running ? "运行中 · " + fmtRun(a.runSeconds) : a.cred === "expired" ? "凭证过期（将自动刷新）" : "就绪" }}
+              {{
+                a.running
+                  ? "运行中 · " + fmtRun(a.runSeconds)
+                  : a.cred === "expired"
+                    ? "凭证过期（将自动刷新）"
+                    : "就绪"
+              }}
             </i>
           </span>
           <span class="pill">{{ channelLabel(a.channel) }}</span>
         </label>
       </div>
 
-      <p class="mlabel">显示方式<em class="mrec">{{ cascadeOnly ? "超过 4 个不建议平铺，堆叠 / 全屏都可以" : "全屏 = 每个都占整屏，用监控墙切换" }}</em></p>
-      <div class="segs">
-        <button :class="{ on: display === 'tile', off: cascadeOnly }" :disabled="cascadeOnly" :title="cascadeOnly ? '超过 4 个窗口放不下平铺' : ''" @click="display = 'tile'">窗口平铺</button>
-        <button :class="{ on: display === 'cascade' }" @click="display = 'cascade'">窗口堆叠</button>
-        <button :class="{ on: display === 'fullscreen' }" @click="display = 'fullscreen'">全屏</button>
-      </div>
-
-      <template v-if="display === 'tile'">
-        <p class="mlabel">窗口平铺<em class="mrec">全屏客户端会自动转窗口模式 · 每格保持 16:9 · 窗口出一个排一个</em></p>
-        <div class="lays">
-          <button
-            v-for="l in [...LAYOUTS, LAYOUT_NONE]"
-            :key="l.key"
-            class="lay"
-            :class="{ on: layoutKey === l.key, dim: l.max < toLaunch }"
-            @click="layoutKey = l.key"
-          >
-            <em v-if="l.key === recKey && toLaunch > 1" class="recl">推荐</em>
-            <span v-if="l.cols > 0" class="mini" :style="{ gridTemplateColumns: `repeat(${l.cols}, 1fr)` }">
-              <i v-for="n in l.cols * l.rows" :key="n" :class="{ fill: n <= toLaunch }" />
-            </span>
-            <span v-else class="mini none"><LayoutGrid /></span>
-            <b>{{ l.label }}</b>
-            <i v-if="l.max < 99">≤ {{ l.max }} 个</i>
-          </button>
-        </div>
-      </template>
-      <p v-else-if="display === 'cascade'" class="mhint">窗口堆叠：每个都露出标题条可点选；也可用监控墙。</p>
-      <div v-if="display === 'cascade'" class="schemes">
+      <p class="mlabel">
+        窗口安排<em class="mrec">按实际可用桌面和游戏最小窗口推荐</em>
+      </p>
+      <div class="layout-choices">
         <button
-          v-for="s in cascadeSchemes"
-          :key="s.v"
-          class="scheme"
-          :class="{ on: cascadeScheme === s.v }"
-          :title="s.tip"
-          @click="pickScheme(s.v)"
+          v-for="option in layoutPlan?.options || []"
+          :key="option.id"
+          :class="{ on: layoutPlan?.mode === option.id }"
+          :disabled="!option.enabled || submitting"
+          :title="option.reason || option.description"
+          @click="chosenMode = option.id"
         >
-          <svg viewBox="0 0 22 14" width="22" height="14" aria-hidden="true" v-html="s.icon" />
-          <span>{{ s.label }}</span>
+          <b
+            >{{ option.label
+            }}<em v-if="layoutPlan?.recommendedMode === option.id">推荐</em></b
+          ><span>{{ option.description }}</span
+          ><small v-if="!option.enabled">{{ option.reason }}</small>
         </button>
       </div>
-      <p v-else class="mhint">全屏：每个客户端都占满整屏叠在一起，只露最上面那个；点监控墙的小窗切换到对应的号。</p>
-
-      <!-- 自定义窗口大小：暂隐藏（用户要求）。逻辑保留：v-if 换成 true 即可恢复 -->
-      <template v-if="false && display !== 'fullscreen'">
-        <p class="mlabel">窗口大小<em class="mrec">留空 = {{ display === 'cascade' ? '引擎最小尺寸（1024×720）' : '铺满格子' }}</em></p>
-        <div class="sizerow">
-          <input v-model="customW" class="minput size" type="number" min="100" placeholder="宽" />
-          <span class="sizex">×</span>
-          <input v-model="customH" class="minput size" type="number" min="100" placeholder="高" />
-          <span class="sizehint">游戏有最小尺寸限制时，实际大小以游戏为准</span>
+      <p v-if="planLoading" class="mhint" role="status">正在更新窗口安排…</p>
+      <p v-if="planError || multiError" class="plan-warning" role="alert">
+        {{ planError || multiError }}
+        <button @click="planner.retry">重试</button>
+      </p>
+      <p v-else-if="layoutPlan?.reason" class="plan-warning">
+        {{ layoutPlan.reason }}
+      </p>
+      <div v-if="layoutPlan && !planLoading" class="multi-preview-row">
+        <div
+          class="multi-canvas"
+          :style="{
+            aspectRatio: layoutPlan.screenW + '/' + layoutPlan.screenH,
+          }"
+        >
+          <div
+            v-for="(r, i) in layoutPlan.rects"
+            :key="i"
+            class="multi-window"
+            :style="previewRectStyle(r)"
+            :title="
+              (previewAccounts[i] ? shownName(previewAccounts[i]) : '') +
+              ' · 层级 ' +
+              (r.zOrder || i + 1)
+            "
+          >
+            <b>{{ i + 1 }}</b>
+          </div>
+          <p v-if="layoutPlan.mode === 'fullscreen'">
+            专注操作一个账号<br />其他账号后台运行
+          </p>
         </div>
-      </template>
+        <p class="mhint">
+          可用桌面 {{ layoutPlan.workArea.w }}×{{ layoutPlan.workArea.h
+          }}<br />最小窗口 {{ layoutPlan.minW }}×{{ layoutPlan.minH }}<br />{{
+            toLaunch === 1
+              ? "单窗口居中，不强行铺满。"
+              : "数字为启动顺序；遮挡时用监控墙切换。"
+          }}
+        </p>
+      </div>
+      <p v-if="toLaunch >= 5" class="mhint">
+        账号较多时，标题与画面无法同时全部展开，建议配合监控墙使用。
+      </p>
 
-      <p class="mlabel">画质<em class="mrec">启动前写进每个客户端，也是默认值</em></p>
+      <p class="mlabel">
+        画质<em class="mrec">启动前写进每个客户端，也是默认值</em>
+      </p>
       <div class="segs">
-        <button v-for="o in qualityOpts" :key="'q' + o.v" :class="{ on: qMode === o.v }" :title="o.tip" @click="pickQuality(o.v)">{{ o.label }}</button>
+        <button
+          v-for="o in qualityOpts"
+          :key="'q' + o.v"
+          :class="{ on: qMode === o.v }"
+          :title="o.tip"
+          @click="pickQuality(o.v)"
+        >
+          {{ o.label }}
+        </button>
       </div>
       <p class="mlabel">帧率</p>
       <div class="segs">
-        <button v-for="o in fpsOpts" :key="'f' + o.v" :class="{ on: qFps === o.v }" @click="pickFps(o.v)">{{ o.label }}</button>
+        <button
+          v-for="o in fpsOpts"
+          :key="'f' + o.v"
+          :class="{ on: qFps === o.v }"
+          @click="pickFps(o.v)"
+        >
+          {{ o.label }}
+        </button>
       </div>
 
-      <p class="mlabel">鼠标仲裁<em class="mrec">多开启动后的 {{ arbiterEnabled ? arbiterMin + " 分钟内" : "——已关" }}，自动释放后台客户端抢走的鼠标</em></p>
+      <p class="mlabel">
+        鼠标仲裁<em class="mrec"
+          >多开启动后的
+          {{
+            arbiterEnabled ? arbiterMin + " 分钟内" : "——已关"
+          }}，自动释放后台客户端抢走的鼠标</em
+        >
+      </p>
       <div class="sizerow">
         <label class="form-check arbiter-toggle">
-          <input type="checkbox" :checked="arbiterEnabled" @change="pickArbiter(!arbiterEnabled)" />
+          <input
+            type="checkbox"
+            :checked="arbiterEnabled"
+            @change="pickArbiter(!arbiterEnabled)"
+          />
           <span>进大厅后自动释放被抢走的鼠标</span>
         </label>
         <input
@@ -389,10 +525,35 @@ function confirmRename() {
         <span class="sizehint">分钟（1~60）</span>
       </div>
 
+      <p class="mlabel">
+        自动进入<em class="mrec"
+          >等这批窗口全部排好、监控墙拉起之后，每个客户端在 10 秒内自动点它的
+          播放按钮；超时就放弃，不会在游戏里乱点</em
+        >
+      </p>
+      <div class="sizerow">
+        <label class="form-check">
+          <input
+            type="checkbox"
+            :checked="autoEnterMulti"
+            @change="pickAutoEnterMulti(!autoEnterMulti)"
+          />
+          <span>多开时自动点进游戏</span>
+        </label>
+      </div>
+
       <div class="mfoot">
         <span class="mhint">第 2 个起从镜像目录启动，不占额外磁盘</span>
-        <button class="btn primary" :disabled="!toLaunch" @click="confirmMulti">
-          一起启动（{{ toLaunch }}{{ display === "fullscreen" ? " · 全屏" : display === "cascade" ? " · 窗口堆叠" : curLayout.cols > 0 && toLaunch > 1 ? " · " + curLayout.label : "" }}{{ display !== "fullscreen" && customSize ? " · " + customSize.w + "×" + customSize.h : "" }}）
+        <button
+          class="btn primary"
+          :disabled="!toLaunch || submitting"
+          @click="confirmMulti"
+        >
+          {{
+            submitting
+              ? "正在确认布局…"
+              : `一起启动（${toLaunch} · ${layoutPlan ? layoutLabel(layoutPlan.mode) : "等待规划"}）`
+          }}
         </button>
       </div>
     </div>
@@ -405,7 +566,13 @@ function confirmRename() {
         <b>修改别名</b>
         <button class="mclose" @click="demoUi.renameId = ''"><X /></button>
       </div>
-      <input v-model="renameText" class="minput" maxlength="24" placeholder="最多 24 个字" @keyup.enter="confirmRename" />
+      <input
+        v-model="renameText"
+        class="minput"
+        maxlength="24"
+        placeholder="最多 24 个字"
+        @keyup.enter="confirmRename"
+      />
       <div class="mfoot">
         <button class="btn primary" @click="confirmRename">保存</button>
       </div>
@@ -419,24 +586,50 @@ function confirmRename() {
         <b>创建副本</b>
         <button class="mclose" @click="demoUi.dupId = ''"><X /></button>
       </div>
-      <p class="mhint">为「{{ dupAccount?.name }}」创建一条副本记录；副本与原记录共用凭证，游戏内互相独立。</p>
-      <input v-model="dupName" class="minput" maxlength="24" placeholder="副本名称" @keyup.enter="confirmDup" />
+      <p class="mhint">
+        为「{{
+          dupAccount?.name
+        }}」创建一条副本记录；副本与原记录共用凭证，游戏内互相独立。
+      </p>
+      <input
+        v-model="dupName"
+        class="minput"
+        maxlength="24"
+        placeholder="副本名称"
+        @keyup.enter="confirmDup"
+      />
       <!-- 副本可以单独选区：同一账号在安卓、iOS 各玩一个角色 -->
       <div v-if="dupCanPickRegion" class="qsec">
         <div class="qlabel2">渠道</div>
         <div class="qpills">
-          <button :class="{ on: dupRegion === '' }" @click="dupRegion = ''">先不选</button>
-          <button :class="{ on: dupRegion === 'android' }" @click="dupRegion = 'android'">安卓</button>
-          <button :class="{ on: dupRegion === 'ios' }" @click="dupRegion = 'ios'">iOS</button>
+          <button :class="{ on: dupRegion === '' }" @click="dupRegion = ''">
+            先不选
+          </button>
+          <button
+            :class="{ on: dupRegion === 'android' }"
+            @click="dupRegion = 'android'"
+          >
+            安卓
+          </button>
+          <button
+            :class="{ on: dupRegion === 'ios' }"
+            @click="dupRegion = 'ios'"
+          >
+            iOS
+          </button>
         </div>
         <p class="qnote">选了渠道后，启动这个副本时游戏不会再问选哪个区。</p>
       </div>
       <p v-if="dupExisting.length" class="dupwarn">
-        该账号已创建过 {{ dupExisting.length }} 条副本（{{ dupExisting.map((a) => a.name).join("、") }}）。可以继续创建多条，确认继续吗？
+        该账号已创建过 {{ dupExisting.length }} 条副本（{{
+          dupExisting.map((a) => a.name).join("、")
+        }}）。可以继续创建多条，确认继续吗？
       </p>
       <div class="mfoot">
         <button class="btn" @click="demoUi.dupId = ''">取消</button>
-        <button class="btn primary" @click="confirmDup">{{ dupExisting.length ? "继续创建" : "创建" }}</button>
+        <button class="btn primary" @click="confirmDup">
+          {{ dupExisting.length ? "继续创建" : "创建" }}
+        </button>
       </div>
     </div>
   </div>
@@ -456,22 +649,56 @@ function confirmRename() {
       <div class="qsec">
         <div class="qlabel2">画质</div>
         <div class="qpills">
-          <button v-for="o in accountQualityOpts" :key="'qq' + o.v" :class="{ on: qModeRow === o.v }" :title="o.tip"
-            @click="qModeRow = o.v">{{ o.label }}</button>
+          <button
+            v-for="o in accountQualityOpts"
+            :key="'qq' + o.v"
+            :class="{ on: qModeRow === o.v }"
+            :title="o.tip"
+            @click="qModeRow = o.v"
+          >
+            {{ o.label }}
+          </button>
         </div>
       </div>
       <div class="qsec">
         <div class="qlabel2">帧率</div>
         <div class="qpills">
-          <button v-for="o in accountFpsOpts" :key="'qf' + o.v" :class="{ on: qFpsRow === o.v }"
-            @click="qFpsRow = o.v">{{ o.label }}</button>
+          <button
+            v-for="o in accountFpsOpts"
+            :key="'qf' + o.v"
+            :class="{ on: qFpsRow === o.v }"
+            @click="qFpsRow = o.v"
+          >
+            {{ o.label }}
+          </button>
         </div>
       </div>
       <div class="qsec">
         <div class="qlabel2">显示</div>
         <div class="qpills">
-          <button v-for="o in displayOpts" :key="'qd' + o.v" :class="{ on: qDisplayRow === o.v }" :title="o.tip"
-            @click="qDisplayRow = o.v">{{ o.label }}</button>
+          <button
+            v-for="o in displayOpts"
+            :key="'qd' + o.v"
+            :class="{ on: qDisplayRow === o.v }"
+            :title="o.tip"
+            @click="qDisplayRow = o.v"
+          >
+            {{ o.label }}
+          </button>
+        </div>
+      </div>
+      <div class="qsec">
+        <div class="qlabel2">自动进入</div>
+        <div class="qpills">
+          <button
+            v-for="o in autoEnterOpts"
+            :key="'qa' + String(o.v)"
+            :class="{ on: qAutoEnterRow === o.v }"
+            :title="o.tip"
+            @click="qAutoEnterRow = o.v"
+          >
+            {{ o.label }}
+          </button>
         </div>
       </div>
 
@@ -487,7 +714,11 @@ function confirmRename() {
 
   <!-- 启动组：整屏面板（不是小弹窗）。它是一套配置编辑器，要摆表格和画布，
        塞进 400 宽的弹层里会变成两列都读不清 -->
-  <LaunchGroups v-if="demoUi.groupsOpen" :store="store" @close="demoUi.closeGroups()" />
+  <LaunchGroups
+    v-if="demoUi.groupsOpen"
+    :store="store"
+    @close="demoUi.closeGroups()"
+  />
 
   <!-- 吐司：有批量操作条时往上抬 -->
   <div class="toasts" :class="{ lifted: store.selectedIds.length }">
@@ -496,6 +727,90 @@ function confirmRename() {
 </template>
 
 <style scoped>
+.layout-choices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.layout-choices button {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  text-align: left;
+  background: transparent;
+  color: #a5a29c;
+  font: inherit;
+  cursor: pointer;
+}
+.layout-choices button.on {
+  border-color: #d8b47c;
+  background: rgba(216, 180, 124, 0.07);
+}
+.layout-choices button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.layout-choices b {
+  color: #f4f2ef;
+  font-size: 13px;
+}
+.layout-choices span,
+.layout-choices small {
+  font-size: 12px;
+  line-height: 1.5;
+}
+.layout-choices em {
+  color: #d8b47c;
+  font-size: 11px;
+  font-style: normal;
+  margin-left: 8px;
+}
+.multi-preview-row {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin-top: 12px;
+}
+.multi-canvas {
+  position: relative;
+  flex: none;
+  width: 200px;
+  background: #101012;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  overflow: hidden;
+  border-radius: 4px;
+}
+.multi-window {
+  position: absolute;
+  border: 1px solid #a58c69;
+  background: #29251f;
+}
+.multi-window b {
+  display: block;
+  padding: 1px 3px;
+  font-size: 11px;
+  color: #d8b47c;
+  background: #393127;
+}
+.multi-canvas > p {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  margin: 0;
+  color: #a5a29c;
+  font-size: 12px;
+}
+.plan-warning {
+  color: #d49788;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .mask {
   position: fixed;
   inset: 0;
@@ -597,7 +912,9 @@ function confirmRename() {
   font-family: inherit;
   text-align: left;
   cursor: pointer;
-  transition: border-color 0.15s ease-out, background-color 0.15s ease-out;
+  transition:
+    border-color 0.15s ease-out,
+    background-color 0.15s ease-out;
 }
 .chans button:hover {
   background: rgba(255, 255, 255, 0.06);
@@ -635,7 +952,9 @@ function confirmRename() {
   font-family: inherit;
   text-align: left;
   cursor: pointer;
-  transition: border-color 0.15s ease-out, background-color 0.15s ease-out;
+  transition:
+    border-color 0.15s ease-out,
+    background-color 0.15s ease-out;
 }
 .meth:hover {
   background: rgba(255, 255, 255, 0.06);
@@ -767,7 +1086,9 @@ function confirmRename() {
   color: inherit;
   font-family: inherit;
   cursor: pointer;
-  transition: border-color 0.15s ease-out, background-color 0.15s ease-out;
+  transition:
+    border-color 0.15s ease-out,
+    background-color 0.15s ease-out;
 }
 .lay:hover {
   background: rgba(255, 255, 255, 0.06);

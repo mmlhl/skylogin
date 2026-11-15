@@ -4,21 +4,21 @@
  * 卡片即账号，启动 / 停止 / 刷新都在卡上，多账号时最直观。
  */
 import { ref } from "vue";
-import { Square, Layers, Plus, Eye, EyeOff, Settings, MoreHorizontal, Play, RefreshCw, LayoutDashboard, SlidersHorizontal } from "lucide-vue-next";
-import type { LauncherStore } from "../contract";
+import { Square, Layers, Plus, Eye, EyeOff, Settings, MoreHorizontal, Play, RefreshCw, LayoutDashboard, ArrowUp, ArrowDown } from "lucide-vue-next";
+import { channelLabel, fmtRun, type Account, type LauncherStore } from "../contract";
+import { demoUi } from "../ui";
+import { useAccountBrowser } from "../useAccountBrowser";
+import AccountBrowserBar from "../AccountBrowserBar.vue";
+import AccountSectionHeader from "../AccountSectionHeader.vue";
+import AccountTags from "../AccountTags.vue";
 
 const props = defineProps<{ store: LauncherStore }>();
-const store = props.store;import { demoUi } from "../ui";
-import { channelLabel, fmtRun, type Account } from "../contract";
+const store = props.store;
+const browser = useAccountBrowser(store);
 
 const menuFor = ref("");
-function menuOf(a: Account) {
-  return menuFor.value === a.id;
-}
-function cardAction(a: Account) {
-  if (a.running) store.stop(a.id);
-  else if (a.cred === "expired") store.refreshCred(a.id);
-  else store.launch(a.id);
+function menuOf(sectionKey: string, a: Account) {
+  return menuFor.value === `${sectionKey}:${a.id}`;
 }
 </script>
 
@@ -27,6 +27,7 @@ function cardAction(a: Account) {
     <div class="toolbar">
       <h2>账号库<span class="count mono">{{ store.accounts.length }}</span></h2>
       <div class="tools">
+        <button class="btn groups-entry" @click="demoUi.openGroups()"><Layers />启动组</button>
         <button class="btn" @click="demoUi.openMulti()"><Layers />多开</button>
         <button class="btn soft" @click="store.addAccount()"><Plus />添加账号</button>
         <span class="tsep" />
@@ -38,49 +39,64 @@ function cardAction(a: Account) {
       </div>
     </div>
 
-    <p v-if="!store.accounts.length" class="empty">还没有账号，点右上「添加账号」开始</p>
+    <AccountBrowserBar class="browserbar" :browser="browser" :store="store" />
 
-    <div class="grid">
-      <div
-        v-for="a in store.accounts"
-        :key="a.id"
-        class="gcard"
-        :class="{ on: a.current, run: a.running, bad: a.cred === 'expired' }"
-        @click="store.select(a.id)"
-      >
-        <div class="gtop">
-          <input
-            type="checkbox"
-            class="sel"
-            :checked="store.selectedIds.includes(a.id)"
-            title="选中该账号"
-            @click.stop
-            @change="store.toggleSelect(a.id)"
-          />
-          <span class="gava">{{ a.name.slice(0, 1) }}</span>
-          <span class="pill">{{ channelLabel(a.channel) }}</span>
-          <button class="ico gmore" @click.stop="menuFor = menuFor === a.id ? '' : a.id"><MoreHorizontal /></button>
-          <template v-if="menuOf(a)">
-            <div class="menubg" @click.stop="menuFor = ''" />
-            <div class="menu" @click.stop>
-              <button @click="store.refreshCred(a.id); menuFor = ''">刷新凭证</button>
-              <button @click="demoUi.openQuality(a.id); menuFor = ''">游戏设置</button>
-              <button @click="demoUi.openRename(a.id); menuFor = ''">修改别名</button>
-              <button class="del" @click="store.remove(a.id); menuFor = ''">删除账号</button>
+    <div class="account-sections">
+      <p v-if="!browser.visibleCount.value" class="empty">{{ store.accounts.length ? '没有匹配的账号，试试其他搜索条件' : '还没有账号，点右上「添加账号」开始' }}</p>
+      <section v-for="sec in browser.sections.value" :key="sec.key" class="account-section">
+        <AccountSectionHeader v-if="browser.view.value !== 'flat'" :browser="browser" :section="sec" />
+        <div v-if="!browser.isCollapsed(sec)" class="grid">
+          <div
+            v-for="(a, index) in sec.rows"
+            :key="a.id"
+            class="gcard"
+            :class="{ on: a.current, picked: store.selectedIds.includes(a.id), run: a.running, bad: a.cred === 'expired' }"
+            tabindex="0"
+            :aria-label="'选择账号：' + browser.displayName(a)"
+            @keydown.enter.self.prevent="store.select(a.id)"
+            @keydown.space.self.prevent="store.select(a.id)"
+            @click="store.select(a.id)"
+          >
+            <div class="gtop">
+              <input
+                type="checkbox"
+                class="sel"
+                :checked="store.selectedIds.includes(a.id)"
+                title="选中该账号"
+                @click.stop
+                @change="store.toggleSelect(a.id)"
+              />
+              <span class="gava">{{ browser.displayName(a).slice(0, 1) }}</span>
+              <span class="pill">{{ channelLabel(a.channel) }}</span>
+              <button class="ico gmore" @click.stop="menuFor = menuOf(sec.key, a) ? '' : sec.key + ':' + a.id"><MoreHorizontal /></button>
+              <template v-if="menuOf(sec.key, a)">
+                <div class="menubg" @click.stop="menuFor = ''" />
+                <div class="menu" @click.stop>
+                  <button @click="store.refreshCred(a.id); menuFor = ''">刷新凭证</button>
+                  <button @click="demoUi.openQuality(a.id); menuFor = ''">游戏设置</button>
+                  <button @click="demoUi.openRename(a.id); menuFor = ''">修改别名</button>
+                  <button class="del" @click="store.remove(a.id); menuFor = ''">删除账号</button>
+                </div>
+              </template>
             </div>
-          </template>
+            <p class="gname" :title="browser.displayName(a)">{{ browser.displayName(a) }}</p>
+            <div class="card-tags" @click.stop><AccountTags :store="store" :account="a" editable /></div>
+            <p class="gid mono" :title="browser.displayId(a)">{{ browser.displayId(a) }}<template v-if="a.level"> · 等级 {{ a.level }}</template></p>
+            <div class="account-order">
+              <button class="ico" title="上移账号" :disabled="browser.busy.value || !sec.draggable || index === 0" @click.stop="browser.moveAccount(sec, a.id, -1)"><ArrowUp /></button>
+              <button class="ico" title="下移账号" :disabled="browser.busy.value || !sec.draggable || index === sec.rows.length - 1" @click.stop="browser.moveAccount(sec, a.id, 1)"><ArrowDown /></button>
+            </div>
+            <div class="gfoot">
+              <span v-if="a.running" class="gstate live"><em class="dot ok live" />运行中 · {{ fmtRun(a.runSeconds) }}</span>
+              <span v-else-if="a.cred === 'expired'" class="gstate exp"><em class="dot bad" />凭证过期</span>
+              <span v-else class="gstate"><em class="dot ok" />就绪</span>
+              <button v-if="a.running" class="btn sm" @click.stop="store.stop(a.id)"><Square />停止</button>
+              <button v-else-if="a.cred === 'expired'" class="btn sm danger" @click.stop="store.refreshCred(a.id)"><RefreshCw />刷新凭证</button>
+              <button v-else class="btn sm primary" @click.stop="store.launch(a.id)"><Play />启动</button>
+            </div>
+          </div>
         </div>
-        <p class="gname">{{ store.maskAll ? a.maskedName : a.name }}</p>
-        <p class="gid mono">{{ store.maskAll ? a.maskedId : a.fullId }}<template v-if="a.level"> · 等级 {{ a.level }}</template></p>
-        <div class="gfoot">
-          <span v-if="a.running" class="gstate live"><em class="dot ok live" />运行中 · {{ fmtRun(a.runSeconds) }}</span>
-          <span v-else-if="a.cred === 'expired'" class="gstate exp"><em class="dot bad" />凭证过期</span>
-          <span v-else class="gstate"><em class="dot ok" />就绪</span>
-          <button v-if="a.running" class="btn sm" @click.stop="store.stop(a.id)"><Square />停止</button>
-          <button v-else-if="a.cred === 'expired'" class="btn sm danger" @click.stop="store.refreshCred(a.id)"><RefreshCw />刷新凭证</button>
-          <button v-else class="btn sm primary" @click.stop="store.launch(a.id)"><Play />启动</button>
-        </div>
-      </div>
+      </section>
     </div>
 
     <div class="sbar">
@@ -157,17 +173,26 @@ function cardAction(a: Account) {
   font-size: 13px;
   color: var(--faint);
 }
-.grid {
+.win .browserbar {
+  padding: 0 28px 14px;
+}
+.account-sections {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(296px, 1fr));
-  gap: 14px;
-  align-content: start;
   padding: 4px 28px 20px;
 }
+.account-section + .account-section {
+  margin-top: 18px;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(296px, 100%), 1fr));
+  gap: 14px;
+  align-content: start;
+}
 .gcard {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   padding: 16px 16px 14px;
@@ -211,6 +236,7 @@ function cardAction(a: Account) {
   opacity: 1;
 }
 .gava {
+  flex: none;
   display: grid;
   place-items: center;
   width: 34px;
@@ -261,20 +287,42 @@ function cardAction(a: Account) {
   color: var(--bad);
 }
 .gname {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   margin: 12px 0 0;
   font-size: 16.5px;
   font-weight: 600;
   letter-spacing: -0.01em;
 }
 .gid {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   margin: 3px 0 0;
   color: var(--faint);
 }
+.card-tags {
+  margin-top: 8px;
+  min-width: 0;
+}
+.account-order {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-top: 8px;
+}
+.account-order button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
 .gfoot {
+  gap: 8px;
+  flex-wrap: wrap;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 16px;
+  margin-top: 8px;
   padding-top: 12px;
   border-top: 1px solid var(--line);
 }
@@ -307,4 +355,8 @@ function cardAction(a: Account) {
   align-items: center;
   gap: 7px;
 }
+.gcard.on { box-shadow:inset 0 0 0 1px var(--acc); }
+.gcard.picked { background:color-mix(in srgb,var(--acc) 7%,var(--s1)); }
+.gcard:focus-visible,.gcard button:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+.gcard:focus-within .sel { opacity:1; }
 </style>

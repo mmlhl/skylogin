@@ -2,14 +2,13 @@ package app
 
 // 监控墙管理：开关切换 + 开着时把客户端观测每秒喂给墙。
 //
-// 墙窗口本身在 internal/win（原生窗口 + DWM 缩略图）。这里不做任何
-// "变了没有"的判定——投递纯粹是观测（主窗、标签、有无弹窗），缩略图
-// 何时重建由墙线程根据自己持有的状态决定（episode 收尾模型），投递
-// 丢失也不会漂移。
+// 墙窗口本身在 internal/win（原生窗口 + DWM 缩略图）。这里仅投递只读观测，
+// 墙线程比较已应用状态：内容未变就不重绘、不重注册缩略图、不改变窗口。
+// 画面由 DWM 持续合成；墙开启时把用户最小化转换为全透明、鼠标穿透的后台收起，
+// 以保留渲染，点选或手动重排才恢复可见，不在周期观测中反复恢复窗口。
 
 import (
 	"fmt"
-	"math"
 	"sync"
 	"time"
 
@@ -46,6 +45,8 @@ func ensureWallHooks() {
 				"stopall": wallStopAll,
 			},
 			StopClient: wallStopClient,
+			SaveTarget: wallSaveTarget,
+			SaveGroup:  wallSaveGroup,
 		})
 	})
 }
@@ -59,16 +60,19 @@ func wallArrange(mode string) error {
 	if len(cells) == 0 {
 		return fmt.Errorf("没有正在运行的客户端")
 	}
+	info := win.CurrentLayoutPlan(win.LayoutRequest{Count: len(cells), Mode: mode})
+	if info.Reason != "" {
+		setLaunchAlert("排列方案已调整", info.Reason)
+	}
+	mode = info.Mode
+	win.SetWallLayoutMode(mode)
 	var moved int
 	if mode == "fullscreen" {
 		moved = win.ArrangeFullscreen(cells)
 	} else if isCascade, scheme := win.SplitCascadeMode(mode); isCascade {
 		moved = win.ArrangeByScheme(cells, scheme, 0, 0)
 	} else {
-		n := len(cells)
-		cols := int(math.Ceil(math.Sqrt(float64(n))))
-		rows := (n + cols - 1) / cols
-		moved = win.ArrangeByGrid(cells, cols, rows, 0, 0)
+		moved = win.ArrangeByGrid(cells, 0, 0, 0, 0)
 	}
 	if moved == 0 {
 		return fmt.Errorf("窗口没排动：全屏切不回窗口模式（详见日志）或权限不足")

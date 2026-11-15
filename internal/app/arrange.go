@@ -48,15 +48,9 @@ func runningPids() []uint32 {
 // w/h > 0 时用自定义窗口尺寸，否则每格 = 工作区均分。
 // 顺带把每个窗口标题改成「序号 · 账号名」，不然一排窗口全叫"光遇"。
 func arrangeClients(cols, rows, w, h int) (string, error) {
-	if cols < 1 || rows < 1 {
-		return "", fmt.Errorf("排列参数不对")
-	}
 	pids := runningPids()
 	if len(pids) == 0 {
 		return "", fmt.Errorf("没有正在运行的客户端")
-	}
-	if cols*rows < len(pids) {
-		return "", fmt.Errorf("%d 个窗口放不进 %d×%d 的网格", len(pids), cols, rows)
 	}
 	if win.CountClientWindows(pids) == 0 {
 		return "", fmt.Errorf("客户端窗口还没出现（游戏可能还在启动）")
@@ -134,38 +128,52 @@ func takeArrangeRects() []win.TargetRect {
 // 全部就位后，3 个以上会自动打开监控墙（多开的主要查看方式，
 // 全屏模式下切换客户端全靠它）。
 func arrangeWhenReady(cols, rows, w, h int, mode string) {
-	isCascade, _ := win.SplitCascadeMode(mode)
-	if !isCascade && mode != "fullscreen" && mode != "rects" && (cols < 1 || rows < 1) {
-		return
+	generation := groupLaunchGeneration.Load()
+	originalCells := clientCells()
+	originalPIDs := make([]uint32, len(originalCells))
+	for i, c := range originalCells {
+		originalPIDs[i] = c.PID
 	}
+	pendingRects := takeArrangeRects()
 	go func() {
+		// 排列结束（或提前放弃）就是"窗口这轮稳定了"：放行自动进入的等待方。
+		// 放在 defer 里，任何 return 路径都不会把等待方挂死。
+		defer releaseAutoEnterBatch()
 		if mode == "fullscreen" {
 			// 等第一个窗口出来，再给游戏两秒自行恢复全屏
 			deadline := time.Now().Add(3 * time.Minute)
 			for time.Now().Before(deadline) {
 				time.Sleep(1 * time.Second)
-				if len(runningPids()) == 0 {
+				if groupLaunchGeneration.Load() != generation {
 					return
 				}
-				if win.CountClientWindows(runningPids()) >= 1 {
+				if len(liveArrangementCells(originalCells, generation, groupLaunchGeneration.Load(), fever.ProcessAlive)) == 0 {
+					return
+				}
+				if win.CountClientWindows(originalPIDs) >= 1 {
 					break
 				}
 			}
 			time.Sleep(2 * time.Second)
-			autoOpenWall()
+			if groupLaunchGeneration.Load() == generation {
+				autoOpenWall()
+			}
 			return
 		}
 
 		// 启动批次快照：这一批 pid 的"发票成功"作为排列的业务信号——
 		// 票据发出且被游戏接受 = 凭证链路已通、客户端已站稳。比纯看窗口
 		// 出现靠谱：窗口出现时引擎还在初始化，也分不清凭证有没有问题。
-		batch := runningPids()
+		batch := append([]uint32(nil), originalPIDs...)
 		crashed := []string{}
 		waitDeadline := time.Now().Add(3 * time.Minute)
 		allSentAt := time.Time{}
 		for time.Now().Before(waitDeadline) {
 			time.Sleep(500 * time.Millisecond)
-			if len(runningPids()) == 0 && len(batch) == 0 {
+			if groupLaunchGeneration.Load() != generation {
+				return
+			}
+			if len(batch) == 0 {
 				return
 			}
 			st := batchStatus(batch)
@@ -207,7 +215,7 @@ func arrangeWhenReady(cols, rows, w, h int, mode string) {
 					strings.Join(dedupeStrings(crashed), "、")))
 		}
 
-		cells := clientCells()
+		cells := liveArrangementCells(originalCells, generation, groupLaunchGeneration.Load(), fever.ProcessAlive)
 		if len(cells) == 0 {
 			logf("自动排列：没有存活客户端，跳过")
 			return
@@ -216,7 +224,7 @@ func arrangeWhenReady(cols, rows, w, h int, mode string) {
 		// 有记录的位置就按位置摆；没有就按排列方式算。
 		// 位置模式的矩形已经在启动前 setArrangeRects 预置好了。
 		var moved int
-		if rects := takeArrangeRects(); len(rects) >= len(cells) {
+		if rects := pendingRects; len(rects) >= len(originalCells) && len(cells) == len(originalCells) {
 			moved = win.ArrangeByRects(cells, rects)
 		} else {
 			moved = win.ProgressiveArrange(cells, mode, cols, rows, w, h)
@@ -226,8 +234,26 @@ func arrangeWhenReady(cols, rows, w, h int, mode string) {
 			return
 		}
 		logf("自动排列: %d/%d 个客户端已就位", moved, len(cells))
-		autoOpenWall()
+		hostMu.Lock()
+		if groupLaunchGeneration.Load() == generation && len(liveArrangementCells(originalCells, generation, groupLaunchGeneration.Load(), fever.ProcessAlive)) > 0 {
+			autoOpenWall()
+		}
+		hostMu.Unlock()
 	}()
+}
+
+// liveArrangementCells 只允许原批次当前仍活着的窗口；世代变化后旧任务立即失效。
+func liveArrangementCells(cells []win.ClientCell, generation, current uint64, alive func(uint32) bool) []win.ClientCell {
+	if generation != current {
+		return nil
+	}
+	out := make([]win.ClientCell, 0, len(cells))
+	for _, c := range cells {
+		if alive(c.PID) {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // liveBatchPids 从批次状态里挑出还活着的 pid。

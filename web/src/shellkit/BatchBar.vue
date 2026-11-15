@@ -7,6 +7,7 @@ import { computed } from "vue";
 import { Play, Square, Trash2, Layers, X, LayoutDashboard } from "lucide-vue-next";
 import type { LauncherStore } from "./contract";
 import { demoUi } from "./ui";
+import { activeShell } from "./appearance";
 
 const props = defineProps<{ store: LauncherStore }>();
 const store = props.store;
@@ -16,7 +17,7 @@ const count = computed(() => store.selectedIds.length);
 
 <template>
   <Transition name="bbar">
-    <div v-if="count" class="bbar">
+    <div v-if="count" class="bbar" :class="{ light: activeShell === 3 }">
       <span class="bcount">已选 {{ count }}</span>
       <span class="bsep" />
       <button class="bq" @click="store.selectAll()">全选</button>
@@ -115,4 +116,13 @@ const count = computed(() => store.selectedIds.length);
   opacity: 0;
   transform: translateX(-50%) translateY(8px);
 }
+/* 浅色主题沿用纸白与暖金，多选后工具条也保持一致的对比度。 */
+.bbar.light { background:rgba(255,255,255,.96); border-color:rgba(38,31,20,.18); box-shadow:0 12px 34px rgba(70,55,25,.16); }
+.bbar.light .bq,.bbar.light .bact:not(.primary) { color:#6e6759; }
+.bbar.light .bq:hover,.bbar.light .bact:not(.primary):hover { color:#26211a; background:rgba(38,31,20,.06); }
+.bbar.light .bsep { background:rgba(38,31,20,.15); }
+.bbar.light .bact.danger:hover { color:#bb5a45; background:rgba(187,90,69,.09); }
+.bbar { box-sizing:border-box; max-width:calc(100vw - 24px); }
+.bbar button:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+@media (max-width:900px) { .bbar { flex-wrap:wrap; justify-content:center; width:max-content; border-radius:16px; bottom:12px; } .bq,.bact { padding:0 7px; font-size:11px; } .bsep { margin:0 3px; } }
 </style>

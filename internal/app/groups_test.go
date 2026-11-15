@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
+
+	"skylogin/internal/web"
 )
 
 func TestSaveGroupRoundTrip(t *testing.T) {
@@ -66,9 +68,9 @@ func TestSaveGroupDedupesSlots(t *testing.T) {
 		Name: "去重",
 		Slots: []GroupSlot{
 			{AccountKey: "900"},
-			{AccountKey: "900"},       // 重复，应被丢掉
-			{AccountKey: "900-2"},     // 副本，保留
-			{AccountKey: ""},          // 空键，丢掉
+			{AccountKey: "900"},   // 重复，应被丢掉
+			{AccountKey: "900-2"}, // 副本，保留
+			{AccountKey: ""},      // 空键，丢掉
 		},
 	})
 	if err != nil {
@@ -104,8 +106,8 @@ func TestNormalizeGroupFallsBack(t *testing.T) {
 	if got.Name != "未命名启动组" {
 		t.Fatalf("空名字应兜底，实际 %q", got.Name)
 	}
-	if got.Layout != "tile" || got.Cols < 1 || got.Cols > 4 || got.Rows < 1 {
-		t.Fatalf("排列应兜底成平铺 1~4 网格，实际 %s %d×%d", got.Layout, got.Cols, got.Rows)
+	if got.Layout != "tile" || got.Cols < 1 || got.Cols > 16 || got.Rows < 1 || got.Rows > 16 {
+		t.Fatalf("排列名称应兜底，旧网格数据应保持在兼容范围，实际 %s %d×%d", got.Layout, got.Cols, got.Rows)
 	}
 	if got.DefMode != "" || got.DefFps != 0 || got.DefDisp != "" {
 		t.Fatalf("不认识的档位应清空，实际 %q/%d/%q", got.DefMode, got.DefFps, got.DefDisp)
@@ -180,5 +182,87 @@ func TestGroupsFileIsEncrypted(t *testing.T) {
 	var probe []LaunchGroup
 	if json.Unmarshal(b, &probe) == nil {
 		t.Fatal("启动组文件应该是加密的，不该能直接解析成 JSON")
+	}
+}
+
+// 普通保存不能把旧坐标重新盖章成当前屏幕；漏传基准时必须沿用旧记录。
+func TestSaveGroupPayloadPreservesCoordinateBasis(t *testing.T) {
+	setupStore(t, nil)
+	id, err := saveGroupFromPayload(web.GroupPayload{Name: "旧坐标", ScreenW: 1920, ScreenH: 1080, GapSec: 5, Slots: []web.GroupSlotPayload{{AccountKey: "a", HasRect: true, W: 800, H: 600}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = saveGroupFromPayload(web.GroupPayload{ID: id, Name: "只改名字", Slots: []web.GroupSlotPayload{{AccountKey: "a", HasRect: true, W: 800, H: 600}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := loadGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := list[0]
+	if g.ScreenW != 1920 || g.ScreenH != 1080 || g.Slots[0].W != 800 || g.GapSec != 0 {
+		t.Fatalf("旧基准和坐标应保留，废弃间隔应归零：%+v", g)
+	}
+	_, err = saveGroupFromPayload(web.GroupPayload{ID: id, Name: "重新记录", ScreenW: 2560, ScreenH: 1440})
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, _ = loadGroups()
+	if list[0].ScreenW != 2560 || list[0].ScreenH != 1440 {
+		t.Fatal("显式传入的新记录基准应更新")
+	}
+}
+
+func TestNewGroupWithoutBasisDoesNotClaimCurrentScreen(t *testing.T) {
+	setupStore(t, nil)
+	_, err := saveGroupFromPayload(web.GroupPayload{Name: "未知来源坐标", Slots: []web.GroupSlotPayload{{AccountKey: "a", HasRect: true, W: 800, H: 600}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, _ := loadGroups()
+	if list[0].ScreenW != 0 || list[0].ScreenH != 0 {
+		t.Fatal("未知基准不能猜成当前屏幕")
+	}
+}
+
+func TestNextGroupIDSurvivesDeletionAtSameTimestamp(t *testing.T) {
+	const stamp int64 = 123456789
+	list := []LaunchGroup{{ID: "旧组", Name: "旧组"}}
+	first := nextGroupID(list, stamp)
+	list = append(list, LaunchGroup{ID: first})
+	second := nextGroupID(list, stamp)
+	list = append(list, LaunchGroup{ID: second})
+	// 删除第一套后长度回退，但仍存在的第二套不能被后续新建覆盖。
+	list = append(list[:1], list[2:]...)
+	third := nextGroupID(list, stamp)
+	if third == second || third == "旧组" {
+		t.Fatalf("相同时刻删除再新建不得撞到仍存在的组：first=%s second=%s third=%s", first, second, third)
+	}
+	if list[0].ID != "旧组" || list[1].ID != second {
+		t.Fatalf("生成新 ID 不能迁移或修改已有 ID：%+v", list)
+	}
+	list = append(list, LaunchGroup{ID: third})
+	fourth := nextGroupID(list, stamp)
+	for _, g := range list {
+		if fourth == g.ID {
+			t.Fatalf("连续碰撞必须继续递增，不能覆盖 %s", g.ID)
+		}
+	}
+}
+
+func TestSaveGroupKeepsExistingIDs(t *testing.T) {
+	setupStore(t, nil)
+	id, err := saveGroup(LaunchGroup{ID: "g旧格式123", Name: "旧组"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := saveGroup(LaunchGroup{ID: id, Name: "更新旧组"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := loadGroups()
+	if err != nil || id != "g旧格式123" || updated != id || len(list) != 1 || list[0].Name != "更新旧组" {
+		t.Fatalf("修改已有组必须保留其 ID：id=%s updated=%s list=%+v err=%v", id, updated, list, err)
 	}
 }
