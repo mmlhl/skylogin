@@ -8,6 +8,7 @@ package app
 import (
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"skylogin/internal/fever"
@@ -101,15 +102,40 @@ func clientLabels() map[uint32]string {
 	return labels
 }
 
+// arrangeRects 下一批要按"记录的位置"摆的矩形（空 = 按排列方式算）。
+//
+// 用全局 + 互斥而不是参数透传：排列是后台协程干的，它从启动那一刻起
+// 就不知道自己是哪套组拉起来的；这里跟 nextFullscreen 是同一个套路，
+// 都是"拉起前置位、排列时取走"。
+var (
+	arrangeRectsMu sync.Mutex
+	arrangeRects   []win.TargetRect
+)
+
+func setArrangeRects(r []win.TargetRect) {
+	arrangeRectsMu.Lock()
+	arrangeRects = r
+	arrangeRectsMu.Unlock()
+}
+
+func takeArrangeRects() []win.TargetRect {
+	arrangeRectsMu.Lock()
+	defer arrangeRectsMu.Unlock()
+	r := arrangeRects
+	arrangeRects = nil
+	return r
+}
+
 // arrangeWhenReady 多开后渐进排列：客户端窗口出一个摆一个，不等全部出完
 // （排在后面的要登录加载，等齐再排，前面的窗口得干瞪眼十几秒）。
 // mode = "cascade" 级联堆叠（文件窗式），"fullscreen" 全屏（不排窗口，
-// 排也排不动）；"tile"/空 = 网格平铺。
+// 排也排不动）；"rects" 按记录的位置摆（矩形由 setArrangeRects 预置）；
+// "tile"/空 = 网格平铺。
 // 全部就位后，3 个以上会自动打开监控墙（多开的主要查看方式，
 // 全屏模式下切换客户端全靠它）。
 func arrangeWhenReady(cols, rows, w, h int, mode string) {
 	isCascade, _ := win.SplitCascadeMode(mode)
-	if !isCascade && mode != "fullscreen" && (cols < 1 || rows < 1) {
+	if !isCascade && mode != "fullscreen" && mode != "rects" && (cols < 1 || rows < 1) {
 		return
 	}
 	go func() {
@@ -187,7 +213,14 @@ func arrangeWhenReady(cols, rows, w, h int, mode string) {
 			return
 		}
 		recordWindowSlots(cells)
-		moved := win.ProgressiveArrange(cells, mode, cols, rows, w, h)
+		// 有记录的位置就按位置摆；没有就按排列方式算。
+		// 位置模式的矩形已经在启动前 setArrangeRects 预置好了。
+		var moved int
+		if rects := takeArrangeRects(); len(rects) >= len(cells) {
+			moved = win.ArrangeByRects(cells, rects)
+		} else {
+			moved = win.ProgressiveArrange(cells, mode, cols, rows, w, h)
+		}
 		if moved == 0 {
 			logf("自动排列失败: 窗口没排动（全屏切不回窗口模式或权限不足），详见上面的诊断")
 			return
@@ -224,6 +257,10 @@ func dedupeStrings(in []string) []string {
 // autoOpenWall 多开（2 个及以上）时自动打开监控墙：窗口一多就有遮挡，
 // 监控墙是主要的查看与切换方式。
 func autoOpenWall() {
+	// 组级开关：有的用户就是不想让墙挡在游戏前面
+	if skipAutoWall.Load() {
+		return
+	}
 	if !win.WallOpen() && len(runningPids()) >= 2 {
 		if _, err := ToggleWall(); err != nil {
 			logf("自动打开监控墙失败: %v", err)

@@ -1203,6 +1203,86 @@ var (
 // 空 = 双摞默认），其余为网格平铺。
 // 已摆过的窗口被引擎改了尺寸，下一轮巡检按实际尺寸夹回屏幕内。
 // 全部就位、摆上第一个后 90 秒没有新窗口、或超时（5 分钟）就返回成功摆放的数量。
+// TargetRect 一个窗口的目标矩形（物理像素）。
+//
+// 为什么单独定一个类型：启动组存下来的就是这四个数，不能让 app 层
+// 去碰 windowRect（那是 win 内部的 left/top/right/bottom 表示）。
+type TargetRect struct {
+	X, Y, W, H int
+}
+
+// WindowRectOfPID 读某个进程主窗口的矩形，顺带报告它是不是占满整屏。
+//
+// 给「记住当前各窗口位置」用：用户手动摆好窗口，我们照抄。
+// 必须在物理像素空间里读，否则 125% 缩放下存下来的数值和摆放时差一圈。
+func WindowRectOfPID(pid uint32) (TargetRect, bool, bool) {
+	g, _ := enterPhysicalPixels()
+	defer g.restore()
+	h := MainWindowOfPID(pid)
+	if h == 0 {
+		return TargetRect{}, false, false
+	}
+	r, ok := getWindowRect(h)
+	if !ok {
+		return TargetRect{}, false, false
+	}
+	full := coversPrimaryScreen(h)
+	return TargetRect{
+		X: int(r.left),
+		Y: int(r.top),
+		W: int(r.right - r.left),
+		H: int(r.bottom - r.top),
+	}, full, true
+}
+
+// clampRectToArea 把矩形整体挪进工作区：尺寸不变，只移动位置。
+//
+// 为什么不缩尺寸：用户设的窗口大小是他要的，缩放会让游戏画面比例变化；
+// 挪进来至少还能用。屏幕装不下（比工作区还大）的，左上角对齐工作区。
+func clampRectToArea(r windowRect, wa windowRect) windowRect {
+	w, h := r.right-r.left, r.bottom-r.top
+	x, y := r.left, r.top
+	if x+w > wa.right {
+		x = wa.right - w
+	}
+	if y+h > wa.bottom {
+		y = wa.bottom - h
+	}
+	if x < wa.left {
+		x = wa.left
+	}
+	if y < wa.top {
+		y = wa.top
+	}
+	return windowRect{left: x, top: y, right: x + w, bottom: y + h}
+}
+
+// ArrangeByRects 按给定矩形逐个摆放，等到窗口稳定为止。
+//
+// 和网格排列的区别只有"目标从哪来"：网格是算的，这里是用户存的。
+// 等待稳定性、切窗口化、复核落位这些都必须照做——游戏窗口刚出来时
+// MoveWindow 会被引擎自检撞掉，不等待就会摆到一半。
+func ArrangeByRects(cells []ClientCell, rects []TargetRect) int {
+	if len(cells) == 0 || len(rects) < len(cells) {
+		return 0
+	}
+	g, _ := enterPhysicalPixels()
+	defer g.restore()
+	wa := primaryWorkArea()
+	plan := make([]windowRect, len(cells))
+	for i := range cells {
+		r := rects[i]
+		plan[i] = clampRectToArea(windowRect{
+			left:   int32(r.X),
+			top:    int32(r.Y),
+			right:  int32(r.X + r.W),
+			bottom: int32(r.Y + r.H),
+		}, wa)
+	}
+	return progressivePlace(cells, plan, wa, true)
+}
+
+// ProgressiveArrange 计算好每个窗口的目标矩形，然后逐个等窗口稳定再摆。
 func ProgressiveArrange(cells []ClientCell, mode string, cols, rows, wantW, wantH int) int {
 	if len(cells) == 0 {
 		return 0
@@ -1216,7 +1296,16 @@ func ProgressiveArrange(cells []ClientCell, mode string, cols, rows, wantW, want
 	} else {
 		plan = planGrid(len(cells), cols, rows, wantW, wantH, wa)
 	}
+	// 网格/堆叠的目标是"均分格子"，窗口本身已经在窗口模式下（多开前预写过设置），
+	// 不需要再强制切窗口化。
+	return progressivePlace(cells, plan, wa, false)
+}
 
+// progressivePlace 是排列的共同实现：一句"窗口出来一个摆一个"。
+//
+// unfullscreen=true 时先把这个窗口从独占全屏切回窗口模式——按用户存的坐标
+// 摆的时候必须切，否则全屏窗口的 MoveWindow 返回成功但纹丝不动。
+func progressivePlace(cells []ClientCell, plan []windowRect, wa windowRect, unfullscreen bool) int {
 	type slot struct {
 		done bool
 		r    windowRect
@@ -1257,6 +1346,16 @@ func ProgressiveArrange(cells []ClientCell, mode string, cols, rows, wantW, want
 			}
 			st[i].r = placeWindow(h, plan[i], wa)
 			if !st[i].done {
+				// 首摆前：独占全屏的窗口先切回窗口模式，否则 MoveWindow
+				// 会返回成功但窗口纹丝不动（只有按用户坐标摆时才需要，
+				// 网格排列的窗口本来就是窗口模式）
+				if unfullscreen && isFullscreenWindow(h) {
+					exitFullscreen(h)
+					if h2 := MainWindowOfPID(c.PID); h2 != 0 {
+						h = h2
+						st[i].r = placeWindow(h, plan[i], wa)
+					}
+				}
 				st[i].done = true
 				total++
 				lastNew = time.Now()

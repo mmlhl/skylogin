@@ -188,6 +188,23 @@ export const api = {
       body: JSON.stringify({ id }),
     }),
 
+  /** 按一套启动组拉起客户端（后端会先停掉正在跑的，再按位置摆） */
+  launchGroup: (id: string) =>
+    request<ApiResult & { message?: string }>("/api/groups/launch", {
+      method: "POST",
+      body: JSON.stringify({ id }),
+    }),
+
+  /**
+   * 读当前运行中客户端的窗口矩形（按启动顺序）。
+   * 给「记住当前各窗口位置」用：用户手动摆好窗口，我们照抄坐标。
+   */
+  clientRects: () =>
+    request<{
+      ok?: boolean;
+      rects?: { id: string; name: string; x: number; y: number; w: number; h: number; fullscreen?: boolean }[];
+    }>("/api/clients/rects"),
+
   /** 创建一条账号的副本（name 为空时后端自动起名，region 为空表示副本先不选区） */
   duplicateAccount: (id: string, name: string, region = "") =>
     request("/api/accounts/duplicate", { method: "POST", body: JSON.stringify({ id, name, region }) }),

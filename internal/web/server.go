@@ -91,6 +91,10 @@ type Hooks struct {
 	SaveGroup func(p GroupPayload) (string, error)
 	// DeleteGroup 删除一套启动组（不存在也算成功）。
 	DeleteGroup func(id string) error
+	// LaunchGroup 按一套启动组拉起客户端：先停旧的 → 再拉新的 → 按记录的位置摆。
+	LaunchGroup func(id string) (string, error)
+	// ClientRects 读当前运行中客户端的窗口矩形，给「记住当前各窗口位置」用。
+	ClientRects func() []map[string]any
 	// HeadlessLogin 用账号密码无头添加/更新网易账号（不弹网易登录窗）。
 	// 返回给界面用的结果（id / name / existed / region）。
 	HeadlessLogin func(user, password, region, name string) (map[string]any, error)
@@ -671,6 +675,40 @@ func (s *Server) Handler() http.Handler {
 			groups = s.hooks.Groups()
 		}
 		writeJSON(w, map[string]any{"ok": true, "groups": groups})
+	})
+
+	// 按一套启动组拉起客户端。
+	mux.HandleFunc("/api/groups/launch", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, map[string]any{"ok": false, "message": "只支持 POST"})
+			return
+		}
+		if s.hooks.LaunchGroup == nil {
+			writeJSON(w, map[string]any{"ok": false, "message": "当前版本不支持按组启动"})
+			return
+		}
+		var body struct {
+			ID string `json:"id"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&body)
+		msg, err := s.hooks.LaunchGroup(body.ID)
+		if err != nil {
+			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "message": msg})
+	})
+
+	// 当前运行中客户端的窗口矩形（「记住当前各窗口位置」）。
+	mux.HandleFunc("/api/clients/rects", func(w http.ResponseWriter, r *http.Request) {
+		var rects []map[string]any
+		if s.hooks.ClientRects != nil {
+			rects = s.hooks.ClientRects()
+		}
+		if rects == nil {
+			rects = []map[string]any{}
+		}
+		writeJSON(w, map[string]any{"ok": true, "rects": rects})
 	})
 
 	// 账号级"游戏设置"：画质 / 帧率 / 显示方式（窗口还是全屏）。

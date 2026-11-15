@@ -50,6 +50,14 @@ func launchGame() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return launchAccount(acc)
+}
+
+// launchAccount 用指定账号走一遍单开流程。
+//
+// 从 launchGame 里拆出来的原因：启动组里可能只有一个账号（典型是"全屏挂机"），
+// 它也必须能启动，但不能靠"把当前账号临时切过去"来实现——那会改用户的选中项。
+func launchAccount(acc Account) (string, error) {
 	// 游戏是全局单实例：已经有客户端在跑时，单开必然被拦，直接说清楚
 	if n := liveClients(); n > 0 {
 		return "", fmt.Errorf("已经有 %d 个客户端在运行。游戏只能同时启动一次，请先点「停止运行」", n)

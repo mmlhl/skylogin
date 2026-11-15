@@ -225,6 +225,8 @@ func RunUI(title string) error {
 		Groups:          groupsView,
 		SaveGroup:       saveGroupFromPayload,
 		DeleteGroup:     deleteGroup,
+		LaunchGroup:     launchGroup,
+		ClientRects:     clientRects,
 		GameSettings:    saveGameSettings,
 		HeadlessLogin:   HeadlessLoginAccount,
 		HostPool:        func() any { return HostPoolStatus() },

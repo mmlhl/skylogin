@@ -120,6 +120,14 @@ export const store: LauncherStore = {
     const at = state.groups.findIndex((x) => x.id === id);
     if (at >= 0) state.groups.splice(at, 1);
   },
+  async launchGroup() {
+    // 演示模式没有真实进程：只把"会发生什么"说清楚，不假装启动成功
+    toast("演示模式：真实版会先停掉正在跑的客户端，再按这套的位置窗口");
+    return { ok: true, message: "演示模式不启动" };
+  },
+  async captureRects() {
+    return [];
+  },
   get current() {
     return state.accounts.find((a) => a.current);
   },

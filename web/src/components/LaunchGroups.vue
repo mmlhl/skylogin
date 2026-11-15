@@ -188,9 +188,53 @@ function commit() {
   props.store.saveGroup(draft.value);
   note.value = "已保存";
 }
-function launch() {
-  // 启动执行（停旧客户端 → 按位置摆窗口）在下一版接进来；这里先说清楚会发生什么
-  note.value = "启动执行还没接：现在只会保存配置。下一步接 /api/groups/launch";
+
+/**
+ * 启动这套：先把当前编辑落盘（否则用户改了位置直接点启动，启动的还是旧配置），
+ * 再让后端去停旧客户端、拉起、按位置摆。
+ */
+async function launch() {
+  if (!draft.value) return;
+  if (!draft.value.id) {
+    note.value = "先保存这套再启动";
+    return;
+  }
+  props.store.saveGroup(draft.value);
+  note.value = "正在启动…";
+  const r = await props.store.launchGroup(draft.value.id);
+  note.value = r.message || (r.ok ? "已启动" : "启动失败");
+}
+
+/**
+ * 记住当前各窗口位置：读正在运行的窗口，按账号键对回槽位。
+ *
+ * 用账号键对而不是按顺序对：用户可能只开了这套里的一部分，
+ * 按顺序对会把 B 的位置写到 C 身上。
+ */
+async function capture() {
+  if (!draft.value) return;
+  const rects = await props.store.captureRects();
+  if (!rects.length) {
+    note.value = "没有正在运行的客户端：先把这套启动一次、摆好窗口，再回来记";
+    return;
+  }
+  let hit = 0;
+  let full = 0;
+  for (const r of rects) {
+    const slot = draft.value.slots.find((s) => s.accountKey === r.id);
+    if (!slot) continue;
+    slot.x = r.x;
+    slot.y = r.y;
+    slot.w = r.w;
+    slot.h = r.h;
+    slot.hasRect = true;
+    hit++;
+    if (r.fullscreen) full++;
+  }
+  posMode.value = "manual";
+  note.value = hit
+    ? `已记住 ${hit} 个窗口的位置${full ? `（其中 ${full} 个是全屏，记下来就是整屏大小）` : ""}`
+    : "这套里没有正在运行的账号";
 }
 
 /* ── 画布换算 ── */
@@ -349,7 +393,7 @@ function blockStyle(s: LaunchSlot, i: number) {
             </div>
             <div class="lacts">
               <button class="pbtn sm" @click="fillGrid"><Grid2x2 />按网格铺满</button>
-              <button class="pbtn sm" title="读取正在运行的窗口坐标（下一步接后端）" @click="note = '记住当前位置：下一步接 /api/clients/rects'">
+              <button class="pbtn sm" title="读取正在运行的窗口坐标，按账号对回槽位" @click="capture">
                 <Crosshair />记住当前位置
               </button>
               <span class="screensize">屏幕 {{ W }}×{{ H }}{{ draft.screenW ? "" : "（还没记过）" }}</span>

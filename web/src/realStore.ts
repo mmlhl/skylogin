@@ -306,6 +306,27 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
       });
     },
 
+    async launchGroup(id) {
+      const r = await api.launchGroup(id);
+      // 后端的 message 是给用户看的整句（含"按位置摆放"/"位置已失效"这类关键信息），
+      // 别在这里改写成通用文案，否则用户不知道窗口为什么会乱。
+      toast(r.message || (r.ok === false ? "启动失败" : "已启动"));
+      return { ok: r.ok !== false, message: r.message };
+    },
+
+    async captureRects() {
+      const r = await api.clientRects();
+      return (r.rects ?? []).map((x) => ({
+        id: x.id,
+        name: x.name,
+        x: x.x,
+        y: x.y,
+        w: x.w,
+        h: x.h,
+        fullscreen: !!x.fullscreen,
+      }));
+    },
+
     setRailWidth(width: number) {
       void api.setRailWidth(width);
     },

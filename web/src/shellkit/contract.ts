@@ -189,6 +189,19 @@ export interface LaunchGroup {
   updated?: string;
 }
 
+/** 「记住当前各窗口位置」读到的一个窗口 */
+export interface CapturedRect {
+  /** 账号键（accountKey），用来对回槽位 */
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** 全屏窗口记下来就是整屏，界面要提醒用户先切成窗口 */
+  fullscreen: boolean;
+}
+
 /** 界面壳允许调用的全部功能。 */export interface LauncherStore {
   readonly accounts: Account[];
   readonly current: Account | undefined;
@@ -266,6 +279,16 @@ export interface LaunchGroup {
   saveGroup(g: LaunchGroup): void;
   /** 删除一套启动组 */
   deleteGroup(id: string): void;
+  /**
+   * 按一套启动组拉起客户端（后端先停旧的再拉新的，然后按记录的位置摆）。
+   * 返回的 message 可以直接 toast。
+   */
+  launchGroup(id: string): Promise<{ ok: boolean; message?: string }>;
+  /**
+   * 读当前运行中窗口的坐标（按启动顺序）。
+   * 给「记住当前各窗口位置」用；没有客户端在跑时返回空数组。
+   */
+  captureRects(): Promise<CapturedRect[]>;
 
   /** 多开默认（画质 / 帧率 / 鼠标仲裁）：多开弹窗和设置面板读写的是同一份 */
   multiDefaults(): { qualityMode: string; fps: number; arbiter: boolean; arbiterMin: number };
