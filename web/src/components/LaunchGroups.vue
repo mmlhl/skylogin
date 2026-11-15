@@ -86,6 +86,27 @@ const available = computed(() => {
   const used = new Set(slots.value.map((s) => s.accountKey));
   return props.store.accounts.filter((a) => !used.has(a.id));
 });
+
+/** 标签 → 还能加进来的账号数（"把大号全加进来"是这个界面最常用的一次操作） */
+const tagPicks = computed(() => {
+  const m = new Map<string, number>();
+  for (const a of available.value) {
+    for (const t of a.tags) m.set(t, (m.get(t) ?? 0) + 1);
+  }
+  return [...m.entries()].map(([name, count]) => ({ name, count }));
+});
+
+/** 按标签批量加入：一次把这一类账号全加进这套组 */
+function addByTag(tag: string) {
+  if (!draft.value) return;
+  let n = 0;
+  for (const a of [...available.value]) {
+    if (!a.tags.includes(tag)) continue;
+    addSlot(a);
+    n++;
+  }
+  note.value = n ? `按「${tag}」加了 ${n} 个账号（顺序可再调）` : `「${tag}」里没有可加入的账号`;
+}
 function addSlot(a: Account) {
   if (!draft.value) return;
   draft.value.slots.push({
@@ -240,26 +261,86 @@ async function capture() {
 /* ── 画布换算 ── */
 const W = computed(() => draft.value?.screenW || 1920);
 const H = computed(() => draft.value?.screenH || 1080);
-function blockStyle(s: LaunchSlot, i: number) {
+
+/**
+ * 某个槽位此刻"实际生效"的矩形。
+ * 自动模式按排列+顺序算；手动模式（且记过位置）用槽位自己的坐标。
+ * 画布、拖拽、坐标输入三处都走这个函数，避免三套算法算出来不一样。
+ */
+function effRect(s: LaunchSlot, i: number) {
   const d = draft.value!;
-  let x = s.x;
-  let y = s.y;
-  let w = s.w;
-  let h = s.h;
-  if (posMode.value === "auto" || !s.hasRect) {
-    const cw = Math.floor(W.value / d.cols);
-    const ch = Math.floor(H.value / d.rows);
-    x = (i % d.cols) * cw;
-    y = Math.floor(i / d.cols) * ch;
-    w = cw;
-    h = ch;
+  if (posMode.value === "manual" && s.hasRect) {
+    return { x: s.x, y: s.y, w: s.w, h: s.h };
   }
+  const cw = Math.floor(W.value / d.cols);
+  const ch = Math.floor(H.value / d.rows);
+  return { x: (i % d.cols) * cw, y: Math.floor(i / d.cols) * ch, w: cw, h: ch };
+}
+function blockStyle(s: LaunchSlot, i: number) {
+  const r = effRect(s, i);
   return {
-    left: `${(x / W.value) * 100}%`,
-    top: `${(y / H.value) * 100}%`,
-    width: `${(w / W.value) * 100}%`,
-    height: `${(h / H.value) * 100}%`,
+    left: `${(r.x / W.value) * 100}%`,
+    top: `${(r.y / H.value) * 100}%`,
+    width: `${(r.w / W.value) * 100}%`,
+    height: `${(r.h / H.value) * 100}%`,
   };
+}
+
+/* ── 画布上拖方块改位置 ──
+ * 为什么允许拖：位置是空间信息，用四个数字改是在翻译自己脑子里的画面。
+ * 拖的时候立刻切到"手动位置"——否则会出现"我拖了但它在自动排列下又弹回去"。
+ */
+const dragInfo = ref<{ key: string; startX: number; startY: number; origX: number; origY: number; cw: number; ch: number } | null>(null);
+
+function onBlockDown(e: PointerEvent, s: LaunchSlot, i: number) {
+  if (!draft.value) return;
+  const host = (e.currentTarget as HTMLElement).parentElement;
+  if (!host) return;
+  const box = host.getBoundingClientRect();
+  if (box.width < 8 || box.height < 8) return;
+  // 自动模式下的位置是算出来的，先把它固化到槽位里，用户才拖得动
+  if (!s.hasRect || posMode.value !== "manual") {
+    const r = effRect(s, i);
+    s.x = r.x;
+    s.y = r.y;
+    s.w = r.w;
+    s.h = r.h;
+    s.hasRect = true;
+  }
+  posMode.value = "manual";
+  slotKey.value = s.accountKey;
+  dragInfo.value = {
+    key: s.accountKey,
+    startX: e.clientX,
+    startY: e.clientY,
+    origX: s.x,
+    origY: s.y,
+    cw: box.width,
+    ch: box.height,
+  };
+  window.addEventListener("pointermove", onBlockMove);
+  window.addEventListener("pointerup", onBlockUp, { once: true });
+}
+
+function onBlockMove(e: PointerEvent) {
+  const d = dragInfo.value;
+  const g = draft.value;
+  if (!d || !g) return;
+  const slot = g.slots.find((s) => s.accountKey === d.key);
+  if (!slot) return;
+  // 画布像素 → 屏幕像素：画布是缩略图，位移要按比例放大回真实坐标
+  const dx = ((e.clientX - d.startX) / d.cw) * W.value;
+  const dy = ((e.clientY - d.startY) / d.ch) * H.value;
+  const maxX = Math.max(0, W.value - slot.w);
+  const maxY = Math.max(0, H.value - slot.h);
+  slot.x = Math.min(maxX, Math.max(0, Math.round(d.origX + dx)));
+  slot.y = Math.min(maxY, Math.max(0, Math.round(d.origY + dy)));
+}
+
+function onBlockUp() {
+  window.removeEventListener("pointermove", onBlockMove);
+  if (dragInfo.value) note.value = "位置已改，记得点保存";
+  dragInfo.value = null;
 }
 </script>
 
@@ -364,8 +445,9 @@ function blockStyle(s: LaunchSlot, i: number) {
               v-for="(s, i) in slots"
               :key="s.accountKey"
               class="wblock"
-              :class="{ on: curSlot?.accountKey === s.accountKey, off: s.disabled }"
+              :class="{ on: curSlot?.accountKey === s.accountKey, off: s.disabled, dragging: dragInfo?.key === s.accountKey }"
               :style="blockStyle(s, i)"
+              @pointerdown="onBlockDown($event, s, i)"
               @click="slotKey = s.accountKey"
             >
               <b>{{ i + 1 }}</b>
@@ -458,6 +540,13 @@ function blockStyle(s: LaunchSlot, i: number) {
             <span v-for="t in a.tags.slice(0, 1)" :key="t" class="tag">{{ t }}</span>
           </button>
           <span v-if="!available.length" class="atitle">所有账号都在这套里了</span>
+          <template v-if="tagPicks.length">
+            <span class="asep" />
+            <span class="atitle">按标签</span>
+            <button v-for="t in tagPicks" :key="t.name" class="tagbtn" :title="`把「${t.name}」里的 ${t.count} 个账号全加进来`" @click="addByTag(t.name)">
+              {{ t.name }} +{{ t.count }}
+            </button>
+          </template>
           <span class="tip"><Power />同一个账号只能占一个槽；副本是独立账号，可以各占一个</span>
         </footer>
       </section>
@@ -924,7 +1013,8 @@ function blockStyle(s: LaunchSlot, i: number) {
   border: 1px solid rgba(216, 180, 124, 0.4);
   border-radius: 3px;
   background: rgba(216, 180, 124, 0.1);
-  cursor: pointer;
+  cursor: grab;
+  touch-action: none;
 }
 .wblock b {
   display: block;
@@ -941,6 +1031,12 @@ function blockStyle(s: LaunchSlot, i: number) {
 .wblock.off {
   opacity: 0.3;
   border-style: dashed;
+}
+.wblock.dragging {
+  cursor: grabbing;
+  z-index: 2;
+  background: rgba(216, 180, 124, 0.3);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45);
 }
 .cempty {
   position: absolute;
@@ -1234,6 +1330,27 @@ function blockStyle(s: LaunchSlot, i: number) {
 .achip:hover {
   color: var(--tx);
   border-color: var(--acc);
+}
+.asep {
+  width: 1px;
+  height: 14px;
+  margin: 0 2px;
+  background: var(--line2);
+}
+/* 按标签批量加入：一次把一类账号全拉进来（这是"标签"在启动组里最大的用处） */
+.tagbtn {
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: rgba(216, 180, 124, 0.1);
+  color: var(--acc);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.tagbtn:hover {
+  background: rgba(216, 180, 124, 0.18);
 }
 .tag {
   padding: 0 4px;
