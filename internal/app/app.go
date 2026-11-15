@@ -50,6 +50,10 @@ type Account struct {
 	// 的一条记录（键是 PlayerID-2 这样），名字可以随便改，标签也是它自己的。
 	Tags []string `json:"tags,omitempty"`
 
+	// AutoEnter 是这一行账号的"自动进入"开关：nil = 跟随全局（单开看
+	// Config.AutoEnterPlay，多开看 Config.MultiAutoEnter）。
+	AutoEnter *bool `json:"auto_enter,omitempty"`
+
 	// CopyKey 是副本的本机键（"PlayerID-2" 这样的后缀），允许同一个
 	// PlayerID 存多条记录（典型：同一网易账号再建一个副本在另一个区玩）。
 	// 空 = 原始行，键就是 PlayerID；老数据没有这个字段，无需迁移。

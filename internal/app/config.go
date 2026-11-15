@@ -80,6 +80,12 @@ type Config struct {
 	MouseArbiterEnabled bool `json:"mouse_arbiter_enabled,omitempty"`
 	MouseArbiterMin     int  `json:"mouse_arbiter_min,omitempty"`
 
+	// 自动进入：平台签票（op14 发出）后的 10 秒内，替用户点一下登录界面上的
+	// 播放按钮。两个默认值分别管单开和多开；账号上还有一份单独的覆盖
+	// （Account.AutoEnter），nil = 跟随这里。默认都开。
+	AutoEnterPlay  *bool `json:"auto_enter_play,omitempty"`
+	MultiAutoEnter *bool `json:"multi_auto_enter,omitempty"`
+
 	// a50（发烧平台）上下文的设备号：签票走 a50 优先时用它。
 	// MPay 的设备号按上下文发：本机指纹登记的号属于 ma75，a50 不认识，
 	// 拿去签 a50 的票每张都会被当成新设备（登录设备列表一条条涨）。
@@ -102,6 +108,22 @@ func (c Config) CloseLauncherEnabled() bool {
 		return true
 	}
 	return *c.CloseLauncher
+}
+
+// AutoEnterPlayEnabled 单开时是否自动点播放按钮，未设置时默认开启。
+func (c Config) AutoEnterPlayEnabled() bool {
+	if c.AutoEnterPlay == nil {
+		return true
+	}
+	return *c.AutoEnterPlay
+}
+
+// MultiAutoEnterEnabled 多开时是否自动点播放按钮，未设置时默认开启。
+func (c Config) MultiAutoEnterEnabled() bool {
+	if c.MultiAutoEnter == nil {
+		return true
+	}
+	return *c.MultiAutoEnter
 }
 
 func configPath() string { return filepath.Join(dataDir(), "config.json") }
