@@ -12,6 +12,7 @@ package win
 
 import (
 	"fmt"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -334,33 +335,6 @@ func hasNonClientFrame(h uintptr) bool {
 	return wr.right-wr.left > cr.right-cr.left || wr.bottom-wr.top > cr.bottom-cr.top
 }
 
-// forceWindowed 给全屏窗口发一次 Alt+Enter（多数引擎的全屏/窗口切换键）。
-// 游戏焦点不在这时直接发键会丢，所以先把输入队列挂到目标窗口线程再给焦点。
-func forceWindowed(h uintptr) {
-	var tid uint32
-	_, _, _ = procGetWindowThreadProcessID.Call(h, uintptr(unsafe.Pointer(&tid)))
-	our, _, _ := procGetCurrentThreadId.Call()
-	if tid != 0 {
-		_, _, _ = procAttachThreadInput.Call(our, uintptr(tid), 1)
-	}
-	_, _, _ = procSetForeground.Call(h)
-	_, _, _ = procSetFocus.Call(h)
-	time.Sleep(120 * time.Millisecond)
-
-	// ALT ↓ ENTER ↓ ENTER ↑ ALT ↑
-	_, _, _ = procKeybdEvent.Call(vkMenu, 0, 0, 0)
-	time.Sleep(40 * time.Millisecond)
-	_, _, _ = procKeybdEvent.Call(vkReturn, 0, 0, 0)
-	time.Sleep(40 * time.Millisecond)
-	_, _, _ = procKeybdEvent.Call(vkReturn, 0, keyEventUp, 0)
-	time.Sleep(40 * time.Millisecond)
-	_, _, _ = procKeybdEvent.Call(vkMenu, 0, keyEventUp, 0)
-
-	if tid != 0 {
-		_, _, _ = procAttachThreadInput.Call(our, uintptr(tid), 0)
-	}
-}
-
 // forceWindowedStyle 直接把窗口样式改回"带标题栏的普通窗口"：
 // 去掉 WS_POPUP，补回 WS_CAPTION / WS_THICKFRAME / WS_SYSMENU，
 // 再 SetWindowPos 带 SWP_FRAMECHANGED 触发 WM_NCCALCSIZE / WM_SIZE，
@@ -377,42 +351,18 @@ func forceWindowedStyle(h uintptr) {
 		swpNoMove|swpNoSize|swpNoZOrder|swpNoActivate|swpFrameChanged)
 }
 
-// exitFullscreen 让客户端从"无边框"退回"带标题栏的普通窗口"，
-// 返回是否已经是普通窗口。
-//
-// 判据是"有没有非客户区边框"，不是"盖不盖满屏"：全屏多开启动的客户端
-// 是无边框窗口，MoveWindow 其实摆得动（位置尺寸都对），但画面上一条
-// 标题栏都没有——看着还像全屏，也没法拖动、没法点最小化。
-//
-// 顺序：盖满屏的先发 Alt+Enter（这是引擎自己的切换键，切完窗口是
-// 引擎维护的，最干净）；没反应再改窗口样式硬加边框。已经不满屏、
-// 只是无边框的，直接改样式——那种窗口发 Alt+Enter 反而会切回全屏。
+// exitFullscreen 直接恢复窗口边框；不向游戏发送全局快捷键，也不抢占焦点。
+// 实测旧路径的 Alt+Enter 对游戏无效，逐窗等待会把七窗切换拖到十几秒。
 func exitFullscreen(h uintptr) bool {
-	if hasNonClientFrame(h) {
-		return true
+	ok := switchWindowPresentation(
+		func() bool { return hasNonClientFrame(h) },
+		func() { forceWindowedStyle(h) },
+		time.Sleep,
+	)
+	if !ok {
+		Diag(fmt.Sprintf("排列：hwnd=%#x 未能恢复标题栏，请在游戏内切回窗口模式", h))
 	}
-	style, _, _ := procGetWindowLongW.Call(h, gwlStyle)
-	Diag(fmt.Sprintf("排列：hwnd=%#x 无标题栏（style=%#x 盖满屏=%v）",
-		h, style, isFullscreenWindow(h)))
-
-	if isFullscreenWindow(h) {
-		forceWindowed(h)
-		time.Sleep(900 * time.Millisecond)
-		if hasNonClientFrame(h) {
-			Diag("排列：Alt+Enter 生效，已切回窗口模式")
-			return true
-		}
-		Diag("排列：Alt+Enter 没反应，改窗口样式硬加边框")
-	}
-
-	forceWindowedStyle(h)
-	time.Sleep(700 * time.Millisecond)
-	if hasNonClientFrame(h) {
-		Diag("排列：已有标题栏")
-		return true
-	}
-	Diag("排列：加不上标题栏（引擎自绘非客户区），窗口仍是无边框")
-	return false
+	return ok
 }
 
 // movedInto 复核一次摆放是否真的生效（wantW/wantH 是请求的格位尺寸）。
@@ -448,46 +398,36 @@ func ArrangeFullscreen(cells []ClientCell) int {
 		if h == 0 {
 			continue
 		}
+		revealBackgroundWindow(h)
 		_, _, _ = procShowWindow.Call(h, swRestore) // 最小化的先还原
 		if enterFullscreen(h) {
 			moved++
 		}
 	}
+	RestoreClientZOrder(cells)
 	return moved
 }
 
-// enterFullscreen 让一个客户端占满整屏，返回是否成功。
-//
-// 顺序与 exitFullscreen 对称：已经是"无边框 + 盖满屏"就什么都不做；
-// 普通窗口先发 Alt+Enter（它是 toggle，窗口模式按下去就进全屏）；
-// 引擎不认这个键，就去掉标题栏边框、直接铺满主屏——观感与全屏一致，
-// 而且仍在 DWM 管理下（监控墙的缩略图照常能缩）。
+// enterFullscreen 使用 DWM 无边框铺满屏幕，保留缩略图与快速切回窗口的能力。
+// 不发送 Alt+Enter：它既会争抢焦点，又使多窗口切换逐个等待失败。
 func enterFullscreen(h uintptr) bool {
-	if coversPrimaryScreen(h) && !hasNonClientFrame(h) {
-		return true
-	}
-	if hasNonClientFrame(h) {
-		forceWindowed(h)
-		time.Sleep(900 * time.Millisecond)
-		if coversPrimaryScreen(h) && !hasNonClientFrame(h) {
-			Diag("排列：Alt+Enter 已切回全屏")
-			return true
-		}
-	}
-	forceFullscreenStyle(h)
 	sw, _, _ := procGetSystemMetrics.Call(smCXScreen)
 	sh, _, _ := procGetSystemMetrics.Call(smCYScreen)
 	if sw == 0 || sh == 0 {
 		return false
 	}
-	_, _, _ = procMoveWindow.Call(h, 0, 0, sw, sh, 1)
-	time.Sleep(250 * time.Millisecond)
-	if coversPrimaryScreen(h) {
-		Diag("排列：已铺满主屏（无边框全屏）")
-		return true
+	ok := switchWindowPresentation(
+		func() bool { return coversPrimaryScreen(h) && !hasNonClientFrame(h) },
+		func() {
+			forceFullscreenStyle(h)
+			procSetWindowPos.Call(h, 0, 0, 0, sw, sh, swpNoZOrder|swpNoActivate|swpFrameChanged)
+		},
+		time.Sleep,
+	)
+	if !ok {
+		Diag(fmt.Sprintf("排列：hwnd=%#x 未能铺满屏幕", h))
 	}
-	Diag("排列：切不到全屏（引擎可能只认游戏内设置）")
-	return false
+	return ok
 }
 
 // forceFullscreenStyle 去边框：用 WS_POPUP 取代标题栏与可调整边框，
@@ -536,64 +476,7 @@ func renameWindow(h uintptr, label string, slot int) {
 // 全屏状态的窗口会先被切回窗口模式（游戏自己的记忆是全屏时，摆了也白摆）。
 // 返回成功移动的窗口数（找不到窗口或权限不够的会被跳过）。
 func ArrangeByGrid(cells []ClientCell, cols, rows, wantW, wantH int) int {
-	if cols < 1 || rows < 1 || len(cells) == 0 {
-		return 0
-	}
-	if cols*rows < len(cells) {
-		return 0
-	}
-	// 排列期间量与摆都在物理像素空间，见 enterPhysicalPixels
-	g, _ := enterPhysicalPixels()
-	defer g.restore()
-
-	wa := primaryWorkArea()
-	cw := (wa.right - wa.left) / int32(cols)
-	ch := (wa.bottom - wa.top) / int32(rows)
-	if wantW > 0 {
-		cw = int32(wantW)
-	}
-	if wantH > 0 {
-		ch = int32(wantH)
-	}
-
-	var list []placedWindow
-
-	moved := 0
-	for i, c := range cells {
-		h := MainWindowOfPID(c.PID)
-		if h == 0 {
-			continue
-		}
-		// 全屏的先切窗口化：切换后引擎要重建交换链，稍等再摆。
-		// 切不回来也要接着摆——MoveWindow 在少数引擎上仍能生效，
-		// 复核那一步会把真实结果记进日志。
-		exitFullscreen(h)
-		if h2 := MainWindowOfPID(c.PID); h2 != 0 {
-			h = h2
-		}
-		// 最小化的窗口 MoveWindow 不生效，先还原
-		_, _, _ = procShowWindow.Call(h, swRestore)
-		x := wa.left + int32(i%cols)*cw
-		y := wa.top + int32(i/cols)*ch
-		_, _, _ = procMoveWindow.Call(h, uintptr(x), uintptr(y), uintptr(cw), uintptr(ch), 1)
-		// 复核：独占全屏的窗口 MoveWindow 返回 TRUE 却没动，不能算成功
-		time.Sleep(200 * time.Millisecond)
-		if movedInto(h, cw, ch) {
-			moved++
-		} else {
-			Diag(fmt.Sprintf("排列：pid=%d 的窗口没排动（仍占满整屏）", c.PID))
-		}
-		list = append(list, placedWindow{hwnd: h, x: x, y: y, w: cw, ht: ch})
-		renameWindow(h, c.Label, i+1)
-	}
-
-	// 二次校准：引擎可能把我们给的尺寸撑大/缩小造成相邻堆叠；量实际矩形，
-	// 不一致就按实际尺寸重排（保证不重叠）。引擎改尺寸要几秒，收敛分两轮测。
-	time.Sleep(800 * time.Millisecond)
-	retileIfResized(list, cols, rows, wa, cw, ch)
-	time.Sleep(1800 * time.Millisecond)
-	retileIfResized(list, cols, rows, wa, cw, ch)
-	return moved
+	return arrangeOncePlanned(cells, LayoutRequest{Count: len(cells), Mode: "tile", Cols: cols, Rows: rows, W: wantW, H: wantH})
 }
 
 // ArrangeByCascade 把客户端窗口按级联堆叠摆一次（监控墙快捷菜单用）。
@@ -607,36 +490,45 @@ func ArrangeByCascade(cells []ClientCell, wantW, wantH int) int {
 
 // ArrangeByScheme 按指定堆叠方案摆一次（scheme 见 SchemeDual 等常量）。
 func ArrangeByScheme(cells []ClientCell, scheme string, wantW, wantH int) int {
+	return arrangeOncePlanned(cells, LayoutRequest{Count: len(cells), Mode: "cascade:" + scheme, W: wantW, H: wantH})
+}
+
+// arrangeOncePlanned 和预览共用规划，摆后不持续回夹，保留玩家随后手动调整。
+func arrangeOncePlanned(cells []ClientCell, req LayoutRequest) int {
 	if len(cells) == 0 {
 		return 0
 	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	g, _ := enterPhysicalPixels()
 	defer g.restore()
 	wa := primaryWorkArea()
-	rects := planStacking(scheme, len(cells), wantW, wantH, wa)
+	plan, info := planWindowRects(req, wa)
+	if len(plan) != len(cells) {
+		return 0
+	}
+	if info.Reason != "" {
+		Diag("排列规划：" + info.Reason)
+	}
 	moved := 0
 	for i, c := range cells {
 		h := MainWindowOfPID(c.PID)
 		if h == 0 {
 			continue
 		}
-		// 全屏的先切窗口化：切换后引擎要重建交换链，稍等再摆
+		revealBackgroundWindow(h)
 		exitFullscreen(h)
 		if h2 := MainWindowOfPID(c.PID); h2 != 0 {
 			h = h2
 		}
-		_, _, _ = procShowWindow.Call(h, swRestore)
-		_, _, _ = procMoveWindow.Call(h, uintptr(rects[i].left), uintptr(rects[i].top),
-			uintptr(rects[i].right-rects[i].left), uintptr(rects[i].bottom-rects[i].top), 1)
-		// 同 ArrangeByGrid：独占全屏的窗口会"调用成功但没动"
-		time.Sleep(200 * time.Millisecond)
-		if movedInto(h, rects[i].right-rects[i].left, rects[i].bottom-rects[i].top) {
+		procShowWindow.Call(h, swRestore)
+		placeWindow(h, plan[i], wa)
+		if r, ok := getWindowRect(h); ok && abs32((r.right-r.left)-(plan[i].right-plan[i].left)) <= 2 && abs32((r.bottom-r.top)-(plan[i].bottom-plan[i].top)) <= 2 {
 			moved++
-		} else {
-			Diag(fmt.Sprintf("排列：pid=%d 的窗口没排动（仍占满整屏）", c.PID))
 		}
 		renameWindow(h, c.Label, i+1)
 	}
+	RestorePlannedClientZOrder(cells, info.Rects)
 	return moved
 }
 
@@ -801,46 +693,8 @@ const (
 // planGrid 预排 n 个窗口的格位（物理坐标，行优先），渐进排列用。
 // 列数比工作区还宽就收缩，行放不下就走级联（cascadeYPositions）。
 func planGrid(n, cols, rows, wantW, wantH int, wa windowRect) []windowRect {
-	if n <= 0 || cols < 1 || rows < 1 {
-		return nil
-	}
-	workW, workH := wa.right-wa.left, wa.bottom-wa.top
-	cw, ch := workW/int32(cols), workH/int32(rows)
-	if wantW > 0 {
-		cw = int32(wantW)
-	}
-	if wantH > 0 {
-		ch = int32(wantH)
-	}
-	if cw < engineMinW {
-		cw = engineMinW
-	}
-	if ch < engineMinH {
-		ch = engineMinH
-	}
-	effCols := cols
-	if int32(cols) > workW/cw {
-		effCols = int(workW / cw)
-	}
-	if effCols < 1 {
-		effCols = 1
-	}
-	effRows := (n + effCols - 1) / effCols
-	rowH := make([]int32, effRows)
-	for i := range rowH {
-		rowH[i] = ch
-	}
-	yOf := cascadeYPositions(rowH, wa.top, wa.bottom)
-	rects := make([]windowRect, n)
-	for i := range rects {
-		c, rr := int32(i%effCols), int32(i/effCols)
-		x := wa.left + c*cw
-		if max := wa.right - cw; x > max {
-			x = max
-		}
-		rects[i] = windowRect{left: x, top: yOf[rr], right: x + cw, bottom: yOf[rr] + ch}
-	}
-	return rects
+	plan, _ := planWindowRects(LayoutRequest{Count: n, Mode: "tile", Cols: cols, Rows: rows, W: wantW, H: wantH}, wa)
+	return plan
 }
 
 // planCascade 级联堆叠（文件窗式）：全部窗口同一尺寸，整摞在工作区居中，
@@ -965,16 +819,8 @@ func SplitCascadeMode(mode string) (ok bool, scheme string) {
 // planStacking 按方案规划级联布局。窗口尺寸 = wantW/H（夹引擎最小值与工作区）。
 // 各方案都保证不出屏、编号小的先摆（通常 z 序在下，标题条朝外露出）。
 func planStacking(scheme string, n, wantW, wantH int, wa windowRect) []windowRect {
-	switch scheme {
-	case SchemeRows:
-		return planTwoRows(n, wantW, wantH, wa)
-	case SchemeCols:
-		return planTwoCols(n, wantW, wantH, wa)
-	case SchemeFan:
-		return planCascade(n, wantW, wantH, wa)
-	default: // "" / dual / 未知
-		return planDualStack(n, wantW, wantH, wa)
-	}
+	plan, _ := planWindowRects(LayoutRequest{Count: n, Mode: "cascade:" + scheme, W: wantW, H: wantH}, wa)
+	return plan
 }
 
 // clampSize 统一的窗口尺寸钳制：引擎最小值 → 工作区上限。
@@ -1208,7 +1054,21 @@ var (
 // 为什么单独定一个类型：启动组存下来的就是这四个数，不能让 app 层
 // 去碰 windowRect（那是 win 内部的 left/top/right/bottom 表示）。
 type TargetRect struct {
-	X, Y, W, H int
+	X      int `json:"x"`
+	Y      int `json:"y"`
+	W      int `json:"w"`
+	H      int `json:"h"`
+	ZOrder int `json:"zOrder"`
+}
+
+// PrimaryWorkAreaRect 返回主屏物理工作区，网格预览与实际排列必须用同一范围避开任务栏。
+func PrimaryWorkAreaRect() TargetRect {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	g, _ := enterPhysicalPixels()
+	defer g.restore()
+	r := primaryWorkArea()
+	return TargetRect{X: int(r.left), Y: int(r.top), W: int(r.right - r.left), H: int(r.bottom - r.top)}
 }
 
 // WindowRectOfPID 读某个进程主窗口的矩形，顺带报告它是不是占满整屏。
@@ -1263,6 +1123,8 @@ func clampRectToArea(r windowRect, wa windowRect) windowRect {
 // 等待稳定性、切窗口化、复核落位这些都必须照做——游戏窗口刚出来时
 // MoveWindow 会被引擎自检撞掉，不等待就会摆到一半。
 func ArrangeByRects(cells []ClientCell, rects []TargetRect) int {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	if len(cells) == 0 || len(rects) < len(cells) {
 		return 0
 	}
@@ -1279,22 +1141,26 @@ func ArrangeByRects(cells []ClientCell, rects []TargetRect) int {
 			bottom: int32(r.Y + r.H),
 		}, wa)
 	}
-	return progressivePlace(cells, plan, wa, true)
+	moved := progressivePlaceWithLayers(cells, plan, wa, true, rects)
+	return moved
 }
 
 // ProgressiveArrange 计算好每个窗口的目标矩形，然后逐个等窗口稳定再摆。
 func ProgressiveArrange(cells []ClientCell, mode string, cols, rows, wantW, wantH int) int {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	if len(cells) == 0 {
 		return 0
 	}
 	g, _ := enterPhysicalPixels()
 	defer g.restore()
 	wa := primaryWorkArea()
-	var plan []windowRect
-	if isCascade, scheme := SplitCascadeMode(mode); isCascade {
-		plan = planStacking(scheme, len(cells), wantW, wantH, wa)
-	} else {
-		plan = planGrid(len(cells), cols, rows, wantW, wantH, wa)
+	plan, info := planWindowRects(LayoutRequest{Count: len(cells), Mode: mode, Cols: cols, Rows: rows, W: wantW, H: wantH}, wa)
+	if info.Mode == "fullscreen" {
+		return 0
+	}
+	if info.Reason != "" {
+		Diag("排列规划：" + info.Reason)
 	}
 	// 除了"全屏叠放"以外，其余排列都要先把窗口从全屏切回窗口模式。
 	//
@@ -1304,7 +1170,8 @@ func ProgressiveArrange(cells []ClientCell, mode string, cols, rows, wantW, want
 	// 这时直接 MoveWindow 得到的是"被缩小的全屏窗口"——没有标题栏、拖不动、
 	// 也点不了最小化，看着就不是 Win 原生窗口。宁可多退一次全屏。
 	unfullscreen := mode != "fullscreen"
-	return progressivePlace(cells, plan, wa, unfullscreen)
+	moved := progressivePlaceWithLayers(cells, plan, wa, unfullscreen, info.Rects)
+	return moved
 }
 
 // EnsureWindowed 等主窗口出来，若它不是"带标题栏的普通窗口"就切回来。
@@ -1351,9 +1218,18 @@ func EnsureWindowed(pid uint32, wait time.Duration) bool {
 // unfullscreen=true 时先把这个窗口从独占全屏切回窗口模式——按用户存的坐标
 // 摆的时候必须切，否则全屏窗口的 MoveWindow 返回成功但纹丝不动。
 func progressivePlace(cells []ClientCell, plan []windowRect, wa windowRect, unfullscreen bool) int {
+	return progressivePlaceWithLayers(cells, plan, wa, unfullscreen, nil)
+}
+
+// 每轮移动都会改变系统层级，不能等所有慢启动成员出现后才恢复遮挡顺序。
+func progressivePlaceWithLayers(cells []ClientCell, plan []windowRect, wa windowRect, unfullscreen bool, layers []TargetRect) int {
+	if len(cells) == 0 || len(plan) < len(cells) {
+		return 0
+	}
 	type slot struct {
-		done bool
-		r    windowRect
+		stopped bool
+		done    bool
+		r       windowRect
 		// 首摆前的稳定观测：窗口刚出现时引擎还在初始化（建交换链、
 		// 默认尺寸切换），这时 MoveWindow 可能撞上引擎的自检导致闪退。
 		// 记录上一拍的矩形，连续 stableAfter 不变才第一次摆。
@@ -1367,9 +1243,18 @@ func progressivePlace(cells []ClientCell, plan []windowRect, wa windowRect, unfu
 	lastNew := time.Now()
 	total := 0
 	for time.Now().Before(deadline) {
+		movedThisRound := false
 		for i, c := range cells {
+			if st[i].stopped {
+				continue
+			}
 			h := MainWindowOfPID(c.PID)
 			if h == 0 {
+				continue
+			}
+			if _, background := backgroundWindowState(h); background {
+				// 用户主动收起后不再由启动阶段的渐进摆放干预。
+				st[i].done, st[i].stopped = true, true
 				continue
 			}
 			r, ok := getWindowRect(h)
@@ -1403,12 +1288,16 @@ func progressivePlace(cells []ClientCell, plan []windowRect, wa windowRect, unfu
 				}
 			}
 			st[i].r = placeWindow(h, plan[i], wa)
+			movedThisRound = true
 			if !st[i].done {
 				st[i].done = true
 				total++
 				lastNew = time.Now()
 				renameWindow(h, c.Label, i+1)
 			}
+		}
+		if movedThisRound {
+			RestorePlannedClientZOrder(cells, layers)
 		}
 		allPlaced := true
 		for i := range st {

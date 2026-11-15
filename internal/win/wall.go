@@ -14,7 +14,9 @@ package win
 import (
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 )
@@ -24,13 +26,13 @@ var (
 	procDwmUpdateProps = dwm32.NewProc("DwmUpdateThumbnailProperties")
 	procDwmUnregister  = dwm32.NewProc("DwmUnregisterThumbnail")
 
-	procPostMessageW = user32dll.NewProc("PostMessageW")
-	procIsWindow     = user32dll.NewProc("IsWindow")
-	procLoadCursor   = user32dll.NewProc("LoadCursorW")
-	procGetDpiForWin = user32dll.NewProc("GetDpiForWindow")
+	procPostMessageW   = user32dll.NewProc("PostMessageW")
+	procIsWindow       = user32dll.NewProc("IsWindow")
+	procLoadCursor     = user32dll.NewProc("LoadCursorW")
+	procGetDpiForWin   = user32dll.NewProc("GetDpiForWindow")
 	procScreenToClient = user32dll.NewProc("ScreenToClient")
-	procInvalidate   = user32dll.NewProc("InvalidateRect")
-	procSetWindowPos = user32dll.NewProc("SetWindowPos")
+	procInvalidate     = user32dll.NewProc("InvalidateRect")
+	procSetWindowPos   = user32dll.NewProc("SetWindowPos")
 
 	procBeginPaint  = user32dll.NewProc("BeginPaint")
 	procEndPaint    = user32dll.NewProc("EndPaint")
@@ -53,8 +55,8 @@ var (
 	procMoveToEx      = gdi32.NewProc("MoveToEx")
 	procLineTo        = gdi32.NewProc("LineTo")
 
-	procSetTimer   = user32dll.NewProc("SetTimer")
-	procKillTimer  = user32dll.NewProc("KillTimer")
+	procSetTimer  = user32dll.NewProc("SetTimer")
+	procKillTimer = user32dll.NewProc("KillTimer")
 
 	procFrameRect       = user32dll.NewProc("FrameRect")
 	procTrackMouseEvent = user32dll.NewProc("TrackMouseEvent")
@@ -99,6 +101,7 @@ const (
 	// 墙只看不接管：NOACTIVATE 让点击墙不会把前台从游戏手里抢走（游戏
 	// 焦点不被打断，仲裁的"谁在前台"判断也不受墙干扰）；切客户端由
 	// wallClick 主动做完整交接
+	wsExTopmost    = 0x00000008
 	wsExNoActivate = 0x08000000
 	wsExAppwindow  = 0x00040000
 	idcArrow       = 32512
@@ -131,7 +134,9 @@ type wallTile struct {
 	hwnd   uintptr
 	pid    uint32 // 源客户端进程
 	label  string
-	thumb  uintptr    // 主窗口缩略图（铺满格子，每秒热替换）
+	thumb  uintptr    // 持续复用的 DWM 缩略图，画面由系统实时合成
+	iconic bool       // 只在最小化状态变化后重连缩略图，不主动还原源窗口
+	style  uintptr    // 窗口模式变化后重连缩略图
 	rect   windowRect // 画面区（墙客户区坐标）
 	bandR  windowRect // 顶部标题带：左边账号名、右边红 ×（在缩略图区域外，永不被画面盖住）
 	closeR windowRect // 标题带右端的强停按钮（红底白 ×）
@@ -140,10 +145,12 @@ type wallTile struct {
 
 // WallHooks 墙与 app 层的交互点（app 启动后注入一次；win 层不含业务）。
 type WallHooks struct {
-	SavedRect  func() (x, y, w, h int, ok bool) // 上次记住的窗口位置尺寸
-	RectSink   func(x, y, w, h int)             // 位置尺寸变化（拖拽结束/关闭时回传）
-	Actions    map[string]func()                // 快捷菜单按钮动作（key = 按钮串）
-	StopClient func(pid uint32)                 // 格子右上角 ×：强行停止该客户端
+	SavedRect  func() (x, y, w, h int, ok bool)                    // 上次记住的窗口位置尺寸
+	RectSink   func(x, y, w, h int)                                // 位置尺寸变化（拖拽结束/关闭时回传）
+	Actions    map[string]func()                                   // 快捷菜单按钮动作（key = 按钮串）
+	StopClient func(pid uint32)                                    // 格子右上角 ×：强行停止该客户端
+	SaveTarget func() (id, name string, ok bool)                   // 当前运行窗口的明确归属；无归属只允许另存
+	SaveGroup  func(asNew bool, expectedID string) (string, error) // 保存实际窗口与本次启动参数
 }
 
 // 快捷菜单分两组：左边一槽是"排列方案"（互斥，选中的那项高亮），
@@ -167,13 +174,12 @@ var wallMenu = []struct {
 	group    int
 	danger   bool
 }{
-	{"tile", "平铺", menuGroupArrange, false},
-	{"dual", "双摞", menuGroupArrange, false},
-	{"rows", "两行", menuGroupArrange, false},
-	{"cols", "两列", menuGroupArrange, false},
-	{"fan", "满扇", menuGroupArrange, false},
-	{"full", "全屏", menuGroupArrange, false},
+	{"tile", "窗口并排（放得下时）", menuGroupArrange, false},
+	{"cols", "标题易切换", menuGroupArrange, false},
+	{"rows", "画面多露出", menuGroupArrange, false},
+	{"full", "专注全屏", menuGroupArrange, false},
 	{"mask", "打码", menuGroupTool, false},
+	{"save", "保存启动组", menuGroupTool, false},
 	{"stopall", "全部停止", menuGroupTool, true},
 	// 无边框后系统不再画窗口控制按钮，自己来（顺序同 Windows：最小化 / 最大化 / 关闭）
 	{"min", "最小化", menuGroupSys, false},
@@ -196,7 +202,6 @@ var wallBarH int32
 // wallDPI 墙窗口的 DPI（提示条排版用）。
 var wallDPI int32 = 96
 
-
 // wallMenuActive 当前高亮的排列方案（点过哪个就亮哪个，纯视觉状态）。
 var wallMenuActive = "tile"
 
@@ -205,7 +210,6 @@ var wallSlotRect windowRect
 
 // wallHoverMenu 鼠标悬停的菜单项下标，-1 = 没有。
 var wallHoverMenu = -1
-
 
 // SetWallMenuOn 设置"开关型"按钮的状态（目前只有打码），开着时图标点亮成金色。
 // 图标按钮宽度固定，状态变化不需要重排，重绘一次就够。
@@ -219,6 +223,23 @@ func SetWallMenuOn(id string, on bool) {
 		return
 	}
 	procInvalidate.Call(h, 0, 1)
+}
+
+// SetWallLayoutMode 在后端回退方案后同步高亮，避免按钮仍显示伪平铺。
+func SetWallLayoutMode(mode string) {
+	postWallTask(func() {
+		switch CanonicalLayoutMode(mode) {
+		case "tile":
+			wallMenuActive = "tile"
+		case "cascade:rows":
+			wallMenuActive = "rows"
+		case "fullscreen":
+			wallMenuActive = "full"
+		default:
+			wallMenuActive = "cols"
+		}
+		procInvalidate.Call(hwndOfWall(), 0, 1)
+	})
 }
 
 // postWallTask 把一段操作投到墙线程执行（墙没开就丢弃）。
@@ -344,6 +365,21 @@ func CloseWall() {
 	}
 }
 
+// 菜单的模态循环仍处理后台刷新；此时不能把菜单拥有者重新提到菜单上方。
+var wallTrackingMenu atomic.Uintptr
+
+// pinWallAboveClients 保持监控墙在游戏之上，不激活、不恢复最小化，也不改变窗口几何。
+// 游戏本身也可能置顶，因此不能只在建墙时设置一次 TOPMOST。
+func pinWallAboveClients(hwnd uintptr) {
+	if hwnd == 0 || wallTrackingMenu.Load() == hwnd {
+		return
+	}
+	if iconic, _, _ := procIsIconic.Call(hwnd); iconic != 0 {
+		return
+	}
+	procSetWindowPos.Call(hwnd, ^uintptr(0), 0, 0, 0, 0, clientZRestoreFlags)
+}
+
 // WallUpdate 全量更新墙上的格子（增删客户端、改标签都会跟着变）。
 // 墙没开时静默返回；已注册的缩略图会复用，不会闪。
 func WallUpdate(clients []WallClient) {
@@ -414,7 +450,7 @@ func runWall(ready chan<- error) {
 	// WS_THICKFRAME 保留：窗口仍可拖边缩放，也才有 Aero 阴影。
 	// APPWINDOW：任务栏 / Alt+Tab 里能看到监控墙（不然窗口被盖住后很难找回）。
 	// NOACTIVATE 保留：点墙仍然不抢游戏前台（多开挂机的核心约束）。
-	hwnd, _, _ := procCreateWinEx.Call(wsExNoActivate|wsExAppwindow, uintptr(unsafe.Pointer(clsName)),
+	hwnd, _, _ := procCreateWinEx.Call(wsExNoActivate|wsExAppwindow|wsExTopmost, uintptr(unsafe.Pointer(clsName)),
 		uintptr(unsafe.Pointer(title)), wsPopup|wsThickFrame|wsClipChildren|wsVisible,
 		uintptr(x), uintptr(y), uintptr(w), uintptr(h),
 		0, 0, hInst, 0)
@@ -428,7 +464,7 @@ func runWall(ready chan<- error) {
 
 	// 固定在最顶层：挂机看号时墙不能被游戏窗口盖住
 	// (HWND_TOPMOST=-1, SWP_NOSIZE|SWP_NOMOVE|SWP_NOACTIVATE)
-	procSetWindowPos.Call(hwnd, ^uintptr(0), 0, 0, 0, 0, 0x0001|0x0002|0x0010)
+	pinWallAboveClients(hwnd)
 
 	dpi, _, _ := procGetDpiForWin.Call(hwnd)
 	wallFont = makeWallFont(int(dpi))
@@ -441,18 +477,18 @@ func runWall(ready chan<- error) {
 	// 菜单按钮：与应用主题一致的配色（米白底 + 浅灰边 + 深字，
 	// 排列方案按钮 hover 感的金色点缀、危险按钮红调）
 	// 深色主题：墙背景、顶栏、分隔线、悬停底、选中金线
-	wallBgBrush, _, _ = procCreateSolidBr.Call(0x00161414)     // RGB(20,20,22)
-	wallBarBrush, _, _ = procCreateSolidBr.Call(0x001F1B1B)    // RGB(27,27,31)
+	wallBgBrush, _, _ = procCreateSolidBr.Call(0x00161414)       // RGB(20,20,22)
+	wallBarBrush, _, _ = procCreateSolidBr.Call(0x001F1B1B)      // RGB(27,27,31)
 	wallHairlinePen, _, _ = procCreatePen.Call(0, 1, 0x002A2626) // RGB(38,38,42)
-	wallHoverBrush, _, _ = procCreateSolidBr.Call(0x00242020)  // RGB(32,32,36)
-	wallAccentBrush, _, _ = procCreateSolidBr.Call(0x007CB4D8) // RGB(216,180,124)
+	wallHoverBrush, _, _ = procCreateSolidBr.Call(0x00242020)    // RGB(32,32,36)
+	wallAccentBrush, _, _ = procCreateSolidBr.Call(0x007CB4D8)   // RGB(216,180,124)
 	// 顶栏图标：常态灰、悬停白（金用 wallAccentBrush）
 	wallGlyphBrush, _, _ = procCreateSolidBr.Call(0x009CA2A5)    // RGB(165,162,156)
 	wallGlyphHotBrush, _, _ = procCreateSolidBr.Call(0x00EFF2F4) // RGB(244,242,239)
 	wallGlyphPen, _, _ = procCreatePen.Call(0, 1, 0x009CA2A5)
 	wallGlyphHotPen, _, _ = procCreatePen.Call(0, 1, 0x00EFF2F4)
 	wallAccentPen, _, _ = procCreatePen.Call(0, 2, 0x007CB4D8)
-	wallCutPen, _, _ = procCreatePen.Call(0, 2, 0x001F1B1B) // 顶栏底色，切断眼睛用
+	wallCutPen, _, _ = procCreatePen.Call(0, 2, 0x001F1B1B)          // 顶栏底色，切断眼睛用
 	wallStopGlyphPen, _, _ = procCreatePen.Call(0, 2, 0x003A5AE0)    // 红 RGB(224,90,58)
 	wallStopGlyphHotPen, _, _ = procCreatePen.Call(0, 2, 0x00506BFF) // 亮红 RGB(255,107,80)
 	wallTipBrush, _, _ = procCreateSolidBr.Call(0x002A2626)          // 提示条底 RGB(38,38,42)
@@ -467,9 +503,11 @@ func runWall(ready chan<- error) {
 	wallMu.Lock()
 	wallHwnd = hwnd
 	wallMu.Unlock()
+	stopBackground := startWallBackgroundWatch()
+	defer stopBackground()
 	// 建窗时的 WM_SIZE 早于 wallHwnd 赋值，那次布局被 hwndOfWall()==0 挡掉了；
 	// 这里补一次，否则没有客户端时顶栏永远是空的（要等第一次 WallUpdate 才出来）。
-	relayoutWall(false)
+	relayoutWall(true)
 	ready <- nil
 
 	var msg trayMsg
@@ -507,6 +545,9 @@ var cursor, _, _ = procLoadCursor.Call(0, idcArrow)
 
 func wallWndProc(hwnd, msg, wparam, lparam uintptr) uintptr {
 	switch msg {
+	case wmWallBackgroundEvent:
+		handleWallBackgroundEvent(wparam, lparam)
+		return 0
 	case wmWallTask:
 		for {
 			var done bool
@@ -525,7 +566,7 @@ func wallWndProc(hwnd, msg, wparam, lparam uintptr) uintptr {
 		}
 		return 0
 	case wmSizeWin:
-		relayoutWall(false)
+		relayoutWall(true)
 		return 0
 	case wmNcCalcSize:
 		// 客户区占满整个窗口：WS_THICKFRAME 在浅色主题下会给无边框窗口
@@ -540,7 +581,12 @@ func wallWndProc(hwnd, msg, wparam, lparam uintptr) uintptr {
 		wa := primaryWorkArea()
 		mmi.ptMaxPosition = point{X: wa.left, Y: wa.top}
 		mmi.ptMaxSize = point{X: wa.right - wa.left, Y: wa.bottom - wa.top}
-		mmi.ptMinTrackSize = point{X: 480, Y: 360}
+		dpi, _, _ := procGetDpiForWin.Call(hwnd)
+		if dpi == 0 {
+			dpi = 96
+		}
+		// 按钮跟随 DPI 放大，最小宽度也必须同步，新增保存按钮后仍保留拖动空隙。
+		mmi.ptMinTrackSize = point{X: 480 * int32(dpi) / 96, Y: 360 * int32(dpi) / 96}
 		return 0
 	case wmNcHitTest:
 		// 无边框窗口：边缘 → 缩放，顶栏空白 → 标题栏（交给系统拖动）。
@@ -613,9 +659,8 @@ func wallWndProc(hwnd, msg, wparam, lparam uintptr) uintptr {
 	return r
 }
 
-// applyWallUpdate 全量对齐格子列表（每秒一次，墙线程持有全部"已应用"
-// 状态，投递丢失时下一轮观测自带完整信息，不存在漂移）。
-// 缩略图通过 relayoutWall(hotSwap) 每秒热替换，无需任何重建扳机。
+// applyWallUpdate 比较观测与已应用状态；相同数据不重画控件、不重注册缩略图、不置顶。
+// 缩略画面由 DWM 实时合成，只有源窗口状态变化时才重连。
 func applyWallUpdate(clients []WallClient) {
 	var kept []wallTile
 	for _, c := range clients {
@@ -625,24 +670,52 @@ func applyWallUpdate(clients []WallClient) {
 		if r, _, _ := procIsWindow.Call(c.Hwnd); r == 0 {
 			continue
 		}
-		var thumb uintptr
+		iconic, _, _ := procIsIconic.Call(c.Hwnd)
+		style, _, _ := procGetWindowLongW.Call(c.Hwnd, gwlStyle)
+		style &= wsPopup | wsCaption | wsThickFrame
+		var tile wallTile
 		for _, old := range wallTiles {
-			if old.hwnd != c.Hwnd {
-				continue
+			if old.hwnd == c.Hwnd && old.pid == c.Pid {
+				tile = old
+				break
 			}
-			thumb = old.thumb
-			break
 		}
-		kept = append(kept, wallTile{
-			hwnd:   c.Hwnd,
-			pid:    c.Pid,
-			label:  c.Label,
-			thumb:  thumb,
-			aspect: clientRatio(c.Ratio, c.Hwnd),
-		})
+		// 首次接入已最小化的客户端时转换一次；之后由最小化事件处理，不周期性还原。
+		if tile.hwnd == 0 && iconic != 0 && wallBackgroundWatching.Load() {
+			if backgroundWallWindow(c.Hwnd, c.Pid) {
+				iconic, _, _ = procIsIconic.Call(c.Hwnd)
+				style, _, _ = procGetWindowLongW.Call(c.Hwnd, gwlStyle)
+				style &= wsPopup | wsCaption | wsThickFrame
+			}
+		}
+		// 保留原布局矩形；模式或最小化状态改变时仅重连这一格的画面。
+		if tile.thumb != 0 && iconic == 0 && (tile.iconic || tile.style != style) {
+			tile.thumb = 0
+		}
+		tile.hwnd, tile.pid, tile.label = c.Hwnd, c.Pid, c.Label
+		if iconic == 0 || tile.aspect <= 0 {
+			tile.aspect = clientRatio(c.Ratio, c.Hwnd)
+		}
+		tile.iconic, tile.style = iconic != 0, style
+		kept = append(kept, tile)
+	}
+	controlsChanged, sourcesChanged := wallUpdateChanges(wallTiles, kept)
+	// 没有变化时连布局及控件重绘也不触发，保留系统持续合成的画面。
+	if !controlsChanged && !sourcesChanged {
+		return
 	}
 	// 没被复用的旧缩略图注销
 	for _, old := range wallTiles {
+		present := false
+		for _, k := range kept {
+			if old.hwnd == k.hwnd && old.pid == k.pid {
+				present = true
+				break
+			}
+		}
+		if !present {
+			closeBackgroundWindow(old.hwnd)
+		}
 		if old.thumb == 0 {
 			continue
 		}
@@ -659,14 +732,17 @@ func applyWallUpdate(clients []WallClient) {
 	}
 
 	// 格子布局比例用客户端传的基准（主窗口），不跟被监控窗口跳
-	if len(clients) > 0 && clients[0].Ratio > 0 {
-		wallRatio = clients[0].Ratio
+	if controlsChanged && len(kept) > 0 && kept[0].aspect > 0 {
+		wallRatio = kept[0].aspect
 	} else if wallRatio <= 0 {
 		wallRatio = 64.0 / 45.0
 	}
 
 	wallTiles = kept
-	relayoutWall(true)
+	relayoutWall(controlsChanged)
+	if !controlsChanged {
+		return
+	}
 
 	// 标题带上数量，任务栏一眼能认
 	n := len(wallTiles)
@@ -679,21 +755,35 @@ func applyWallUpdate(clients []WallClient) {
 	}
 }
 
+// wallUpdateChanges 将控件内容变化与源状态变化分开，重复观测不能触发任何重绘。
+func wallUpdateChanges(old, next []wallTile) (controls, sources bool) {
+	if len(old) != len(next) {
+		return true, true
+	}
+	for i, n := range next {
+		o := old[i]
+		delta := o.aspect - n.aspect
+		if o.hwnd != n.hwnd || o.pid != n.pid || o.label != n.label || delta > 0.001 || delta < -0.001 {
+			controls = true
+		}
+		if o.hwnd != n.hwnd || o.pid != n.pid || o.iconic != n.iconic || o.style != n.style || (n.thumb == 0 && !n.iconic) {
+			sources = true
+		}
+	}
+	return
+}
+
 func hwndOfWall() uintptr {
 	wallMu.Lock()
 	defer wallMu.Unlock()
 	return wallHwnd
 }
 
-// relayoutWall 按当前客户区大小给每个格子算位置，格子取最大的
-// 等比缩放（列数在 1..n 里挑能铺得最满的），然后更新缩略图属性。
-// relayoutWall 按当前客户区给每个格子算位置并刷新缩略图。
-// hotSwap = 每格缩略图热替换一次（重新注册新图、设好属性、再注销旧图）：
-// 新旧同源同位、画面相同，切换零闪烁。DWM 缩略图在游戏表面挂起/恢复、
-// 全屏模式切换之后可能失去活链接——与其猜"什么事件之后该重建"，不如
-// 每秒热替换一次，任何原因的失效都在 1 秒内自愈。墙窗口缩放走
-// hotSwap=false（拖拽时 WM_SIZE 风暴，只更新属性不重注册）。
-func relayoutWall(hotSwap bool) {
+var wallInvalidateControls = func(hwnd uintptr) { procInvalidate.Call(hwnd, 0, 0) }
+
+// relayoutWall 更新几何和缩略图属性；源画面由 DWM 自行更新，不周期性热替换。
+// 仅控件变化或用户调整墙尺寸时重绘，源状态变化只重连缩略图。
+func relayoutWall(repaint bool) {
 	h := hwndOfWall()
 	if h == 0 {
 		return
@@ -767,12 +857,9 @@ func relayoutWall(hotSwap bool) {
 		}
 
 		t := wallTiles[i]
-		// 最小化的窗口没有渲染表面，缩略图是空白——先还原再捕
-		if iconic, _, _ := procIsIconic.Call(t.hwnd); iconic != 0 {
-			procShowWindow.Call(t.hwnd, swRestore)
-		}
+		// 尊重用户最小化：缩略图可能停留在最后一帧，不能为预览还原游戏。
 		rcDest := fitInside(wallTiles[i].rect, t.aspect)
-		if hotSwap || t.thumb == 0 {
+		if t.thumb == 0 && !t.iconic {
 			var nu uintptr
 			if hr, _, _ := procDwmRegister.Call(h, t.hwnd, uintptr(unsafe.Pointer(&nu))); hr == 0 {
 				props := dwmThumbProps{
@@ -781,14 +868,14 @@ func relayoutWall(hotSwap bool) {
 					opacity:  255,
 					fVisible: 1,
 				}
-				procDwmUpdateProps.Call(nu, uintptr(unsafe.Pointer(&props)))
-				if t.thumb != 0 {
-					procDwmUnregister.Call(t.thumb)
+				if hr, _, _ := procDwmUpdateProps.Call(nu, uintptr(unsafe.Pointer(&props))); hr != 0 {
+					procDwmUnregister.Call(nu)
+					continue
 				}
 				wallTiles[i].thumb = nu
 				continue
 			}
-			// 注册失败：退回旧缩略图继续用
+			// 注册失败时保持控件不动，下次源观测只重试缺失的缩略图。
 		}
 		if t.thumb != 0 {
 			props := dwmThumbProps{
@@ -797,7 +884,10 @@ func relayoutWall(hotSwap bool) {
 				opacity:  255,
 				fVisible: 1,
 			}
-			procDwmUpdateProps.Call(t.thumb, uintptr(unsafe.Pointer(&props)))
+			if hr, _, _ := procDwmUpdateProps.Call(t.thumb, uintptr(unsafe.Pointer(&props))); hr != 0 {
+				procDwmUnregister.Call(t.thumb)
+				wallTiles[i].thumb = 0
+			}
 		}
 	}
 	// 发布位置快照，跨线程的 WallTileCenter 只读这份
@@ -808,7 +898,9 @@ func relayoutWall(hotSwap bool) {
 	wallMu.Lock()
 	wallRects = rects
 	wallMu.Unlock()
-	procInvalidate.Call(h, 0, 1)
+	if repaint {
+		wallInvalidateControls(h)
+	}
 }
 
 // layoutWallMenu 摆顶栏，返回栏高。
@@ -1329,6 +1421,9 @@ func drawMenuGlyph(hdc uintptr, id string, box windowRect, brush, col uintptr, s
 		procSelectObject.Call(hdc, oldBr)
 		procSelectObject.Call(hdc, oldPen)
 		return
+	case "save":
+		drawGlyphText(hdc, wallIconFont, "\uE74E", box, col)
+		return
 	case "full":
 		// 全屏（四个箭头向外）
 		drawGlyphText(hdc, wallIconFont, "\uE740", box, col)
@@ -1413,6 +1508,10 @@ func wallClick(x, y int32) {
 			break
 		}
 		b := wallMenu[i]
+		if b.id == "save" {
+			wallShowSaveMenu(r)
+			return
+		}
 		// 窗口控制：最小化 / 最大化-还原 / 关闭
 		if b.group == menuGroupSys {
 			h := hwndOfWall()
@@ -1456,12 +1555,97 @@ func wallClick(x, y int32) {
 		if x < t.bandR.left || x > t.bandR.right || y < t.bandR.top || y > t.rect.bottom {
 			continue
 		}
+		revealBackgroundWindow(t.hwnd)
 		if r, _, _ := procIsIconic.Call(t.hwnd); r != 0 {
-			procShowWindow.Call(t.hwnd, swRestore)
+			// 跨游戏线程恢复交给目标消息队列，避免在墙的点击回调中等待渲染。
+			user32dll.NewProc("ShowWindowAsync").Call(t.hwnd, swRestore)
 		}
 		activateWindow(t.hwnd)
+		pinWallAboveClients(hwndOfWall())
 		return
 	}
+}
+
+// WallWindowRectOfPID 拒绝保存最小化坐标，避免把系统的负数停放位置当成用户布局。
+func WallWindowRectOfPID(pid uint32) (TargetRect, bool, bool) {
+	h := MainWindowOfPID(pid)
+	if h == 0 {
+		return TargetRect{}, false, false
+	}
+	if iconic, _, _ := procIsIconic.Call(h); iconic != 0 {
+		return TargetRect{}, false, false
+	}
+	r, full, ok := WindowRectOfPID(pid)
+	return r, full, ok && r.W > 0 && r.H > 0
+}
+
+// wallShowSaveMenu 使用系统菜单明确显示归属；保存放后台，避免文件写入卡住缩略图线程。
+func wallShowSaveMenu(button windowRect) {
+	hwnd := hwndOfWall()
+	if hwnd == 0 || wallHooks.SaveGroup == nil {
+		return
+	}
+	menu, _, _ := procCreatePopup.Call()
+	if menu == 0 {
+		return
+	}
+	defer procDestroyMenu.Call(menu)
+	target, name, current := "", "", false
+	if wallHooks.SaveTarget != nil {
+		target, name, current = wallHooks.SaveTarget()
+	}
+	label, flags := "无当前启动组（请另存）", uintptr(mfString|0x0001)
+	if current {
+		label, flags = "保存到当前组「"+strings.ReplaceAll(strings.ReplaceAll(name, "\x00", ""), "&", "&&")+"」", mfString
+	}
+	appendItem := func(text string, flags, id uintptr) {
+		p, _ := syscall.UTF16PtrFromString(text)
+		procAppendMenu.Call(menu, flags, id, uintptr(unsafe.Pointer(p)))
+	}
+	appendItem(label, flags, 1)
+	appendItem("另存为新的启动组…", mfString, 2)
+	pt := point{X: button.left, Y: button.bottom}
+	procClientToScreen.Call(hwnd, uintptr(unsafe.Pointer(&pt)))
+	selected := trackWallSaveMenu(hwnd, menu, pt)
+	if selected != 1 && selected != 2 {
+		return
+	}
+	if selected == 1 && !current {
+		return
+	}
+	go func() {
+		text, err := wallHooks.SaveGroup(selected == 2, target)
+		title, icon := "监控墙保存成功", uintptr(0x40)
+		if err != nil {
+			title, text, icon = "监控墙保存失败", err.Error(), 0x10
+		}
+		// 成功与失败都使用原生提示，不依赖主界面是否正在显示。
+		textPtr, _ := syscall.UTF16PtrFromString(text)
+		titlePtr, _ := syscall.UTF16PtrFromString(title)
+		user32dll.NewProc("MessageBoxW").Call(hwndOfWall(), uintptr(unsafe.Pointer(textPtr)), uintptr(unsafe.Pointer(titlePtr)), icon)
+	}()
+}
+
+// trackWallSaveMenu 暂时允许菜单拥有者激活，防止 NOACTIVATE 墙让系统菜单失去前台后被取消。
+// 菜单结束后恢复点击不抢焦点；仅当前台仍是墙时才交还原窗口，避免覆盖用户主动切换。
+func trackWallSaveMenu(hwnd, menu uintptr, pt point) uintptr {
+	wallTrackingMenu.Store(hwnd)
+	style, _, _ := procGetWindowLongW.Call(hwnd, gwlExStyle)
+	previous, _, _ := user32dll.NewProc("GetForegroundWindow").Call()
+	defer func() {
+		procSetWindowLongPtrW.Call(hwnd, gwlExStyle, style)
+		current, _, _ := user32dll.NewProc("GetForegroundWindow").Call()
+		if current == hwnd && previous != 0 && previous != hwnd {
+			procSetForeground.Call(previous)
+		}
+		wallTrackingMenu.Store(0)
+		pinWallAboveClients(hwnd)
+	}()
+	procSetWindowLongPtrW.Call(hwnd, gwlExStyle, style&^wsExNoActivate)
+	activateWindow(hwnd)
+	selected, _, _ := procTrackPopup.Call(menu, tpmReturnCmd|tpmRightButton, uintptr(pt.X), uintptr(pt.Y), 0, hwnd, 0)
+	procPostMessageW.Call(hwnd, 0, 0, 0)
+	return selected
 }
 
 // activateWindow 把窗口带到前台。墙是 NOACTIVATE 的，点墙不会让本进程
@@ -1471,10 +1655,10 @@ func activateWindow(h uintptr) {
 	if r, _, _ := procSetForeground.Call(h); r != 0 {
 		return
 	}
-	var tid uint32
-	procGetWindowThreadProcessID.Call(h, uintptr(unsafe.Pointer(&tid)))
+	// 返回值是线程 ID，输出参数才是进程 ID，不能把进程号交给 AttachThreadInput。
+	tid, _, _ := procGetWindowThreadProcessID.Call(h, 0)
 	our, _, _ := procGetCurrentThreadId.Call()
-	if tid == 0 || uintptr(tid) == our {
+	if tid == 0 || tid == our {
 		procSetForeground.Call(h)
 		return
 	}
@@ -1523,4 +1707,70 @@ func clampInt(v, lo, hi int) int {
 		return hi
 	}
 	return v
+}
+
+// ── 自动进入期间的鼠标穿透 ────────────────────────────────────
+
+// wsExTransparent 让窗口不参与鼠标命中的判定（点击穿透到下面的窗口）。
+// 只加它不够：实测（2026-11-16）还必须同时是分层窗口（WS_EX_LAYERED），
+// 否则 WindowFromPoint 仍然会把点击判给监控墙。
+const (
+	wsExTransparent = 0x00000020
+	wsExLayered     = 0x00080000
+	lwaAlpha        = 0x00000002
+)
+
+var procSetLayeredWindowAttr = user32dll.NewProc("SetLayeredWindowAttributes")
+
+var (
+	clickThroughMu sync.Mutex
+	// wallLayeredByUs 记录 LAYERED 是我们为了穿透临时加的，还原时要摘掉。
+	wallLayeredByUs bool
+)
+
+// SetWallClickThrough 临时把监控墙切成"鼠标穿透"，用完必须还原。
+//
+// 为什么需要：墙是 TOPMOST 且钉在所有客户端上面。自动进入要点游戏登录界面上的
+// 播放按钮，如果墙刚好挡在那块画面上，系统按命中测试把点击交给墙，游戏就永远
+// 收不到——表现是"脚本在点、但游戏一动不动"。切穿透后画面照旧显示（用户看得到），
+// 鼠标事件直接落到下面的游戏窗口。
+//
+// 只在自动进入那几秒里用；没有墙（单开）时是空操作。
+func SetWallClickThrough(on bool) {
+	setWindowClickThrough(hwndOfWall(), on)
+}
+
+// setWindowClickThrough 是具体实现，抽出来便于自检时对任意墙窗口调用。
+func setWindowClickThrough(h uintptr, on bool) {
+	if h == 0 {
+		return
+	}
+	clickThroughMu.Lock()
+	defer clickThroughMu.Unlock()
+
+	style, _, _ := procGetWindowLongW.Call(h, gwlExStyle)
+	next := style
+	if on {
+		next |= wsExTransparent | wsExLayered
+	} else {
+		next &^= wsExTransparent
+		if wallLayeredByUs {
+			next &^= wsExLayered
+			wallLayeredByUs = false
+		}
+	}
+	if next == style {
+		return
+	}
+	procSetWindowLongPtrW.Call(h, gwlExStyle, next)
+	if on {
+		if style&wsExLayered == 0 {
+			wallLayeredByUs = true
+		}
+		// 变成分层窗口后必须给个不透明度，否则整扇窗会看不见
+		procSetLayeredWindowAttr.Call(h, 0, 255, lwaAlpha)
+	}
+	// 扩展样式改了要让系统重算一遍命中/绘制，否则要等下一次窗口变化才生效
+	procSetWindowPos.Call(h, 0, 0, 0, 0, 0,
+		swpNoMove|swpNoSize|swpNoZOrder|swpNoActivate|swpFrameChanged)
 }
