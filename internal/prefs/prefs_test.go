@@ -2,11 +2,13 @@ package prefs
 
 import (
 	"encoding/binary"
+	"math"
+	"strings"
 	"testing"
 )
 
 // build 合成一份最小 PREF 文件（结构对实测样本）：
-// 头部 + 三个键值对（bool / int / string）+ 字符串区。
+// 头部 + 三个键值对（1 bool + 1 int + 1 string）+ 字符串区。
 // 字符串区顺序：LowPower（quality_mode 的值）→ 三个键名。
 func build(t *testing.T) []byte {
 	t.Helper()
@@ -28,10 +30,10 @@ func build(t *testing.T) []byte {
 	b := append([]byte(nil), "PREF"...)
 	w := func(v uint32) { b = binary.LittleEndian.AppendUint32(b, v) }
 	w(2)               // version
-	w(3)               // 实测样本里这个位置是会变的数，含义未知
-	w(2)               //
-	w(5)               //
-	w(5)               //
+	w(1)               // bool 段条目数：Fullscreen
+	w(1)               // int 段条目数：quality_fps
+	w(0)               // float 段条目数
+	w(1)               // string 段条目数：quality_mode
 	w(uint32(strBase)) // stringsBase
 	for _, name := range names {
 		w(uint32(rel[name]))        // 键名相对偏移
@@ -160,10 +162,10 @@ func TestEnsureAddsMissingKeys(t *testing.T) {
 	b := append([]byte(nil), "PREF"...)
 	w := func(v uint32) { b = binary.LittleEndian.AppendUint32(b, v) }
 	w(2)
-	w(3)
-	w(2)
-	w(5)
-	w(5)
+	w(1) // bool 段：只有 Fullscreen
+	w(0) // int 段
+	w(0) // float 段
+	w(0) // string 段
 	w(uint32(strBase))
 	w(uint32(rel[KeyFullscreen]))
 	w(1) // 原本全屏
@@ -202,7 +204,7 @@ func TestEnsureValueKeepsOtherKeys(t *testing.T) {
 		name, _ := cstring(b, base+int(u32(b, pos)))
 		before[name] = ""
 	}
-	out, err := EnsureValue(b, "brand_new_key", 7)
+	out, err := EnsureValue(b, "brand_new_key", KindInt, 7)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,5 +218,79 @@ func TestEnsureValueKeepsOtherKeys(t *testing.T) {
 	}
 	if v, _ := ReadValue(out, "brand_new_key"); v != 7 {
 		t.Fatalf("新键读不回来: %d", v)
+	}
+}
+
+// TestEnsureAppendsToRightSection 补键必须进各自那一段，且头部计数同步。
+//
+// 2026-11-15 之前：新键一律插在字符串区之前（也就是所有段的后面）且不改计数，
+// 于是槽位数比头部计数多——游戏按计数读，多出来的键根本读不到，
+// 而且 stringsBase 和计数对不上，严重时整份文件被判损坏后重置。
+func TestEnsureAppendsToRightSection(t *testing.T) {
+	out := build(t)
+	var err error
+
+	if out, err = EnsureValue(out, "new_bool", KindBool, 1); err != nil {
+		t.Fatalf("补 bool 键: %v", err)
+	}
+	if out, err = EnsureValue(out, "new_int", KindInt, 90); err != nil {
+		t.Fatalf("补 int 键: %v", err)
+	}
+	if out, err = EnsureValue(out, "new_float", KindFloat, math.Float32bits(0.5)); err != nil {
+		t.Fatalf("补 float 键: %v", err)
+	}
+	if out, err = EnsureString(out, "new_string", "Fresh"); err != nil {
+		t.Fatalf("补 string 键: %v", err)
+	}
+	if err := Validate(out); err != nil {
+		t.Fatalf("补完结构应当自洽: %v", err)
+	}
+	if c, want := counts(out), [kindCount]uint32{2, 2, 1, 2}; c != want {
+		t.Fatalf("各段计数 %v，期望 %v", c, want)
+	}
+
+	// 段内顺序必须是 bool → int → float → string
+	base := int(u32(out, stringsBase))
+	order := []string{}
+	for pos := entries; pos+pairSize <= base; pos += pairSize {
+		name, _ := cstring(out, base+int(u32(out, pos)))
+		order = append(order, name)
+	}
+	wantOrder := []string{
+		"kUserPreference_Fullscreen", "new_bool",
+		"quality_fps", "new_int",
+		"new_float",
+		"quality_mode", "new_string",
+	}
+	if strings.Join(order, ",") != strings.Join(wantOrder, ",") {
+		t.Fatalf("条目顺序不对:\n got %v\nwant %v", order, wantOrder)
+	}
+
+	if v, _ := ReadValue(out, "new_int"); v != 90 {
+		t.Fatalf("new_int=%d", v)
+	}
+	if s, _ := ReadString(out, "new_string"); s != "Fresh" {
+		t.Fatalf("new_string=%q", s)
+	}
+	if v, _ := ReadValue(out, KeyFullscreen); v != 1 {
+		t.Fatalf("原有 bool 键被改了: %d", v)
+	}
+}
+
+// TestAddPairRejectsBrokenFile 头部计数已经对不上时，不再往里加键。
+//
+// 坏文件越加越乱，而且游戏那边会整份重置——不如让调用方知道"这次别写了"。
+func TestAddPairRejectsBrokenFile(t *testing.T) {
+	broken := append([]byte(nil), build(t)...)
+	putU32(broken, countsBase, 9) // 谎报 bool 段有 9 条
+	if err := Validate(broken); err == nil {
+		t.Fatal("坏文件应当校验失败")
+	}
+	if _, err := EnsureValue(broken, "x", KindBool, 1); err == nil {
+		t.Fatal("坏文件上不该继续加键")
+	}
+	// 但已存在的键就地改值仍然允许：那是唯一不会让结构更糟的写法
+	if _, err := EnsureValue(broken, KeyFullscreen, KindBool, 0); err != nil {
+		t.Fatalf("已有键就地改应当允许: %v", err)
 	}
 }

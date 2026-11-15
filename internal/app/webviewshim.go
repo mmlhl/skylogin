@@ -95,8 +95,9 @@ func RunWebviewShim() int {
 	if channel == "" {
 		channel = shimChannel(filepath.Base(filepath.Dir(dir)))
 	}
-	args := rewriteChannel(os.Args[1:], channel)
-	logf("浏览器壳：镜像 %s → channel=%s", filepath.Base(dir), channel)
+	debug := cefDebugEnabled()
+	args, note := rewriteChannel(os.Args[1:], channel, debug)
+	logf("浏览器壳：镜像 %s → channel=%s%s", filepath.Base(dir), channel, note)
 
 	cmd := exec.Command(realExe, args...)
 	cmd.Dir = dir
@@ -136,10 +137,13 @@ func shimChannel(mirrorName string) string {
 }
 
 // rewriteChannel 把参数里那个 base64 配置解出来，换掉 cache_path_channel_name。
+// 返回改写后的参数，以及一句"改成了什么"（给日志用）。
+// debug=true 时同时打开 CEF 的本地调试端口（排查用，见 cefDebugEnabled）。
 //
 // 参数形态：<Mpay_IPC_...> <base64 json> [其它开关]；认不出来的原样保留。
-func rewriteChannel(args []string, channel string) []string {
+func rewriteChannel(args []string, channel string, debug bool) ([]string, string) {
 	out := make([]string, 0, len(args))
+	note := ""
 	for _, a := range args {
 		if strings.HasPrefix(a, "-") {
 			out = append(out, a)
@@ -154,9 +158,21 @@ func rewriteChannel(args []string, channel string) []string {
 		if raw, ok := cfg["configs.configs_extension_json"].(string); ok {
 			_ = json.Unmarshal([]byte(raw), &ext)
 		}
-		ext["cache_path_channel_name"] = channel
+		orig, _ := ext["cache_path_channel_name"].(string)
+		next := pickChannel(orig, channel)
+		if next != orig {
+			note = fmt.Sprintf("（原 %s）", orig)
+		}
+		ext["cache_path_channel_name"] = next
 		blob, _ := json.Marshal(ext)
 		cfg["configs.configs_extension_json"] = string(blob)
+		if debug {
+			// 端口按**最终 profile 名**派生：一个客户端会起好几个浏览器，
+			// 按登录 channel 算的话它们会抢同一个端口。
+			port := debugPortFor(next)
+			cfg["configs.remote_debugging_port"] = port
+			note += fmt.Sprintf("（调试端口 %d）", port)
+		}
 
 		encoded, err := json.Marshal(cfg)
 		if err != nil {
@@ -165,7 +181,39 @@ func rewriteChannel(args []string, channel string) []string {
 		}
 		out = append(out, base64.StdEncoding.EncodeToString(encoded))
 	}
-	return out
+	return out, note
+}
+
+// accountChannelPrefix 是游戏给"每行账号"分配的登录 profile 前缀。
+// 实测：登录/选渠道页用 h5_copy<账号 id>，一行一份。
+const accountChannelPrefix = "h5_copy"
+
+// pickChannel 决定这条 base64 配置该用哪个 profile 名。
+//
+// 为什么不能一律换成 channel：一个客户端会先后拉起**三种**浏览器（实测）：
+//
+//	h5_copy<账号 id>  登录 / 选渠道     —— 本来就是一行一份，换成 channel 正合适
+//	h5_payment        支付 / 精灵
+//	ngwebview         活动页
+//	gmbridge          游戏桥
+//
+// 后三种是所有实例共用的固定 profile。以前也一并换成 channel，于是它们和
+// 登录页挤进同一个 profile 目录，彼此之间也互相挤——CEF 的 profile 是独占的，
+// 后起的那个拿不到锁，表现就是"点开活动，浏览器直接报 DNS_PROBE_FINISHED_NXDOMAIN"。
+//
+// 所以除登录 profile 之外，一律**保留类别、只接账号键**：同类不串、跨类不撞。
+func pickChannel(orig, channel string) string {
+	if orig == "" || orig == channel {
+		return channel
+	}
+	if strings.HasPrefix(orig, accountChannelPrefix) {
+		return channel
+	}
+	suffix := strings.TrimPrefix(channel, "h5_")
+	if suffix == "" {
+		return channel
+	}
+	return orig + "_" + suffix
 }
 
 // decodeWebviewConfig 试解 base64 → JSON，并确认是浏览器的配置。
@@ -182,6 +230,29 @@ func decodeWebviewConfig(s string) (map[string]any, bool) {
 		return nil, false
 	}
 	return cfg, true
+}
+
+// cefDebugEnabled 判断要不要给浏览器开本地调试端口。
+//
+// 排查"活动页/选渠道页打不开"时最难受的是只知道一个 NXDOMAIN，看不到
+// 真实 URL、也看不到是哪个请求挂了。把 %APPDATA%\SkyLogin\cef-debug 建出来，
+// 壳就会给每个浏览器开一个按 channel 派生的 127.0.0.1 端口，外部脚本用
+// CDP 就能直接读到页面标题、URL 和网络失败原因，不用再猜。
+//
+// 默认关闭：这是排查用的后门，不该常驻开着。
+func cefDebugEnabled() bool {
+	_, err := os.Stat(filepath.Join(dataDir(), "cef-debug"))
+	return err == nil
+}
+
+// debugPortFor 从 channel 派生一个稳定的本地端口（多开之间不会撞）。
+func debugPortFor(channel string) int {
+	var h uint32 = 2166136261 // FNV-1a
+	for i := 0; i < len(channel); i++ {
+		h ^= uint32(channel[i])
+		h *= 16777619
+	}
+	return 9400 + int(h%400)
 }
 
 // installWebviewShim 在镜像里把浏览器换成本程序的硬链接。

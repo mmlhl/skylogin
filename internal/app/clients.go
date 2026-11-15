@@ -392,6 +392,16 @@ func launchAt(acc Account, dev *device.ClientProfile, ticket, channel, launchExe
 	if exe := resolveSkyPath(); exe != "" {
 		go watchMirrors(exe)
 	}
+	// 设了"窗口启动"就必须真的是窗口：预写的 preferences.sav 有可能被游戏
+	// 在启动早期重写完（Fullscreen 丢了），所以再用窗口本身兜一次底。
+	// 只对无边框/全屏的窗口动手，正常窗口不碰。
+	if acc.DisplayMode == "windowed" {
+		go func(pid uint32, name string) {
+			if win.EnsureWindowed(pid, 30*time.Second) {
+				logf("单开：%s 的窗口已切回窗口模式（预写没生效，按窗口样式兜底）", name)
+			}
+		}(uint32(p.Pid), displayName(acc))
+	}
 	go func(pid uint32, accID, name, root string) {
 		// 有的游戏会用"已有实例"检测直接退出，这里把这种情况记下来
 		time.Sleep(8 * time.Second)
@@ -560,8 +570,14 @@ func logPrefsState(tag, installRoot string) {
 	fs, _ := prefs.ReadValue(b, prefs.KeyFullscreen)
 	qm, _ := prefs.ReadString(b, prefs.KeyQualityMode)
 	qf, _ := prefs.ReadValue(b, prefs.KeyQualityFps)
-	logf("%s：%d 字节，改于 %s，Fullscreen=%d 画质=%q 帧率=%d",
-		tag, len(b), st.ModTime().Format("15:04:05"), fs, qm, qf)
+	// 结构是否自洽：游戏自己写的一定自洽；不自洽说明被改坏过（含我们自己）。
+	// 这一栏是"文件被重置/被写坏"的唯一直接证据，别省。
+	sane := "自洽"
+	if verr := prefs.Validate(b); verr != nil {
+		sane = "不自洽（" + verr.Error() + "）"
+	}
+	logf("%s：%d 字节，改于 %s，Fullscreen=%d 画质=%q 帧率=%d，结构%s",
+		tag, len(b), st.ModTime().Format("15:04:05"), fs, qm, qf, sane)
 }
 
 // effectiveQuality 计算某行账号本次启动实际预写的画质/帧率：

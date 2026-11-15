@@ -1,20 +1,31 @@
 // Package prefs 读写 TGC 自有引擎的本地设置文件
 // （data/ThatGameCompany/com.netease.sky/preferences.sav，"PREF" 格式）。
 //
-// 布局（2026-10-25 对光遇 ma75 实测解码，version=2）：
+// 布局（2026-10-25 首次解码，2026-11-15 修正头部语义，version=2）：
 //
-//	"PREF"
-//	u32 version                       // 2
-//	u32 ???                           // 观察值 26/27，含义未知，改写时原样保留
-//	u32 2
-//	u32 5
-//	u32 5
-//	u32 stringsBase                   // 字符串区起点（键名 + 字符串值混排，NUL 结尾）
-//	之后到 stringsBase：8 字节一组的 [u32 键名相对偏移][u32 值]
+//	偏移 0  "PREF"
+//	偏移 4  u32 version               // 2
+//	偏移 8  u32 boolCount             // 布尔条目数
+//	偏移 12 u32 intCount              // 整数条目数
+//	偏移 16 u32 floatCount            // 浮点条目数
+//	偏移 20 u32 stringCount           // 字符串条目数
+//	偏移 24 u32 stringsBase           // 字符串区起点（键名 + 字符串值混排，NUL 结尾）
+//	偏移 28 起，到 stringsBase：8 字节一组 [u32 键名相对偏移][u32 值]
 //	  值 = 布尔 / 整数 / 浮点（IEEE 位）；对字符串键，值 = 指向字符串区的相对偏移
 //
-// 所以改数值键 = 就地改一个 u32；改字符串键 = 把值改成表里现成字符串的
-// 偏移（表里没有就追加到文件尾——偏移都是相对 stringsBase 的，尾部追加安全）。
+// **条目按 bool → int → float → string 四段顺序排列**，段长由上面四个计数决定。
+// 2026-11-15 实测一份 34 键的文件：24 + 1 + 5 + 4 = 34，正好等于键值对总数
+// （24 个 bool、1 个 int[cloudmusic_login_reject]、5 个 float、4 个 string）。
+//
+// 所以：
+//
+//	改已存在的数值键 = 就地改一个 u32（不动结构，最安全）
+//	改已存在的字符串键 = 把值改成表里现成字符串的偏移（没有就追加到文件尾）
+//	**新增**一个键 = 插到它所属那一段的段末，并把对应计数 +1
+//
+// 最后一条以前写错过：当时把新键一律插在字符串区之前（即所有段之后）且
+// 不改计数，于是槽位数比计数多——游戏按计数读，多出来的键读不到，
+// 画质/帧率从来没真正生效过，严重时游戏判定文件损坏后整份重置。
 package prefs
 
 import (
@@ -32,9 +43,25 @@ const (
 
 const (
 	magic       = "PREF"
+	countsBase  = 8  // 四个"各段条目数"所在偏移（8/12/16/20）
 	stringsBase = 24 // u32：字符串区起点
 	entries     = 28 // 键值对区起点
 	pairSize    = 8
+)
+
+// Kind 是条目的值类型。文件里条目按这个顺序分段存放，
+// 头部的四个 u32 就是各段的条目数。
+//
+// 为什么必须分清：新键插错段、或插了不改计数，游戏按计数读就少读一条——
+// 轻则这条设置不生效，重则整份文件被判损坏后重置。
+type Kind int
+
+const (
+	KindBool   Kind = iota // 布尔：raw 0/1
+	KindInt                // 整数
+	KindFloat              // 浮点（IEEE 位）
+	KindString             // 字符串：值为指向字符串区的相对偏移
+	kindCount  = 4
 )
 
 func u32(b []byte, off int) uint32 {
@@ -139,52 +166,97 @@ func PatchString(data []byte, key, value string) ([]byte, error) {
 	return out, nil
 }
 
-// addPair 在键值表末尾插入一条空记录（值先留 0），返回新文件和这条记录的偏移。
+// counts 读四个"各段条目数"。
+func counts(data []byte) [kindCount]uint32 {
+	var c [kindCount]uint32
+	for i := 0; i < kindCount; i++ {
+		c[i] = u32(data, countsBase+4*i)
+	}
+	return c
+}
+
+// sectionEnd 返回某一类条目那一段的**末尾**偏移（下一段的开头），
+// 也就是插入新条目该落的位置：插在段末才不会打乱段内顺序。
+func sectionEnd(data []byte, kind Kind) int {
+	c := counts(data)
+	off := entries
+	for i := 0; i <= int(kind); i++ {
+		off += pairSize * int(c[i])
+	}
+	return off
+}
+
+// Validate 检查头部计数和实际槽位是否对得上。
 //
-// 做法：在 stringsBase 处插 8 字节，stringsBase 相应 +8；键名追加到文件尾。
-// **偏移都是相对 stringsBase 的**，所以字符串区整体后移不会影响已有条目——
-// 这是"安全地加一个新键"的关键。
-func addPair(data []byte, key string) (out []byte, pairOff int, err error) {
+// 游戏写出来的文件一定自洽；不自洽说明这文件被谁改坏过（包括我们自己）。
+// 启动前后各校验一次，日志里就能看出"是不是被重置了"。
+func Validate(data []byte) error {
 	if len(data) < entries || string(data[:4]) != magic {
-		return nil, 0, errors.New("不是 PREF 格式")
+		return errors.New("不是 PREF 格式")
 	}
 	base := int(u32(data, stringsBase))
 	if base < entries || base > len(data) {
-		return nil, 0, fmt.Errorf("字符串区起点异常: %d", base)
+		return fmt.Errorf("字符串区起点异常: %d", base)
 	}
+	c := counts(data)
+	used := 0
+	for i := 0; i < kindCount; i++ {
+		used += int(c[i])
+	}
+	if slots := (base - entries) / pairSize; slots != used {
+		return fmt.Errorf("头部计数合计 %d ≠ 实际槽位 %d", used, slots)
+	}
+	return nil
+}
+
+// addPair 在某一类条目的**段末**插入一条空记录（值先留 0），并给该段计数 +1。
+// 返回新文件，以及这条记录"值"字段的偏移。
+//
+// 做法：在这一段的末尾（也就是下一段的开头）插 8 字节，stringsBase 相应 +8，
+// 键名追加到文件尾。**偏移都是相对 stringsBase 的**，所以条目区整体后移
+// 不会影响已有条目的键名——这是"安全地加一个新键"的关键。
+func addPair(data []byte, key string, kind Kind) (out []byte, valOff int, err error) {
+	if err := Validate(data); err != nil {
+		// 已经不自洽的文件不再往里加东西：越加越乱，而且调用方该知道这件事。
+		return nil, 0, err
+	}
+	base := int(u32(data, stringsBase))
+	c := counts(data)
+	at := sectionEnd(data, kind)
 	newBase := base + pairSize
 
 	out = make([]byte, 0, len(data)+pairSize+len(key)+1)
-	out = append(out, data[:base]...)            // 头 + 已有键值对
-	out = append(out, make([]byte, pairSize)...) // 新记录占位
-	out = append(out, data[base:]...)            // 字符串区整体后移
+	out = append(out, data[:at]...)              // 头 + 本段之前的条目
+	out = append(out, make([]byte, pairSize)...) // 新记录占位（本段末尾）
+	out = append(out, data[at:]...)              // 后面的段 + 字符串区整体后移
 	putU32(out, stringsBase, uint32(newBase))
+	putU32(out, countsBase+4*int(kind), c[kind]+1) // 计数必须跟着 +1
 
 	// 键名追加到文件尾（相对新 base 的偏移）
 	keyRel := len(out) - newBase
 	out = append(out, []byte(key)...)
 	out = append(out, 0)
-	putU32(out, base, uint32(keyRel))
-	putU32(out, base+4, 0)
-	return out, base, nil
+	putU32(out, at, uint32(keyRel))
+	putU32(out, at+4, 0)
+	return out, at + 4, nil
 }
 
-// EnsureValue 保证数值键存在：已有就改值，没有就插一条。
+// EnsureValue 保证数值键存在：已有就改值，没有就按 kind 插到对应段末。
 //
 // 为什么需要：真实文件里这些键**不一定有**（引擎只写它当前有的设置）。
 // 以前用 PatchValue，键不存在就返回错误，调用方只好整次预写放弃——
 // 结果是"窗口化"也跟着不生效。现在缺键就地补上。
-func EnsureValue(data []byte, key string, value uint32) ([]byte, error) {
+func EnsureValue(data []byte, key string, kind Kind, value uint32) ([]byte, error) {
 	if off, err := findPair(data, key); err == nil {
 		out := append([]byte(nil), data...)
 		putU32(out, off, value)
 		return out, nil
 	}
-	out, pairOff, err := addPair(data, key)
+	out, valOff, err := addPair(data, key, kind)
 	if err != nil {
 		return nil, err
 	}
-	putU32(out, pairOff+4, value)
+	putU32(out, valOff, value)
 	return out, nil
 }
 
@@ -193,7 +265,7 @@ func EnsureString(data []byte, key, value string) ([]byte, error) {
 	if _, err := findPair(data, key); err == nil {
 		return PatchString(data, key, value)
 	}
-	out, pairOff, err := addPair(data, key)
+	out, valOff, err := addPair(data, key, KindString)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +273,7 @@ func EnsureString(data []byte, key, value string) ([]byte, error) {
 	valRel := len(out) - base
 	out = append(out, []byte(value)...)
 	out = append(out, 0)
-	putU32(out, pairOff+4, uint32(valRel))
+	putU32(out, valOff, uint32(valRel))
 	return out, nil
 }
 
@@ -220,12 +292,12 @@ func ApplyMultiDefaults(data []byte, fullscreen bool, qualityMode string, qualit
 	if fullscreen {
 		mode = 1
 	}
-	out, err := EnsureValue(data, KeyFullscreen, mode)
+	out, err := EnsureValue(data, KeyFullscreen, KindBool, mode)
 	if err != nil {
 		return nil, err
 	}
 	if qualityFps > 0 {
-		if next, e := EnsureValue(out, KeyQualityFps, uint32(qualityFps)); e == nil {
+		if next, e := EnsureValue(out, KeyQualityFps, KindInt, uint32(qualityFps)); e == nil {
 			out = next
 		}
 	}
@@ -233,6 +305,11 @@ func ApplyMultiDefaults(data []byte, fullscreen bool, qualityMode string, qualit
 		if next, e := EnsureString(out, KeyQualityMode, qualityMode); e == nil {
 			out = next
 		}
+	}
+	// 最后再校验一次：写坏的设置文件游戏会整份重置（连窗口化一起丢），
+	// 宁可这次不写、也不留一份看起来能读的坏文件。
+	if err := Validate(out); err != nil {
+		return nil, fmt.Errorf("写入后结构不自洽: %w", err)
 	}
 	return out, nil
 }

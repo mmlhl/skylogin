@@ -98,10 +98,10 @@ func buildPref(t *testing.T) []byte {
 	b := append([]byte(nil), "PREF"...)
 	w := func(v uint32) { b = binary.LittleEndian.AppendUint32(b, v) }
 	w(2)
-	w(3)
-	w(2)
-	w(5)
-	w(5)
+	w(1) // bool 段：Fullscreen
+	w(1) // int 段：quality_fps
+	w(0) // float 段
+	w(1) // string 段：quality_mode
 	w(uint32(strBase))
 	for _, name := range names {
 		w(uint32(rel[name]))

@@ -1296,9 +1296,54 @@ func ProgressiveArrange(cells []ClientCell, mode string, cols, rows, wantW, want
 	} else {
 		plan = planGrid(len(cells), cols, rows, wantW, wantH, wa)
 	}
-	// 网格/堆叠的目标是"均分格子"，窗口本身已经在窗口模式下（多开前预写过设置），
-	// 不需要再强制切窗口化。
-	return progressivePlace(cells, plan, wa, false)
+	// 除了"全屏叠放"以外，其余排列都要先把窗口从全屏切回窗口模式。
+	//
+	// 以前这里写死 false，理由是"多开前已经预写过 preferences.sav，窗口本来
+	// 就是窗口模式"。但预写只是一条理想路径：游戏更新后会在启动早期把设置
+	// 文件重置成精简版，那一刻 Fullscreen 就丢了，窗口仍以全屏姿态出现。
+	// 这时直接 MoveWindow 得到的是"被缩小的全屏窗口"——没有标题栏、拖不动、
+	// 也点不了最小化，看着就不是 Win 原生窗口。宁可多退一次全屏。
+	unfullscreen := mode != "fullscreen"
+	return progressivePlace(cells, plan, wa, unfullscreen)
+}
+
+// EnsureWindowed 等主窗口出来，若它不是"带标题栏的普通窗口"就切回来。
+// 返回是否真的动过窗口。
+//
+// 为什么需要这个兜底：预写 preferences.sav 是最干净的路，但游戏会在启动
+// 早期把设置文件重写成精简版（实测 1439 → 106 字节），那一刻 Fullscreen
+// 就丢了，窗口仍以全屏姿态出现。多开时还有排列去收拾，**单开没有任何人管**，
+// 用户看到的就是"设为窗口启动，结果全屏，还被缩成没有边框的格子"。
+//
+// 只对"没有非客户区"的窗口动手：正常窗口一个字节都不碰。
+func EnsureWindowed(pid uint32, wait time.Duration) bool {
+	deadline := time.Now().Add(wait)
+	var last windowRect
+	stable := 0
+	for time.Now().Before(deadline) {
+		h := MainWindowOfPID(pid)
+		if h != 0 {
+			if r, ok := getWindowRect(h); ok {
+				// 连续几拍矩形不变 = 引擎初始化完了，这时候改样式才不会被它覆盖
+				if stable > 0 && abs32(r.left-last.left) <= 2 && abs32(r.top-last.top) <= 2 &&
+					abs32(r.right-last.right) <= 2 && abs32(r.bottom-last.bottom) <= 2 {
+					stable++
+				} else {
+					last, stable = r, 1
+				}
+				if stable >= 3 {
+					if hasNonClientFrame(h) {
+						return false
+					}
+					Diag(fmt.Sprintf("单开：pid=%d 的窗口没有标题栏（全屏/无边框），切回窗口模式", pid))
+					exitFullscreen(h)
+					return true
+				}
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return false
 }
 
 // progressivePlace 是排列的共同实现：一句"窗口出来一个摆一个"。
@@ -1344,18 +1389,21 @@ func progressivePlace(cells []ClientCell, plan []windowRect, wa windowRect, unfu
 					continue
 				}
 			}
+			// 首摆前：先把"不是原生窗口"的窗口切回带标题栏的普通窗口。
+			//
+			// **必须在 placeWindow 之前判断**：以前是先摆再判，可一旦被缩成
+			// 格子它就不再盖满屏，isFullscreenWindow 立刻变成 false，于是一次
+			// 都不会触发——结果就是"全屏窗口被缩小成格子，但没有标题栏"。
+			// 判据也换成 hasNonClientFrame（眼睛能不能看到边框），而不是
+			// 盖不盖满屏：看着像全屏的无边框窗口才是要处理的那种。
+			if !st[i].done && unfullscreen && !hasNonClientFrame(h) {
+				exitFullscreen(h)
+				if h2 := MainWindowOfPID(c.PID); h2 != 0 {
+					h = h2
+				}
+			}
 			st[i].r = placeWindow(h, plan[i], wa)
 			if !st[i].done {
-				// 首摆前：独占全屏的窗口先切回窗口模式，否则 MoveWindow
-				// 会返回成功但窗口纹丝不动（只有按用户坐标摆时才需要，
-				// 网格排列的窗口本来就是窗口模式）
-				if unfullscreen && isFullscreenWindow(h) {
-					exitFullscreen(h)
-					if h2 := MainWindowOfPID(c.PID); h2 != 0 {
-						h = h2
-						st[i].r = placeWindow(h, plan[i], wa)
-					}
-				}
 				st[i].done = true
 				total++
 				lastNew = time.Now()
