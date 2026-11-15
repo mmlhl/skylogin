@@ -1,0 +1,16 @@
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import ts from "typescript";
+const text = await fs.readFile(new URL("../src/shellkit/accountList.ts", import.meta.url), "utf8");
+const js = ts.transpileModule(text, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
+const { orderedAccountTags, replaceAccountSubsequence, matchesAccount, accountTimeBucket } = await import("data:text/javascript;base64," + Buffer.from(js).toString("base64"));
+const account = (id, tags, extra = {}) => ({ id, tags, name: id, fullId: id, maskedName: "***", maskedId: "***", channel: "huawei", ...extra });
+const list = [account("a", ["VIP", "未分组", "A|B"]), account("b", ["vip", '引"号']), account("c", [])];
+assert.deepEqual(orderedAccountTags(list, ["vip", '引"号', "已经删掉"]), ["VIP", '引"号', "未分组", "A|B"]);
+assert.deepEqual(replaceAccountSubsequence(["a", "b", "c", "d", "e"], ["e", "c", "a"]), ["e", "b", "c", "d", "a"]);
+assert.deepEqual(replaceAccountSubsequence(["a", "b", "c"], ["c", "ghost", "c", "a"]), ["c", "b", "a"]);
+assert(matchesAccount(account("x", ["日常"], { name: "云野", fullId: "1234" }), "云 日常", () => "华为渠道"));
+assert(!matchesAccount(account("x", ["日常"]), "不存在", () => "华为渠道"));
+assert.equal(accountTimeBucket(account("x", [])), "30 天以上");
+assert.equal(accountTimeBucket(account("x", [], { createdAt: 10000 }), 10000 * 1000 + 6 * 86400 * 1000), "最近 7 天");
+console.log("PASS account list model: 独立标签身份、规范顺序、段内置换与搜索");
