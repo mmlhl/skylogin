@@ -28,6 +28,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"skylogin/internal/netdns"
 )
 
 // 网关与固定参数，全部来自实测抓包（2026-11-13，九游云游戏页的登录弹窗）。
@@ -166,12 +168,13 @@ func New() *Client {
 	jar, _ := cookiejar.New(nil)
 	// 强制 HTTP/1.1：浏览器（以及这个网关）都是 1.1 语义，
 	// 走 h2 时服务端对表单 body 的处理会出岔子（实测轮询直接 500）。
-	tr := &http.Transport{
+	// 用 Wrap 而不是 NewTransport：默认 Transport 允许 h2，这里必须保留强制 1.1 的设置。
+	tr := netdns.Wrap(&http.Transport{
 		ForceAttemptHTTP2:   false,
 		MaxIdleConns:        10,
 		IdleConnTimeout:     30 * time.Second,
 		TLSHandshakeTimeout: 10 * time.Second,
-	}
+	})
 	return &Client{
 		HTTP: &http.Client{Timeout: 20 * time.Second, Jar: jar, Transport: tr},
 		UA:   DefaultUA,

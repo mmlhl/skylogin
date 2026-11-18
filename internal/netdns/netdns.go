@@ -14,15 +14,21 @@
 //  1. 系统解析加 4 秒上限。坏掉的 DNS 有时不是立刻 NXDOMAIN，而是一直不答，
 //     不设上限会把整个签票流程拖死。
 //  2. 系统解析失败时依次问公共 DNS（阿里 / 腾讯 / 百度），任意一个答上来就用。
+//  3. 公共 DNS 也问不到时（安全软件的"DNS 保护"、加速器接管全部 53 端口），
+//     最后走一次 DoH：443 端口的 HTTPS，带证书校验，按 IP 直连。
 //
 // 只在解析失败时才会多花时间，正常网络下行为完全不变。
 package netdns
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 )
@@ -44,6 +50,25 @@ var publicDNS = []string{
 	"119.29.29.29:53", // 腾讯
 	"180.76.76.76:53", // 百度
 }
+
+// dohServer 是一个 DoH 端点：host 用来做 SNI 与证书校验，ip 用来拨号。
+//
+// 为什么不直接请求 https://dns.alidns.com：本机 DNS 已经坏了，这个名字自己
+// 都解析不出来，必须先有 IP 才能握手。证书仍按 host 校验，不是"信任任意证书"。
+type dohServer struct {
+	host string
+	ip   string
+}
+
+// dohServers 是最后一道兜底。只在 UDP 53 整体问不通时才会用到。
+var dohServers = []dohServer{
+	{host: "dns.alidns.com", ip: "223.5.5.5:443"},
+	{host: "doh.pub", ip: "1.12.12.12:443"},
+}
+
+// systemLookup 是系统解析入口。抽成变量是为了让测试能模拟"本机解析不了"，
+// 真机上永远指向 net.DefaultResolver。
+var systemLookup = net.DefaultResolver.LookupHost
 
 type cacheEntry struct {
 	addrs  []string
@@ -93,7 +118,7 @@ func LookupHost(ctx context.Context, host string) ([]string, error) {
 
 	// ① 系统解析，带 4 秒上限
 	sysCtx, cancel := context.WithTimeout(ctx, systemTimeout)
-	addrs, sysErr := net.DefaultResolver.LookupHost(sysCtx, host)
+	addrs, sysErr := systemLookup(sysCtx, host)
 	cancel()
 	if sysErr == nil && len(addrs) > 0 {
 		putCache(host, addrs, nil, okTTL)
@@ -112,10 +137,26 @@ func LookupHost(ctx context.Context, host string) ([]string, error) {
 		}
 	}
 
+	// ③ DoH 兜底：53 端口被安全软件 / 加速器整体接管时，上面那轮也问不到
+	for _, s := range dohServers {
+		if err := ctx.Err(); err != nil {
+			break
+		}
+		if got := lookupViaDoH(ctx, s, host); len(got) > 0 {
+			logf("DNS 兜底：系统与公共 DNS 都没答上来，改用 DoH（%s）解析 %s 成功", s.host, host)
+			putCache(host, got, nil, okTTL)
+			return got, nil
+		}
+	}
+
 	if sysErr == nil {
 		// 系统解析"成功"但一条记录都没有：这本身也是解析失败，别把 nil 传出去
 		sysErr = fmt.Errorf("解析 %s 没有得到任何地址", host)
 	}
+	// 全挂时把"问了哪些地方"写进日志：用户看到的是 UI 上的一句 no such host，
+	// 支持同学需要知道的是"系统 + 三个公共 DNS + DoH 都没答"，这是本地拦截，
+	// 不是凭证问题，也不是服务端故障。
+	logf("DNS 解析 %s 失败：系统与公共 DNS/DoH 均无结果（%v）；若浏览器能开网页，多半是 hosts、路由器 DNS 或安全软件拦了这个域名", host, sysErr)
 	putCache(host, nil, sysErr, failTTL)
 	return nil, sysErr
 }
@@ -136,6 +177,69 @@ func lookupVia(ctx context.Context, server, host string) []string {
 		return nil
 	}
 	return addrs
+}
+
+// lookupViaDoH 用 DoH 解析一次，返回 A 记录（失败返回 nil）。
+func lookupViaDoH(ctx context.Context, s dohServer, host string) []string {
+	tr := &http.Transport{
+		// 兜底路径一次就完，不值得留空闲连接（也可能把进程退出拖慢）。
+		DisableKeepAlives: true,
+		// 拨的是 IP，URL 里的主机名仍要用来校验证书；显式写 SNI 免得依赖实现细节。
+		TLSClientConfig: &tls.Config{ServerName: s.host},
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			d := net.Dialer{Timeout: publicTimeout}
+			return d.DialContext(ctx, "tcp", s.ip)
+		},
+	}
+	defer tr.CloseIdleConnections()
+	client := &http.Client{Timeout: publicTimeout, Transport: tr}
+
+	u := "https://" + s.host + "/resolve?name=" + url.QueryEscape(host) + "&type=A"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil
+	}
+	// dns-json：阿里 / 腾讯 / Google 都认这个格式。
+	req.Header.Set("Accept", "application/dns-json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return nil
+	}
+	return parseDoHAnswer(body)
+}
+
+// parseDoHAnswer 从 dns-json 应答里取 A 记录。
+//
+// 只接受 Status=0；CNAME(5) / AAAA(28) 一律跳过——这里要的是能直接拨的 v4 地址。
+func parseDoHAnswer(body []byte) []string {
+	var v struct {
+		Status int `json:"Status"`
+		Answer []struct {
+			Type int    `json:"type"`
+			Data string `json:"data"`
+		} `json:"Answer"`
+	}
+	if json.Unmarshal(body, &v) != nil || v.Status != 0 {
+		return nil
+	}
+	var out []string
+	for _, a := range v.Answer {
+		if a.Type != 1 {
+			continue
+		}
+		if ip := net.ParseIP(a.Data); ip != nil && ip.To4() != nil {
+			out = append(out, a.Data)
+		}
+	}
+	return out
 }
 
 func fromCache(host string) ([]string, error, bool) {
@@ -210,4 +314,14 @@ func NewTransport() *http.Transport {
 		sharedTransport = t
 	})
 	return sharedTransport
+}
+
+// Wrap 给一个自己配好的 Transport 接上 DNS 兜底。
+//
+// 给"必须保留特殊设置"的调用方用：比如九游的扫码网关强制 HTTP/1.1
+// （走 h2 时服务端处理表单会 500），不能直接换成 NewTransport() 的默认配置。
+// 只替换 DialContext，其它字段原样保留。
+func Wrap(t *http.Transport) *http.Transport {
+	t.DialContext = dialContext
+	return t
 }

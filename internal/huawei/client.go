@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"skylogin/internal/netdns"
 )
 
 const (
@@ -37,9 +39,15 @@ type Client struct {
 }
 
 // NewClient 建一个带 cookie jar 的会话。
+//
+// 走 DNS 兜底：华为的登录域名和网易域名一样，都可能被本机 DNS / 安全软件
+// 单独拦掉（见 netdns 的说明）。用户"能上网但解析不了某个域名"时，
+// 这里不该成为第一个炸掉的地方。
 func NewClient() *Client {
 	jar, _ := cookiejar.New(nil)
-	return &Client{http: &http.Client{Jar: jar, Timeout: 30 * time.Second}}
+	c := netdns.NewClient(30 * time.Second)
+	c.Jar = jar
+	return &Client{http: c}
 }
 
 // send 发一个带统一头的 POST，返回状态码和响应体。

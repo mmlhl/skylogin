@@ -26,6 +26,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"skylogin/internal/netdns"
 )
 
 const (
@@ -50,7 +52,8 @@ var (
 
 func init() {
 	jar, _ := cookiejar.New(nil)
-	client = &http.Client{Jar: jar, Timeout: 40 * time.Second}
+	client = netdns.NewClient(40 * time.Second)
+	client.Jar = jar
 }
 
 func setStatus(s string) {
@@ -180,11 +183,9 @@ func newQR() (string, []byte, error) {
 		"response_type": {"code"},
 	}.Encode()
 
-	noRedirect := &http.Client{
-		Timeout: 20 * time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+	noRedirect := netdns.NewClient(20 * time.Second)
+	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
 	}
 	req0, _ := http.NewRequest("GET", ma, nil)
 	// 必须伪装成浏览器：UA 是 Go 默认值时服务端不重定向，直接回登录页 HTML

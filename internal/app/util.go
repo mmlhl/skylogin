@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"time"
+
+	"skylogin/internal/netdns"
 )
 
 // retry 对易抖动的网络调用做有限重试。
@@ -33,8 +34,11 @@ func truncate(s string, n int) string {
 func timeSleep(sec int) { time.Sleep(time.Duration(sec) * time.Second) }
 
 // rawGET 发一次 GET 并把响应解析成 JSON（诊断用）。
+//
+// 也走 DNS 兜底：诊断请求经常是"怀疑网络有问题"时才发的，
+// 它自己先被 DNS 打死就什么都诊断不出来。
 func rawGET(u string) (map[string]any, int, error) {
-	resp, err := http.DefaultClient.Get(u)
+	resp, err := netdns.NewClient(20 * time.Second).Get(u)
 	if err != nil {
 		return nil, 0, err
 	}

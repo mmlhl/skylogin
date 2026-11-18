@@ -17,9 +17,25 @@ import (
 	"time"
 
 	"skylogin/internal/device"
+	"skylogin/internal/netdns"
 	"skylogin/internal/profile"
 	"skylogin/internal/protocol"
 )
+
+// uniSdkHTTP 是所有 uni_sauth 请求共用的客户端。
+//
+// 必须走 netdns：2026-11-18 用户反馈华为渠道启动时报
+//
+//	生成登录包失败: Post "https://mgbsdk.matrix.netease.com/ma75/sdk/uni_sauth":
+//	dial tcp: lookup mgbsdk.matrix.netease.com: no such host
+//
+// 而同一台机器上的 mpay 链路是通的——因为那边早就接了 DNS 兜底。根因就是这里
+// 原来用的是一个裸 http.Client，11-10 给 mkey 加兜底时漏了这一条：本机 DNS
+// 解析不了 *.matrix.netease.com 的用户（路由器 DNS / hosts / 安全软件按域名拦）
+// 正好卡在"华为渠道账号"这一步，界面上看着像凭证坏了，其实一次公共 DNS 就能过。
+//
+// 同时全局共享一个客户端也保住了连接池：签票是连续请求，别每次重开 TCP + TLS。
+var uniSdkHTTP = netdns.NewClient(25 * time.Second)
 
 // ChannelInfo 描述渠道身份差异：SAUTH 和登录包里的 login_channel /
 // app_channel / pay_channel / sdk_version，以及 get_access_token / realname
@@ -83,8 +99,12 @@ func NewSAUTH(uid, session, gameID string, custom map[string]any, dev *device.Cl
 }
 
 // OutboundIP 查一下出口公网 IP（拿不到就空着，不影响主流程）。
+//
+// 也走 DNS 兜底：ip / aim_info 是 SAUTH 的固定字段。解析不出来时留空虽不致命，
+// 但和"本机 DNS 坏了"叠在一起，服务端更容易回 code=400 invalid param，
+// 排错时就分不清是网络还是参数问题了。
 func OutboundIP() string {
-	client := &http.Client{Timeout: 3 * time.Second}
+	client := netdns.NewClient(6 * time.Second)
 	resp, err := client.Get("https://who.nie.netease.com/")
 	if err != nil {
 		return ""
@@ -123,7 +143,7 @@ func PostSignedWithKey(data map[string]any, shortGameID, signingKey string) (map
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "Dalvik/2.1.0 (Linux; U; Android 12; M2102K1AC Build/V417IR)")
 
-	resp, err := (&http.Client{Timeout: 25 * time.Second}).Do(req)
+	resp, err := uniSdkHTTP.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -272,4 +292,3 @@ func NeteaseChannelInfo() ChannelInfo {
 		Realname:       `{"realname_type": 0, "duration": 0}`,
 	}
 }
-

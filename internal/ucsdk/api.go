@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"skylogin/internal/netdns"
 )
 
 // GameInfo 是请求里必须带的游戏身份。
@@ -74,7 +76,7 @@ type Client struct {
 // 调用方随后用 SetDevice 覆盖。
 func New(game GameInfo) *Client {
 	return &Client{
-		HTTP: &http.Client{Timeout: 20 * time.Second},
+		HTTP: netdns.NewClient(20 * time.Second),
 		Game: game,
 		dev:  RandomDevice(),
 		csid: newCSID(),

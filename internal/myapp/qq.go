@@ -40,6 +40,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"skylogin/internal/netdns"
 )
 
 const (
@@ -81,7 +83,9 @@ type QQSession struct{ s *qqSession }
 // 关键是必须有 cookiejar —— 会话全靠 cookie 串起来。
 func qqHTTPClient() *http.Client {
 	jar, _ := cookiejar.New(nil)
-	return &http.Client{Jar: jar, Timeout: 20 * time.Second}
+	c := netdns.NewClient(20 * time.Second)
+	c.Jar = jar
+	return c
 }
 
 // reQQSrc 匹配 m_authorize 页面里的 var src = "…"。
@@ -133,11 +137,9 @@ func CreateQQSession() (*QQSession, []byte, error) {
 		"response_type": {"code"},
 	}.Encode()
 
-	noRedirect := &http.Client{
-		Timeout: 20 * time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+	noRedirect := netdns.NewClient(20 * time.Second)
+	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
 	}
 	req, _ := http.NewRequest(http.MethodGet, ma, nil)
 	req.Header.Set("User-Agent", qqUserAgent)

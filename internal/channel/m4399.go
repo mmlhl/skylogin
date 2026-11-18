@@ -26,6 +26,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"skylogin/internal/netdns"
 )
 
 const (
@@ -120,7 +122,7 @@ func m4399Post(endpoint string, dev M4399Device, uid string, extra map[string]st
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36")
 
-	client := &http.Client{Timeout: m4399HTTPTimeout}
+	client := netdns.NewClient(m4399HTTPTimeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -212,7 +214,7 @@ func M4399Check(uid, state string) (bool, error) {
 		return false, err
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36")
-	client := &http.Client{Timeout: m4399HTTPTimeout}
+	client := netdns.NewClient(m4399HTTPTimeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		return false, err

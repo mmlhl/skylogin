@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"skylogin/internal/device"
+	"skylogin/internal/netdns"
 	"skylogin/internal/netsec"
 	"skylogin/internal/profile"
 	"skylogin/internal/protocol"
@@ -184,7 +185,7 @@ func postSignedPath(endpoint string, data map[string]any) (int, string, error) {
 	req.Header.Set("X-Client-Sign", netsec.HMACSign(http.MethodPost, endpoint, string(payload), protocol.Get().LogKey))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "Dalvik/2.1.0 (Linux; U; Android 12; M2102K1AC Build/V417IR)")
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := netdns.NewClient(15 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, "", err
@@ -243,3 +244,4 @@ func redactBody(s string) string {
 	}
 	return redactJSON(m)
 }
+

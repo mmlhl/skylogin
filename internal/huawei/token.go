@@ -16,7 +16,14 @@ import (
 	"time"
 
 	"skylogin/internal/device"
+	"skylogin/internal/netdns"
 )
+
+// tokenHTTP 是换 token / 换游戏会话共用的客户端：走 DNS 兜底，超时 20 秒。
+//
+// 原来用的是 http.DefaultClient（没有超时）。华为的 oauth / dbankcloud 域名
+// 在本机 DNS 被拦时同样只会给一句 no such host，用户看到的就是"登录莫名其妙失败"。
+var tokenHTTP = netdns.NewClient(20 * time.Second)
 
 // BindST 把 ST 变换成绑定包名的 secret token。
 //
@@ -60,7 +67,7 @@ func GetAccessToken(st, packageName, clientID, deviceID string) (map[string]any,
 	req.Header.Set("Authorization", strconv.FormatInt(time.Now().UnixMilli(), 10))
 	req.Header.Set("User-Agent", ua)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := tokenHTTP.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +119,7 @@ func GetGameSession(accessToken, appID, phoneType string, dev *device.AndroidPro
 	req.Header.Set("User-Agent", fmt.Sprintf(
 		"com.huawei.hms.game/6.14.0.300 (Linux; Android 12; %s) RestClient/7.0.6.300", phoneType))
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := tokenHTTP.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -124,3 +131,4 @@ func GetGameSession(accessToken, appID, phoneType string, dev *device.AndroidPro
 	}
 	return out, nil
 }
+

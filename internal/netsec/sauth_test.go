@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"skylogin/internal/device"
+	"skylogin/internal/netdns"
 )
 
 // 固定向量：签名结果必须稳定（用官方客户端的签名行为核对过），
@@ -109,5 +110,16 @@ func TestNewLoginPayload(t *testing.T) {
 func TestNewLoginPayloadMissingJSON(t *testing.T) {
 	if _, err := NewLoginPayload(map[string]any{}, "s", "u", "1", "t", fakeDevice()); err == nil {
 		t.Fatal("缺少 unisdk_login_json 时应当报错")
+	}
+}
+
+// uni_sauth 必须走带 DNS 兜底的客户端。
+//
+// 这条回归很便宜但很关键：2026-11-10 给 mkey 加兜底时漏了这里，11-18 就变成
+// 用户侧的「生成登录包失败 … lookup mgbsdk.matrix.netease.com: no such host」。
+// 谁把它换回裸 http.Client（就没接兜底），这条会先红。
+func TestUniSdkClientUsesDNSTransport(t *testing.T) {
+	if uniSdkHTTP.Transport != netdns.NewTransport() {
+		t.Fatal("uni_sauth 的客户端没有用 netdns 的 Transport，DNS 兜底会失效")
 	}
 }

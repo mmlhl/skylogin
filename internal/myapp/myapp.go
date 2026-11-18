@@ -29,6 +29,8 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+
+	"skylogin/internal/netdns"
 )
 
 const (
@@ -61,7 +63,8 @@ const (
 	weixinPoll = "https://long.open.weixin.qq.com/connect/l/qrconnect"
 )
 
-var httpClient = &http.Client{Timeout: 20 * time.Second}
+// httpClient 走 DNS 兜底：应用宝 / 微信的域名同样可能被本机 DNS 单独拦掉。
+var httpClient = netdns.NewClient(20 * time.Second)
 
 // Session 是一次微信扫码会话。
 type Session struct {

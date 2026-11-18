@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"skylogin/internal/netdns"
+
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
@@ -81,9 +83,12 @@ func SkyVersionCode() string {
 	return ""
 }
 
-// httpGetDefault 是 CheckGameUpdate 的默认下载器（5 秒超时，只收 200）。
+// httpGetDefault 是 CheckGameUpdate 的默认下载器（8 秒超时，只收 200）。
+//
+// 8 秒而不是 5 秒：域名是网易的，本机 DNS 坏掉时兜底链要先等系统解析超时
+// （最多 4 秒）再问公共 DNS，5 秒会把兜底掐死。
 func httpGetDefault(req string) ([]byte, error) {
-	cli := &http.Client{Timeout: 5 * time.Second}
+	cli := netdns.NewClient(8 * time.Second)
 	resp, err := cli.Get(req)
 	if err != nil {
 		return nil, err

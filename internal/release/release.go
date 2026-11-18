@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"skylogin/internal/netdns"
 )
 
 // ── fork 后需要改的常量 ──────────────────────────────────────────
@@ -105,7 +107,10 @@ func Announcements(since int) ([]Announcement, error) {
 
 // ── HTTP 基础 ─────────────────────────────────────────────────────
 
-var client = &http.Client{Timeout: 5 * time.Second}
+// client 查版本 / 公告用。GitHub 的 API 域名在国内同样会被 DNS 拦，
+// 接上兜底后至少不会把"解析失败"当成"没有新版本"。
+// 8 秒是为了给兜底链留出时间：系统解析最多 4 秒，之后还要问公共 DNS。
+var client = netdns.NewClient(8 * time.Second)
 
 func getJSON(url string, out any, _ int) error {
 	resp, err := client.Get(url)
