@@ -82,7 +82,7 @@ func TestAutoEnterGate(t *testing.T) {
 	}
 
 	// 挂上闸门：等待方必须被挡住
-	armAutoEnterBatch()
+	armAutoEnterBatch(0)
 	blocked := make(chan struct{})
 	go func() { waitAutoEnterGate(); close(blocked) }()
 	select {
