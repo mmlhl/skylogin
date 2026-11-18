@@ -48,6 +48,10 @@ const (
 	wsExToolWindow = 0x80
 	wsCaption      = 0x00C00000
 	wsPopup        = 0x80000000
+	// wsDisabled 是"窗口被禁用"（模态弹窗打开时宿主窗口会带这个位）。
+	// 监控墙要盯它：游戏弹"网络异常/确认"那种模态框时，宿主窗口被禁用、
+	// 缩略图会变空；框关掉后必须重连缩略图，画面才会回来。
+	wsDisabled     = 0x08000000
 	wsMaximize     = 0x01000000
 	wsThickFrame   = 0x00040000
 	wsSysMenu      = 0x00080000

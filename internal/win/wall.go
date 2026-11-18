@@ -672,7 +672,7 @@ func applyWallUpdate(clients []WallClient) {
 		}
 		iconic, _, _ := procIsIconic.Call(c.Hwnd)
 		style, _, _ := procGetWindowLongW.Call(c.Hwnd, gwlStyle)
-		style &= wsPopup | wsCaption | wsThickFrame
+		style &= wsPopup | wsCaption | wsThickFrame | wsDisabled
 		var tile wallTile
 		for _, old := range wallTiles {
 			if old.hwnd == c.Hwnd && old.pid == c.Pid {
@@ -685,7 +685,7 @@ func applyWallUpdate(clients []WallClient) {
 			if backgroundWallWindow(c.Hwnd, c.Pid) {
 				iconic, _, _ = procIsIconic.Call(c.Hwnd)
 				style, _, _ = procGetWindowLongW.Call(c.Hwnd, gwlStyle)
-				style &= wsPopup | wsCaption | wsThickFrame
+				style &= wsPopup | wsCaption | wsThickFrame | wsDisabled
 			}
 		}
 		// 保留原布局矩形；模式或最小化状态改变时仅重连这一格的画面。
