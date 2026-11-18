@@ -109,7 +109,7 @@ type Hooks struct {
 	// HostPool 返回寄宿池状态：哪些账号能当宿主、槽里记着谁。
 	HostPool     func() any
 	Settings     func() map[string]any
-	SaveSettings func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int, autoEnterPlay *bool, multiAutoEnter *bool) error
+	SaveSettings func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int, autoEnterPlay *bool, multiAutoEnter *bool, autoEnterSlotMs *int) error
 	// SaveMpayDebug 保存官方登录窗的调试参数（用哪份 DLL / 哪个 game id / 是否跳过清理）。
 	SaveMpayDebug func(dll, game string, skipLogout bool, dataPath string) error
 	// MpayChannelStart 打开官方登录窗并强制用游戏身份（ma75），让渠道服 App 也能扫码。
@@ -894,12 +894,13 @@ func (s *Server) Handler() http.Handler {
 			MouseArbiterMin  *int    `json:"mouseArbiterMin"`
 			AutoEnterPlay    *bool   `json:"autoEnterPlay"`
 			MultiAutoEnter   *bool   `json:"multiAutoEnter"`
+			AutoEnterSlotMs  *int    `json:"autoEnterSlotMs"`
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
 			writeJSON(w, map[string]any{"ok": false, "message": "请求格式有误"})
 			return
 		}
-		if err := s.hooks.SaveSettings(body.SkyExe, body.DeviceID, body.MirrorDir, body.CloseLauncher, body.MultiQualityMode, body.MultiQualityFps, body.MouseArbiter, body.MouseArbiterMin, body.AutoEnterPlay, body.MultiAutoEnter); err != nil {
+		if err := s.hooks.SaveSettings(body.SkyExe, body.DeviceID, body.MirrorDir, body.CloseLauncher, body.MultiQualityMode, body.MultiQualityFps, body.MouseArbiter, body.MouseArbiterMin, body.AutoEnterPlay, body.MultiAutoEnter, body.AutoEnterSlotMs); err != nil {
 			writeJSON(w, map[string]any{"ok": false, "message": err.Error()})
 			return
 		}

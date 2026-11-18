@@ -132,18 +132,6 @@ async function toggleLauncher(v: boolean) {
   if (r.ok === false) message.error(r.message || "保存失败");
 }
 
-/* 自动进入：平台签票后 10 秒内自动点播放按钮。
-   单开 / 多开各一个默认值，账号详情里还能单独覆盖。 */
-async function toggleAutoEnterPlay(v: boolean) {
-  const r = await api.saveSettings({ autoEnterPlay: v });
-  if (r.ok === false) message.error(r.message || "保存失败");
-}
-
-async function toggleMultiAutoEnter(v: boolean) {
-  const r = await api.saveSettings({ multiAutoEnter: v });
-  if (r.ok === false) message.error(r.message || "保存失败");
-}
-
 /* ---- 网盘与关于 ---- */
 const checking = ref(false);
 const checkResult = ref<null | { hasUpdate: boolean; error?: string }>(null);
@@ -326,11 +314,7 @@ async function openLogs() {
           <span class="val dim">启动前自动关闭，避免抢窗口</span>
           <input type="checkbox" class="switch" :checked="s.closeLauncher" @change="toggleLauncher(($event.target as HTMLInputElement).checked)" />
         </div>
-        <div class="row">
-          <span class="key">自动进入 <span class="iinfo" title="平台签票成功后 10 秒内，自动点一下登录界面上的播放按钮进入游戏。超过 10 秒就放弃，绝不在游戏里乱点。">i</span></span>
-          <span class="val dim">单开启动时（账号可单独覆盖）</span>
-          <input type="checkbox" class="switch" :checked="s.autoEnterPlay" @change="toggleAutoEnterPlay(($event.target as HTMLInputElement).checked)" />
-        </div>
+        
 
         <!-- 多开 -->
         <p class="sect">多开</p>
@@ -340,13 +324,7 @@ async function openLogs() {
           <button class="act" @click="pickMirrorDir">修改</button>
         </div>
         <p v-if="!s.mirrorSameVolume" class="note warn">{{ `当前不在同一磁盘：会复制一份约 ${s.mirrorSizeText}，占用真实空间。` }}</p>
-        <div class="row">
-          <span class="key">自动进入 <span class="iinfo" title="多开时等这批窗口排好、监控墙拉起之后才开始，每个客户端 10 秒内自动点它的播放按钮；超时不再尝试，避免在游戏里误点。">i</span></span>
-          <span class="val dim">多开窗口排好后逐个点进游戏</span>
-          <input type="checkbox" class="switch" :checked="s.multiAutoEnter" @change="toggleMultiAutoEnter(($event.target as HTMLInputElement).checked)" />
-        </div>
-
-        <!-- 登录设备 -->
+<!-- 登录设备 -->
         <p class="sect">登录设备</p>
         <div class="row">
           <span class="key">设备号 <span class="iinfo" title="这台机器在网易 / 华为侧登记的身份指纹：同一个设备号登录不会被当成新设备。重置或更换后，账号可能需要重新验证。清理数据会一并清掉它。">i</span></span>

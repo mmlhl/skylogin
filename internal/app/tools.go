@@ -191,6 +191,7 @@ func settingsView() map[string]any {
 		"mouseArbiterMin":  c.MouseArbiterMin,
 		"autoEnterPlay":    c.AutoEnterPlayEnabled(),
 		"multiAutoEnter":   c.MultiAutoEnterEnabled(),
+		"autoEnterSlotMs":  int(c.AutoEnterSlot().Milliseconds()),
 		"dataDir":          dataDir(),
 		"version":          Version,
 		"repo":             RepoURL,
@@ -206,7 +207,7 @@ func settingsView() map[string]any {
 }
 
 // applySettings 保存界面上改动的设置；传 nil 表示不改这一项。
-func applySettings(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int, autoEnterPlay *bool, multiAutoEnter *bool) error {
+func applySettings(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int, autoEnterPlay *bool, multiAutoEnter *bool, autoEnterSlotMs *int) error {
 	return updateConfig(func(c *Config) error {
 		if skyExe != nil {
 			p := *skyExe
@@ -269,6 +270,16 @@ func applySettings(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, mul
 		}
 		if multiAutoEnter != nil {
 			c.MultiAutoEnter = multiAutoEnter
+		}
+		if autoEnterSlotMs != nil {
+			v := *autoEnterSlotMs
+			if v < 1000 {
+				v = 1000
+			}
+			if v > 30000 {
+				v = 30000
+			}
+			c.AutoEnterSlotMs = v
 		}
 		return nil
 	})

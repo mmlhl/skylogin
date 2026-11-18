@@ -594,10 +594,11 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
         arbiter: state.settings.mouseArbiter,
         arbiterMin: state.settings.mouseArbiterMin,
         autoEnter: state.settings.multiAutoEnter,
+        autoEnterSlotMs: state.settings.autoEnterSlotMs,
       };
     },
 
-    saveMultiDefaults(qualityMode, fps, arbiter, arbiterMin, autoEnter) {
+    saveMultiDefaults(qualityMode, fps, arbiter, arbiterMin, autoEnter, autoEnterSlotMs) {
       void api
         .saveSettings({
           multiQualityMode: qualityMode,
@@ -605,6 +606,7 @@ export function createRealStore(hooks: RealStoreHooks): LauncherStore {
           mouseArbiter: arbiter,
           mouseArbiterMin: arbiterMin,
           multiAutoEnter: autoEnter,
+          autoEnterSlotMs,
         })
         .then((r) => {
           if (r.ok === false) toast(r.message || "保存失败");

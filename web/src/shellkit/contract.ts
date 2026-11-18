@@ -203,6 +203,8 @@ export interface LaunchSlot {
   mode: string;
   fps: number;
   display: string;
+  /** 这次启动要不要自动点进游戏；null/缺省 = 跟随账号自己的设置 */
+  autoEnter?: boolean | null;
   /** 这次不启动它，但保留位置与参数 */
   disabled: boolean;
   x: number;
@@ -365,6 +367,8 @@ export interface CapturedRect {
     arbiterMin: number;
     /** 多开时是否自动点播放按钮进入游戏 */
     autoEnter: boolean;
+    /** 每个窗口的点击计时（毫秒） */
+    autoEnterSlotMs: number;
   };
   saveMultiDefaults(
     qualityMode: string,
@@ -372,6 +376,7 @@ export interface CapturedRect {
     arbiter?: boolean,
     arbiterMin?: number,
     autoEnter?: boolean,
+    autoEnterSlotMs?: number,
   ): void;
 
   /** 打开设置面板（由实现方决定弹什么） */

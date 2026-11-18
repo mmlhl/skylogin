@@ -273,6 +273,7 @@ function fakeState(): AppState {
       mouseArbiterMin: 3,
       autoEnterPlay: true,
       multiAutoEnter: true,
+  autoEnterSlotMs: 4000,
       railWidth: 0,
       appBuild: "123",
       appBuildTime: "11-01 20:00",

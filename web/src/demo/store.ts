@@ -487,10 +487,11 @@ export const store: LauncherStore = {
       arbiter: true,
       arbiterMin: 3,
       autoEnter: true,
+      autoEnterSlotMs: 10000,
     };
   },
 
-  saveMultiDefaults(qualityMode, fps, arbiter, arbiterMin) {
+  saveMultiDefaults(qualityMode, fps, arbiter, arbiterMin, autoEnter, autoEnterSlotMs) {
     state.multiQualityMode = qualityMode;
     state.multiQualityFps = fps;
     toast("多开默认已保存");

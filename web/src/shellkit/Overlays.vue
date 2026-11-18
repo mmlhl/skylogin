@@ -110,6 +110,10 @@ const arbiterEnabled = ref(true);
 const arbiterMinText = ref("3");
 // 多开时是否自动点播放按钮（存到全局设置，账号详情里可单独覆盖）
 const autoEnterMulti = ref(true);
+// 每个窗口的点击计时档位（和设置面板共用同一份设置）
+const autoEnterSlotMs = ref(10000);
+const autoEnterSlotOptions = [5000, 10000, 20000, 30000];
+const autoEnterSlotSec = computed(() => Math.round(autoEnterSlotMs.value / 1000));
 const arbiterMin = computed(() =>
   Math.min(60, Math.max(1, Math.round(Number(arbiterMinText.value) || 3))),
 );
@@ -132,6 +136,7 @@ watch(
     arbiterEnabled.value = d.arbiter;
     arbiterMinText.value = String(d.arbiterMin > 0 ? d.arbiterMin : 3);
     autoEnterMulti.value = d.autoEnter ?? true;
+    autoEnterSlotMs.value = d.autoEnterSlotMs || 10000;
   },
 );
 function isRunning(id: string) {
@@ -178,10 +183,28 @@ function pickArbiterMin() {
   arbiterMinText.value = String(arbiterMin.value);
   store.saveMultiDefaults("", 0, arbiterEnabled.value, arbiterMin.value);
 }
-// 自动进入：拿到票后的 10 秒内替用户点播放按钮，过时不候，避免在游戏里误点
+// 自动进入：每个窗口单独计时，轮到它才开始算；排队等待不计时
 function pickAutoEnterMulti(v: boolean) {
   autoEnterMulti.value = v;
-  store.saveMultiDefaults("", 0, arbiterEnabled.value, arbiterMin.value, v);
+  store.saveMultiDefaults(
+    "",
+    0,
+    arbiterEnabled.value,
+    arbiterMin.value,
+    v,
+    autoEnterSlotMs.value,
+  );
+}
+function pickAutoEnterSlot(ms: number) {
+  autoEnterSlotMs.value = ms;
+  store.saveMultiDefaults(
+    "",
+    0,
+    arbiterEnabled.value,
+    arbiterMin.value,
+    autoEnterMulti.value,
+    ms,
+  );
 }
 
 async function confirmMulti() {
@@ -253,13 +276,8 @@ const qAccount = computed(() =>
 const qModeRow = ref("");
 const qFpsRow = ref(0);
 const qDisplayRow = ref("");
-// 自动进入三态：null = 跟随全局（默认），true/false = 这一行单独指定
-const qAutoEnterRow = ref<boolean | null>(null);
-const autoEnterOpts = [
-  { v: null, label: "跟随全局", tip: "按「启动配置」/「多开」里的默认开关" },
-  { v: true, label: "开", tip: "这个号拿到票后就自动点进游戏" },
-  { v: false, label: "关", tip: "这个号不自动进入，停在登录界面" },
-];
+// 自动进入：只有开关两态，默认开（没有"跟随"这回事）
+const qAutoEnterRow = ref(true);
 // 三项都保留「跟随游戏」：没设过的号不该被我们按一个默认档位钉死
 // （以前默认落到 Default/60，等于用户点一下保存就把游戏里的最高画质降级了）
 const accountQualityOpts = qualityOpts;
@@ -280,7 +298,7 @@ watch(
     qModeRow.value = qAccount.value?.qualityMode ?? "";
     qFpsRow.value = qAccount.value?.qualityFps ?? 0;
     qDisplayRow.value = qAccount.value?.displayMode ?? "";
-    qAutoEnterRow.value = qAccount.value?.autoEnter ?? null;
+    qAutoEnterRow.value = qAccount.value?.autoEnter !== false;
   },
 );
 function confirmQuality() {
@@ -527,8 +545,8 @@ function confirmRename() {
 
       <p class="mlabel">
         自动进入<em class="mrec"
-          >等这批窗口全部排好、监控墙拉起之后，每个客户端在 10 秒内自动点它的
-          播放按钮；超时就放弃，不会在游戏里乱点</em
+          >等这批窗口排好、监控墙打开、所有客户端都发完票之后才开始。每个窗口单独计时：从轮到它开始算
+          {{ autoEnterSlotSec }} 秒，期间识别播放按钮并点一次；等别的窗口的时间不计入</em
         >
       </p>
       <div class="sizerow">
@@ -540,6 +558,18 @@ function confirmRename() {
           />
           <span>多开时自动点进游戏</span>
         </label>
+      </div>
+      <div class="sizerow" v-if="autoEnterMulti">
+        <span class="sizehint">每窗口计时</span>
+        <button
+          v-for="ms in autoEnterSlotOptions"
+          :key="ms"
+          class="btn"
+          :class="{ primary: autoEnterSlotMs === ms }"
+          @click="pickAutoEnterSlot(ms)"
+        >
+          {{ ms / 1000 }}s
+        </button>
       </div>
 
       <div class="mfoot">
@@ -689,17 +719,16 @@ function confirmRename() {
       </div>
       <div class="qsec">
         <div class="qlabel2">自动进入</div>
-        <div class="qpills">
-          <button
-            v-for="o in autoEnterOpts"
-            :key="'qa' + String(o.v)"
-            :class="{ on: qAutoEnterRow === o.v }"
-            :title="o.tip"
-            @click="qAutoEnterRow = o.v"
-          >
-            {{ o.label }}
-          </button>
-        </div>
+        <label class="form-check">
+          <input
+            type="checkbox"
+            :checked="qAutoEnterRow"
+            @change="
+              qAutoEnterRow = ($event.target as HTMLInputElement).checked
+            "
+          />
+          <span>拿到票后自动点进游戏（默认开）</span>
+        </label>
       </div>
 
       <p class="qnote">

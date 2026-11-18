@@ -31,6 +31,7 @@ function emptyState(): AppState {
   mouseArbiterMin: 0,
       autoEnterPlay: true,
       multiAutoEnter: true,
+  autoEnterSlotMs: 4000,
       railWidth: 0,
       accountTagOrder: [],
       maskTitles: true,

@@ -1188,6 +1188,18 @@ function onBlockUp() {
                     <option v-for="x in DISPLAYS" :key="x.v" :value="x.v">
                       {{ x.v ? x.label : "跟随组" }}
                     </option></select
+                  ><label
+                    class="enabled"
+                    :title="`${slotName(s)}自动进入：勾上就点`"
+                    ><input
+                      type="checkbox"
+                      :checked="s.autoEnter !== false"
+                      :aria-label="`${slotName(s)}自动进入`"
+                      @click.stop
+                      @change="
+                        s.autoEnter = ($event.target as HTMLInputElement)
+                          .checked
+                      " /></label
                   ><label class="enabled"
                     ><input
                       :checked="!s.disabled"

@@ -154,6 +154,8 @@ export interface Settings {
   autoEnterPlay: boolean;
   /** 多开时自动点播放按钮进入游戏 */
   multiAutoEnter: boolean;
+  /** 多开时每个账号的点击槽位（毫秒，默认 4000） */
+  autoEnterSlotMs: number;
   /** 左栏宽度（像素，0 表示用默认值） */
   railWidth: number;
   accountTagOrder?: string[];

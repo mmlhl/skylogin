@@ -415,6 +415,8 @@ export const api = {
     autoEnterPlay?: boolean;
     /** 多开时自动点播放按钮进入游戏 */
     multiAutoEnter?: boolean;
+    /** 多开时每个账号的点击槽位（毫秒） */
+    autoEnterSlotMs?: number;
   }) =>
     request("/api/settings", { method: "POST", body: JSON.stringify(payload) }),
 

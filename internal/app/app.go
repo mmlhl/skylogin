@@ -243,8 +243,8 @@ func RunUI(title string) error {
 			return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
 		},
 		Settings: settingsView,
-		SaveSettings: func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int, autoEnterPlay *bool, multiAutoEnter *bool) error {
-			return applySettings(skyExe, deviceID, mirrorDir, closeLauncher, multiQuality, multiFps, mouseArbiter, arbiterMin, autoEnterPlay, multiAutoEnter)
+		SaveSettings: func(skyExe, deviceID, mirrorDir *string, closeLauncher *bool, multiQuality *string, multiFps *int, mouseArbiter *bool, arbiterMin *int, autoEnterPlay *bool, multiAutoEnter *bool, autoEnterSlotMs *int) error {
+			return applySettings(skyExe, deviceID, mirrorDir, closeLauncher, multiQuality, multiFps, mouseArbiter, arbiterMin, autoEnterPlay, multiAutoEnter, autoEnterSlotMs)
 		},
 		MpayChannelStart: StartChannelScanLogin,
 		ChannelScanInfo:  ChannelScanInfo,
