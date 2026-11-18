@@ -70,6 +70,68 @@ func processName(pid uint32) string {
 	return filepath.Base(windows.UTF16ToString(buf[:size]))
 }
 
+// Suspended 是一个"已创建、但还没开始执行"的游戏进程。
+//
+// 为什么需要：游戏的单实例检查是"先检查再创建互斥对象"，所以多开必须让所有
+// 实例的检查挤在同一个瞬间。慢机器上 CreateProcess 要几百毫秒一个，等最后一个
+// 起来时第一个早就把锁挂上了（实测：每个加 650ms 延迟，10 开只活 2 个）。
+// 用 CREATE_SUSPENDED 先把全部进程建出来（游戏代码一行没跑），再统一放行，
+// 检查就天然对齐了（实测同样条件下 10/10 全活）。
+type Suspended struct {
+	Process windows.Handle
+	Thread  windows.Handle
+	PID     uint32
+}
+
+// StartSkySuspended 用 CREATE_SUSPENDED 创建 sky.exe，不马上执行。
+func StartSkySuspended(exe string) (*Suspended, error) {
+	appName, err := windows.UTF16PtrFromString(exe)
+	if err != nil {
+		return nil, err
+	}
+	cmdLine, err := windows.UTF16PtrFromString(`"` + exe + `" --start_from_launcher=1`)
+	if err != nil {
+		return nil, err
+	}
+	dir, err := windows.UTF16PtrFromString(filepath.Dir(exe))
+	if err != nil {
+		return nil, err
+	}
+	si := new(windows.StartupInfo)
+	si.Cb = uint32(unsafe.Sizeof(*si))
+	var pi windows.ProcessInformation
+	if err := windows.CreateProcess(appName, cmdLine, nil, nil, false,
+		windows.CREATE_SUSPENDED, nil, dir, si, &pi); err != nil {
+		return nil, err
+	}
+	return &Suspended{Process: pi.Process, Thread: pi.Thread, PID: pi.ProcessId}, nil
+}
+
+// Resume 放行（主线程开始执行）。
+func (s *Suspended) Resume() error {
+	_, err := windows.ResumeThread(s.Thread)
+	return err
+}
+
+// Close 关掉句柄（不会杀进程）。放行之后调用。
+func (s *Suspended) Close() {
+	if s.Thread != 0 {
+		windows.CloseHandle(s.Thread)
+		s.Thread = 0
+	}
+	if s.Process != 0 {
+		windows.CloseHandle(s.Process)
+		s.Process = 0
+	}
+}
+
+// Kill 结束一个还没放行（或刚放行）的进程。
+func (s *Suspended) Kill() {
+	if s.Process != 0 {
+		_ = windows.TerminateProcess(s.Process, 1)
+	}
+}
+
 // StartSky 启动光遇，返回进程句柄。
 func StartSky(exe string) (*os.Process, error) {
 	cmd := exec.Command(exe, "--start_from_launcher=1")

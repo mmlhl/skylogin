@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"skylogin/internal/secretfile"
 )
@@ -87,6 +88,13 @@ type Config struct {
 	// （Account.AutoEnter），nil = 跟随这里。默认都开。
 	AutoEnterPlay  *bool `json:"auto_enter_play,omitempty"`
 	MultiAutoEnter *bool `json:"multi_auto_enter,omitempty"`
+	// ReplyBurst / ReplyWindowMs 发票节流：每 window 最多回 burst 个，
+	// 其余排队。默认 4 个 / 200ms，现场要改直接改配置即可。
+	TicketBurst    int `json:"ticket_burst,omitempty"`
+	TicketWindowMs int `json:"ticket_window_ms,omitempty"`
+	// AutoEnterSlotMs 多开时每个账号的"点按钮"槽位（毫秒）。
+	// 0 = 默认 4000；开的号越多，整批耗时就是 数量 × 这个值。
+	AutoEnterSlotMs int `json:"auto_enter_slot_ms,omitempty"`
 
 	// a50（发烧平台）上下文的设备号：签票走 a50 优先时用它。
 	// MPay 的设备号按上下文发：本机指纹登记的号属于 ma75，a50 不认识，
@@ -126,6 +134,42 @@ func (c Config) MultiAutoEnterEnabled() bool {
 		return true
 	}
 	return *c.MultiAutoEnter
+}
+
+// ReplyBurst / ReplyWindow 发票节流参数（默认 4 个 / 200ms）。
+func (c Config) ReplyBurst() int {
+	if c.TicketBurst <= 0 {
+		return 4
+	}
+	return c.TicketBurst
+}
+
+func (c Config) ReplyWindow() time.Duration {
+	ms := c.TicketWindowMs
+	if ms <= 0 {
+		ms = 200
+	}
+	if ms < 20 {
+		ms = 20
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+// AutoEnterSlot 多开时每个窗口的点击计时：默认 10 秒，限制在 1~30 秒。
+//
+// 每个窗口单独算，排队等别的窗口的时间不算（见 autoenter.go）。
+func (c Config) AutoEnterSlot() time.Duration {
+	ms := c.AutoEnterSlotMs
+	if ms <= 0 {
+		return autoEnterSlotDefault
+	}
+	if ms < 1000 {
+		ms = 1000
+	}
+	if ms > 30000 {
+		ms = 30000
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 func configPath() string { return filepath.Join(dataDir(), "config.json") }

@@ -139,6 +139,14 @@ func arrangeWhenReady(cols, rows, w, h int, mode string) {
 		// 排列结束（或提前放弃）就是"窗口这轮稳定了"：放行自动进入的等待方。
 		// 放在 defer 里，任何 return 路径都不会把等待方挂死。
 		defer releaseAutoEnterBatch()
+		// 开墙也放 defer：排列失败 / 没有窗口可排时也要把墙打开
+		// （否则"自动进入"会等一个永远不来的墙，用户看到的就是"墙有时不开"）。
+		// defer 是后进先出，这里比 releaseAutoEnterBatch 晚注册 → 先执行。
+		defer func() {
+			if groupLaunchGeneration.Load() == generation {
+				autoOpenWall()
+			}
+		}()
 		if mode == "fullscreen" {
 			// 等第一个窗口出来，再给游戏两秒自行恢复全屏
 			deadline := time.Now().Add(3 * time.Minute)
@@ -166,7 +174,12 @@ func arrangeWhenReady(cols, rows, w, h int, mode string) {
 		// 出现靠谱：窗口出现时引擎还在初始化，也分不清凭证有没有问题。
 		batch := append([]uint32(nil), originalPIDs...)
 		crashed := []string{}
+		waitStart := time.Now()
 		waitDeadline := time.Now().Add(3 * time.Minute)
+		// 软期限：有客户端会卡在游戏自己的"网络异常，确认重试"弹窗上，
+		// 一直不发票；不能因为它把整批排列拖到几分钟后（用户看到的是
+		// "都玩了几分钟才排列"）。到点先用已就绪的窗口排。
+		softDeadline := time.Now().Add(45 * time.Second)
 		allSentAt := time.Time{}
 		for time.Now().Before(waitDeadline) {
 			time.Sleep(500 * time.Millisecond)
@@ -192,6 +205,10 @@ func arrangeWhenReady(cols, rows, w, h int, mode string) {
 			if alive := liveBatchPids(st); len(alive) < len(batch) {
 				batch = alive
 			}
+			if pending > 0 && time.Now().After(softDeadline) {
+				logf("自动排列：有 %d 个客户端 45 秒还没发完票（可能卡在游戏弹窗上），先排列已就绪的窗口", pending)
+				break
+			}
 			if pending == 0 {
 				// 存活的都发票了：再给 3 秒宽限（游戏消化票据、
 				// 可能连续要几张票），然后开始排列
@@ -210,11 +227,16 @@ func arrangeWhenReady(cols, rows, w, h int, mode string) {
 			}
 		}
 		if len(crashed) > 0 {
+			// 别写"可稍后单独再启动"——游戏是全局单实例，只要还有客户端在跑，
+			// 这些号补不进去（点启动只会被拦）。实测：多开时掉的那些，只有在
+			// 本轮全部退出之后才能单独再拉起来。
 			setLaunchAlert("有客户端闪退",
-				fmt.Sprintf("以下客户端在启动期间退出了：%s。常见原因：游戏单实例拦截、镜像被占用或凭证问题。可稍后单独再启动它们。",
+				fmt.Sprintf("以下客户端在启动期间退出了：%s。常见原因：游戏单实例拦截、镜像被占用或凭证问题。"+
+					"游戏是全局单实例：只要还有客户端在运行，这些号就补不进去；等本轮全部退出后（或点「停止运行」后）再单独启动它们。",
 					strings.Join(dedupeStrings(crashed), "、")))
 		}
 
+		logf("自动排列：等待 %.0f 秒后开始摆放窗口", time.Since(waitStart).Seconds())
 		cells := liveArrangementCells(originalCells, generation, groupLaunchGeneration.Load(), fever.ProcessAlive)
 		if len(cells) == 0 {
 			logf("自动排列：没有存活客户端，跳过")
@@ -290,8 +312,17 @@ func autoOpenWall() {
 	if !win.WallOpen() && len(runningPids()) >= 2 {
 		if _, err := ToggleWall(); err != nil {
 			logf("自动打开监控墙失败: %v", err)
-		} else {
+			return
+		}
+		// 以前只看 ToggleWall 的返回值就报"已打开"，可窗口可能根本没建出来。
+		// 这里再确认一次，没起来就明确记一笔（自动进入前还会再试）。
+		for i := 0; i < 20 && !win.WallOpen(); i++ {
+			time.Sleep(100 * time.Millisecond)
+		}
+		if win.WallOpen() {
 			logf("已自动打开监控墙")
+		} else {
+			logf("自动打开监控墙：调用了但墙没起来，稍后自动进入会再试一次")
 		}
 	}
 }

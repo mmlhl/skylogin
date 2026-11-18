@@ -137,13 +137,20 @@ func RemoveAllMirrors(root string) {
 // 游戏退出后，崩溃上报/浏览器子进程可能还短暂持有 DLL 的映像句柄，
 // 这时 DeleteFile 会 Access denied。等一两秒通常就放开了。
 func removeDir(dir string) bool {
-	for i := 0; i < 6; i++ {
+	return removeDirWith(dir, 6, 700*time.Millisecond)
+}
+
+// removeDirWith 是 removeDir 的可调版本（重试次数/间隔抽出来给测试用）。
+func removeDirWith(dir string, attempts int, wait time.Duration) bool {
+	for i := 0; i < attempts; i++ {
 		if err := os.RemoveAll(dir); err == nil {
 			if _, statErr := os.Stat(dir); statErr != nil {
 				return true
 			}
 		}
-		time.Sleep(700 * time.Millisecond)
+		if i+1 < attempts {
+			time.Sleep(wait)
+		}
 	}
 	return false
 }
@@ -296,6 +303,31 @@ func ProcessAlive(pid uint32) bool {
 	return err == nil && ev == uint32(windows.WAIT_TIMEOUT)
 }
 
+// ExitCodeOf 取一个**已经退出**的进程的退出码。
+//
+// 为什么要它：多开时"只起来一部分"是最难查的一类问题——进程在启动后
+// 十几秒消失，日志里只有一句"客户端已退出"，看不出是游戏自己检测到重复实例
+// 后正常退出（0/1），还是加载阶段崩了（0xC0000005 访问冲突、0xC0000135 缺 DLL、
+// 0xC0000142 DLL 初始化失败）。有退出码就能一眼分开这两类。
+//
+// 进程还活着（STILL_ACTIVE）或打不开时返回 ok=false。
+func ExitCodeOf(pid uint32) (uint32, bool) {
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return 0, false
+	}
+	defer windows.CloseHandle(h)
+	var code uint32
+	if err := windows.GetExitCodeProcess(h, &code); err != nil {
+		return 0, false
+	}
+	const stillActive = 259
+	if code == stillActive {
+		return 0, false
+	}
+	return code, true
+}
+
 // KillProcessTree 结束一个进程及其所有子进程（镜像安装下的 webview 浏览器等）。
 func KillProcessTree(pid uint32) error {
 	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
@@ -330,24 +362,32 @@ func KillProcessTree(pid uint32) error {
 	return nil
 }
 
-// RemoveMirrorDirs 只删指定的镜像目录（名字相对镜像根目录）。
+// RemoveMirrorDirs 只删指定的镜像目录（名字相对镜像根目录），返回没删掉的。
 //
 // 为什么按名字删，而不是"把根目录下所有 sky-* 都删掉"：清理协程要等
 // "全部客户端退出"之后才动手，慢机器上这个等待可能拖到下一批多开已经
 // 把新镜像建好。这时整批删除会把新镜像删掉——新客户端从半删的目录里
 // 启动，表现是批量闪退，或者 preferences.sav 消失（游戏重建默认设置，
 // 用户看到的就是"画质/窗口化不生效"）。
-func RemoveMirrorDirs(root string, names []string) {
+//
+// 返回剩下的目录名，调用方据此决定要不要还原浏览器壳（删不掉的目录里
+// 不能留一个被换过的浏览器）。
+func RemoveMirrorDirs(root string, names []string) []string {
 	if root == "" || len(names) == 0 {
 		_ = os.Remove(root)
-		return
+		return nil
 	}
+	var left []string
 	for _, name := range names {
 		dir := filepath.Join(root, name)
 		if len(ProcessesFrom(dir)) > 0 {
+			left = append(left, name)
 			continue
 		}
-		removeDir(dir)
+		if !removeDir(dir) {
+			left = append(left, name)
+		}
 	}
 	_ = os.Remove(root) // 空了就顺手删掉
+	return left
 }

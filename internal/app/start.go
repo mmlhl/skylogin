@@ -142,6 +142,12 @@ func launchAccount(acc Account) (string, error) {
 			p, _, perr = buildPayloadFn(acc, dev)
 		}
 		if perr != nil {
+			// 连不上不等于凭证失效：能走到这里说明 netdns 的系统解析、公共 DNS
+			// 和 DoH 都没答上来（或者线路整体不通）。这时提示玩家去"重新扫码 /
+			// 刷新凭证"只会白白丢掉一份好凭证，所以文案要把方向指对。
+			if channel.IsNetwork(perr) {
+				return "", fmt.Errorf("生成登录包失败（网络或 DNS 异常，不是凭证失效；检查网络后重试即可）: %w", perr)
+			}
 			return "", fmt.Errorf("生成登录包失败: %w", perr)
 		}
 		payload.Body = p.Body
@@ -309,6 +315,8 @@ type multiSlot struct {
 	lastTicket time.Time
 	ready      chan struct{} // 预签完成（无论成败都会 close；nil 表示没有预签）
 	ticketErr  error         // 预签结果
+	retried    bool          // 已经补启过一次（每批每号最多一次）
+	stopped    bool          // 用户手动停的（启动看护协程不许再补启）
 }
 
 // launchMany 同时启动多个客户端，每个账号一个。
@@ -418,6 +426,9 @@ func launchMany(ids []string, ovMode string, ovFps int) (string, error) {
 		name string
 		err  error
 	}
+	// 挂起批量创建：把所有进程先建出来，等齐了再统一放行（见 suspendBatch）。
+	beginSuspendBatch(len(picked))
+	defer endSuspendBatch()
 	out := make(chan launchResult, len(picked))
 	var wg sync.WaitGroup
 	for i, acc := range picked {
@@ -483,7 +494,7 @@ func launchManyLayout(ids []string, cols, rows, w, h int, display string, ovMode
 	nextFullscreen.Store(fullscreen)
 	defer nextFullscreen.Store(false)
 	// 多开先挂闸门：自动进入要等这一批窗口排好、监控墙拉起来之后再计时
-	armAutoEnterBatch()
+	armAutoEnterBatch(len(ids))
 	msg, err := launchMany(ids, ovMode, ovFps)
 	if err != nil {
 		// 没启动起来就没有"窗口稳定"可言，直接放行，别让等待方干等

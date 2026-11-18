@@ -29,11 +29,22 @@ import (
 )
 
 const (
+	// defaultReplyBurst / defaultReplyWindow 发票节流：每 window 最多 burst 个，
+	// 其余排队。默认 4 个 / 200ms。
+	defaultReplyBurst  = 4
+	defaultReplyWindow = 200 * time.Millisecond
 	// replyWindow 应答次数的计算窗口：卡登录时连续重试有上限，
 	// 但在网络错误页停留很久再点重试时重新计数，路由不会被次数卡死。
 	replyWindow = 10 * time.Minute
 	// routeSweep 多久检查一次
 	routeSweep = 5 * time.Second
+	// crashWindow 启动观察期：这段时间里进程消失算"启动期闪退"，
+	// 会记退出码并在多开时补启一次。游戏从拉起（10~20s 不等）
+	// 到真正要票可能隔几十秒，窗口开太短会漏掉。
+	crashWindow = 60 * time.Second
+	// retryDelay 补启前的等待：给同批其他客户端一点时间站稳，
+	// 别让"补启"变成第二波并发高峰。
+	retryDelay = 8 * time.Second
 )
 
 var (
@@ -52,6 +63,12 @@ var (
 	runningByAccount = map[string]uint32{}
 	// janitorOn 避免重复起清理协程
 	janitorOn bool
+	// retryMu 让"闪退补启"串行：同时崩三个时一次性再拉满会重演同样的竞争
+	retryMu sync.Mutex
+	// mirrorNames 本批建的镜像目录名（清理时按它删）；mirrorWatcherOn 保证
+	// "全部退出后清理"只由一个协程负责，不再每个客户端各起一个。
+	mirrorNames     []string
+	mirrorWatcherOn bool
 )
 
 // ensureHostLocked 保证宿主窗口存在。调用方必须持有 hostMu。
@@ -80,6 +97,63 @@ func ensureHostLocked() error {
 }
 
 // handleTicket 收到某个游戏实例的 op13：只给这个 pid 对应的账号发票。
+// ── 发票节流 ────────────────────────────────────────────────────
+//
+// 多开时十几个客户端几乎同时向平台要票。一次性全部回过去有两个问题：
+// 游戏端会挤在一起重试（表现成"与平台通信失败"），我们自己的签票请求
+// 也会一起打到服务器。默认每 200ms 只回 4 个，其余排队；
+// 数字可以用配置覆盖（reply_burst / reply_window_ms），方便现场调。
+
+type replyGate struct {
+	mu     sync.Mutex
+	burst  int
+	window time.Duration
+	tokens int
+	last   time.Time
+}
+
+var ticketGate = &replyGate{burst: defaultReplyBurst, window: defaultReplyWindow, tokens: defaultReplyBurst, last: time.Now()}
+
+func (g *replyGate) configure(burst int, window time.Duration) {
+	if burst <= 0 || window <= 0 {
+		return
+	}
+	g.mu.Lock()
+	if g.burst != burst || g.window != window {
+		g.burst, g.window = burst, window
+		if g.tokens > burst {
+			g.tokens = burst
+		}
+	}
+	g.mu.Unlock()
+}
+
+// wait 拿一个令牌；拿不到就小睡再试（队列就是在这里排的）。
+func (g *replyGate) wait() {
+	for {
+		g.mu.Lock()
+		now := time.Now()
+		gap := g.window / time.Duration(g.burst)
+		if gap <= 0 {
+			gap = time.Millisecond
+		}
+		if refill := int(now.Sub(g.last) / gap); refill > 0 {
+			g.tokens += refill
+			if g.tokens > g.burst {
+				g.tokens = g.burst
+			}
+			g.last = g.last.Add(time.Duration(refill) * gap)
+		}
+		if g.tokens > 0 {
+			g.tokens--
+			g.mu.Unlock()
+			return
+		}
+		g.mu.Unlock()
+		time.Sleep(gap / 2)
+	}
+}
+
 func handleTicket(h *fever.Host, req fever.TicketRequest) bool {
 	clientsMu.Lock()
 	slot := clients[req.ProcessID]
@@ -120,6 +194,11 @@ func handleTicket(h *fever.Host, req fever.TicketRequest) bool {
 	logf("收到游戏取票请求 #%d: pid=%d（%s，id=%x…）", n, req.ProcessID, displayName(*slot.acc), req.Identifier[:6])
 
 	go func() {
+		// 发票节流：多开时十几个客户端几乎同时要票，一次性全部回过去会
+		// 让游戏端排队重试、也把自己的签票请求挤在一起。默认每 200ms
+		// 最多回 4 个（可在配置里改），其余在这里排队等令牌。
+		ticketGate.configure(loadConfig().ReplyBurst(), loadConfig().ReplyWindow())
+		ticketGate.wait()
 		clientsMu.Lock()
 		t, ch := slot.ticket, slot.channel
 		slot.ticket = "" // 票是一次性的
@@ -365,26 +444,128 @@ func startClient(acc Account, dev *device.ClientProfile, ticket, channel string)
 	return launchAt(acc, dev, ticket, channel, launchExe, "", 0, -1, false)
 }
 
+// ── 多开：挂起批量创建 + 统一放行 ────────────────────────────────
+//
+// 实测（tools/insttest，见 .ai/04 #82）：启动之间每个插 650ms 延迟，
+// 10 开只活 2 个；改成 CREATE_SUSPENDED 先全部建好、再统一 ResumeThread，
+// 同样 650ms 的创建开销下 10/10 全活。
+//
+// 原理：游戏的单实例检查是"先检查再创建互斥对象"，成败只取决于**所有
+// CreateProcess 是否都赶在第一个进程执行到检查点之前**。挂起创建让所有
+// 进程在放行前一行代码都没跑，检查点天然对齐；慢机器/杀软扫描只是让
+// "创建"变慢，不再吃掉竞态窗口。
+type suspendBatch struct {
+	mu     sync.Mutex
+	want   int
+	held   int
+	open   chan struct{}
+	closed bool
+}
+
+var (
+	suspendMu sync.Mutex
+	suspend   *suspendBatch
+)
+
+// beginSuspendBatch 在拉起这一批之前调用；n <= 1 不启用（单开不用竞态）。
+func beginSuspendBatch(n int) {
+	if n <= 1 {
+		return
+	}
+	b := &suspendBatch{want: n, open: make(chan struct{})}
+	suspendMu.Lock()
+	suspend = b
+	suspendMu.Unlock()
+	// 兜底：万一某个创建失败、凑不齐 want，也要在 4 秒内放行，
+	// 不能把已经建好的进程一直挂在挂起态。
+	time.AfterFunc(4*time.Second, b.release)
+}
+
+func currentSuspendBatch() *suspendBatch {
+	suspendMu.Lock()
+	defer suspendMu.Unlock()
+	return suspend
+}
+
+// endSuspendBatch 收尾：清掉批次并保证放行（重复调用安全）。
+func endSuspendBatch() {
+	suspendMu.Lock()
+	b := suspend
+	suspend = nil
+	suspendMu.Unlock()
+	if b != nil {
+		b.release()
+	}
+}
+
+func (b *suspendBatch) add() {
+	b.mu.Lock()
+	b.held++
+	if b.held >= b.want {
+		b.closeLocked()
+	}
+	b.mu.Unlock()
+}
+
+func (b *suspendBatch) release() {
+	b.mu.Lock()
+	b.closeLocked()
+	b.mu.Unlock()
+}
+
+func (b *suspendBatch) closeLocked() {
+	if b.closed {
+		return
+	}
+	b.closed = true
+	close(b.open)
+}
+
+func (b *suspendBatch) wait(d time.Duration) {
+	select {
+	case <-b.open:
+	case <-time.After(d):
+	}
+}
+
 // launchAt 用指定目录启动并登记（多开时目录已提前建好，这里只管拉进程）。
 // order 是窗口排列用的顺序号（多开按用户勾选的先后传入），-1 表示不指定、
 // 由 registerClient 按注册顺序补；multi 表示这一轮是多开（决定自动进入
 // 读哪个默认开关：账号自己的 > 多开默认 > 单开默认）。
 func launchAt(acc Account, dev *device.ClientProfile, ticket, channel, launchExe string, ovMode string, ovFps int, order int64, multi bool) (string, error) {
 	acc = wallLaunchSettings(acc, ovMode, ovFps)
-	p, err := startSkyPidFn(launchExe)
-	if err != nil {
-		// 直接启动失败（通常是权限），退回提权启动；这种方式拿不到 pid
-		if elevated, e2 := startSkyFn(launchExe); e2 == nil {
-			slot := &multiSlot{acc: &acc, dev: dev, ticket: ticket, channel: channel, createdAt: time.Now(), seq: order, multi: multi}
-			clientsMu.Lock()
-			fellback = slot
-			clientsMu.Unlock()
-			if elevated {
-				logf("光遇需要管理员权限，已通过提权方式启动")
+
+	// 多开：优先"挂起创建"，等这一批全部建好再统一放行（见 suspendBatch 注释）。
+	var held *fever.Suspended
+	var batch *suspendBatch
+	var pid uint32
+	if multi {
+		if b := currentSuspendBatch(); b != nil {
+			if s, serr := fever.StartSkySuspended(launchExe); serr == nil {
+				held, batch, pid = s, b, s.PID
+				b.add()
+			} else {
+				logf("挂起创建失败，退回普通启动（%s）: %v", displayName(acc), serr)
 			}
-			return fmt.Sprintf("已启动光遇\n游戏路径: %s", launchExe), nil
 		}
-		return "", fmt.Errorf("启动光遇失败: %w", err)
+	}
+	if held == nil {
+		p, err := startSkyPidFn(launchExe)
+		if err != nil {
+			// 直接启动失败（通常是权限），退回提权启动；这种方式拿不到 pid
+			if elevated, e2 := startSkyFn(launchExe); e2 == nil {
+				slot := &multiSlot{acc: &acc, dev: dev, ticket: ticket, channel: channel, createdAt: time.Now(), seq: order, multi: multi}
+				clientsMu.Lock()
+				fellback = slot
+				clientsMu.Unlock()
+				if elevated {
+					logf("光遇需要管理员权限，已通过提权方式启动")
+				}
+				return fmt.Sprintf("已启动光遇\n游戏路径: %s", launchExe), nil
+			}
+			return "", fmt.Errorf("启动光遇失败: %w", err)
+		}
+		pid = uint32(p.Pid)
 	}
 
 	slot := &multiSlot{acc: &acc, dev: dev, ticket: ticket, channel: channel, seq: order, multi: multi}
@@ -393,11 +574,24 @@ func launchAt(acc Account, dev *device.ClientProfile, ticket, channel, launchExe
 		// 避免 op13→op14 这段走网络导致游戏超时弹错误页。
 		slot.ready = make(chan struct{})
 	}
-	registerClient(uint32(p.Pid), slot)
+	registerClient(pid, slot)
+
+	// 放行：所有实例的创建都完成后才一起 ResumeThread。
+	if held != nil {
+		batch.wait(5 * time.Second)
+		if err := held.Resume(); err != nil {
+			logf("放行游戏进程失败（%s）: %v", displayName(acc), err)
+			held.Kill()
+			held.Close()
+			return "", fmt.Errorf("放行游戏进程失败: %w", err)
+		}
+		held.Close()
+	}
+
 	if slot.ready != nil {
 		go preMint(slot)
 	}
-	logf("光遇已启动: %s（pid=%d）", launchExe, p.Pid)
+	logf("光遇已启动: %s（pid=%d）", launchExe, pid)
 	if exe := resolveSkyPath(); exe != "" {
 		go watchMirrors(exe)
 	}
@@ -409,13 +603,28 @@ func launchAt(acc Account, dev *device.ClientProfile, ticket, channel, launchExe
 			if win.EnsureWindowed(pid, 30*time.Second) {
 				logf("单开：%s 的窗口已切回窗口模式（预写没生效，按窗口样式兜底）", name)
 			}
-		}(uint32(p.Pid), displayName(acc))
+		}(pid, displayName(acc))
 	}
 	go func(pid uint32, accID, name, root string) {
-		// 有的游戏会用"已有实例"检测直接退出，这里把这种情况记下来
-		time.Sleep(8 * time.Second)
-		if !fever.ProcessAlive(pid) {
-			logf("客户端 %s（pid=%d）启动后很快退出：可能被游戏的单实例检测拦下了", name, pid)
+		// 有的游戏会用"已有实例"检测直接退出，这里把这种情况记下来。
+		// 8 秒只是第一个观察点：多开时真正死于单实例检测/加载失败的往往在
+		// 10~20 秒之间（CDP/CEF、资源加载都在这段），所以后面继续盯到 60 秒，
+		// 死了就带退出码记一笔，并（多开时）补启一次。
+		deadline := time.Now().Add(crashWindow)
+		loggedPrefs := false
+		for time.Now().Before(deadline) {
+			time.Sleep(time.Second)
+			if fever.ProcessAlive(pid) {
+				if !loggedPrefs && time.Since(slot.createdAt) >= 8*time.Second {
+					loggedPrefs = true
+					// 看看游戏有没有把设置文件按自己的值改回去
+					// （"画质/窗口化写了却不生效"最常见的一种情况）
+					logPrefsState("启动 8 秒后（"+name+"）", root)
+				}
+				continue
+			}
+			code, ok := fever.ExitCodeOf(pid)
+			logClientExit(slot, name, pid, time.Since(slot.createdAt), code, ok)
 			clientsMu.Lock()
 			delete(clients, pid)
 			if cur, ok := runningByAccount[accID]; ok && cur == pid {
@@ -424,18 +633,126 @@ func launchAt(acc Account, dev *device.ClientProfile, ticket, channel, launchExe
 			if fellback != nil && fellback.pid == pid {
 				fellback = nil
 			}
+			// 只在"多开、从没发过票、没重试过、不是用户手动停的"时补启：
+			// 发过票说明凭证链路是通的，再启一次会把这个账号顶掉，比不启更糟；
+			// 用户点「停止」之后更不能再把它拉起来。
+			retry := mayRetryCrash(slot.stopped, !slot.ticketSent.IsZero(), slot.retried, multi)
 			clientsMu.Unlock()
+			if retry {
+				go retryCrashedClient(slot, name, ovMode, ovFps)
+			}
 			return
 		}
-		// 还活着：看看游戏有没有把设置文件按自己的值改回去
-		// （"画质/窗口化写了却不生效"最常见的一种情况）
-		logPrefsState("启动 8 秒后（"+name+"）", root)
-	}(uint32(p.Pid), accountKey(acc), displayName(acc), filepath.Dir(launchExe))
+	}(pid, accountKey(acc), displayName(acc), filepath.Dir(launchExe))
 	return fmt.Sprintf("已启动光遇\n游戏路径: %s", launchExe), nil
 }
 
-// chooseInstall 决定这次用哪个安装目录。
+// shouldRetryCrash 判断一次启动期退出要不要补启。
 //
+// 规则刻意保守：只补"多开、还没发出过票、也没补过"的那一次。
+// 发过票说明凭证链路是通的，再拉一次会把这个号顶掉（单设备有效），
+// 比少一个窗口更糟；补过还退说明不是偶发竞争，继续重试只是刷日志。
+func shouldRetryCrash(ticketSent, retried, multi bool) bool {
+	return multi && !ticketSent && !retried
+}
+
+// mayRetryCrash 在 shouldRetryCrash 之上再加一条：用户手动停掉的不许补启
+// （否则"点停止 → 8 秒后它自己又起来了"）。
+func mayRetryCrash(stopped, ticketSent, retried, multi bool) bool {
+	return !stopped && shouldRetryCrash(ticketSent, retried, multi)
+}
+
+// logClientExit 记录"启动期退出"，带上退出码。
+//
+// 这一行是排查"多开只起来一部分"的关键：0/1 是游戏自己退出（重复实例、
+// 自身检测），0xC0000xxx 是真的崩了（缺 DLL / 访问冲突），两者处理方式
+// 完全不同，以前日志里只有一句"客户端已退出"分不出来。
+func logClientExit(slot *multiSlot, name string, pid uint32, lived time.Duration, code uint32, ok bool) {
+	detail := "退出码拿不到（可能已被系统回收）"
+	if ok {
+		detail = fmt.Sprintf("退出码=%d（0x%X，%s）", code, code, exitHint(code))
+	}
+	state := "还没发过票"
+	if !slot.ticketSent.IsZero() {
+		state = "已经发过票"
+	}
+	logf("客户端 %s（pid=%d）启动 %.1f 秒后退出：%s；%s", name, pid, lived.Seconds(), detail, state)
+}
+
+// exitHint 把常见退出码翻译成一句人话。
+func exitHint(code uint32) string {
+	switch code {
+	case 0, 1, 2:
+		return "正常退出，多半是游戏的重复实例检测或自身放弃"
+	case 0xC0000005:
+		return "访问冲突，进程崩了"
+	case 0xC0000135:
+		return "缺少 DLL"
+	case 0xC0000142:
+		return "DLL 初始化失败"
+	case 0xC0000409:
+		return "快速失败（栈溢出/安全检查）"
+	case 0xC000001D:
+		return "非法指令（CPU 不支持）"
+	case 0xC0000006:
+		return "页错误（文件被删/被占用）"
+	}
+	return "异常退出"
+}
+
+// retryCrashedClient 在一个启动期闪退的客户端上再试一次（每批每号最多一次）。
+//
+// 前提很硬：**游戏是全局单实例**，只要本轮还有别的客户端在跑，新拉的进程
+// 一定过不了启动检查，补启只会白跑一趟。所以这里先看 liveClients()：
+// 只有"本轮已经全空了"（所有客户端都退出）才真的补；否则只记一行日志说明
+// 为什么没补——比让用户点一次"启动"再被拦一次强。
+//
+// 补启串行 + 有延迟，避免几个补启又形成一波并发。
+func retryCrashedClient(slot *multiSlot, name, ovMode string, ovFps int) {
+	retryMu.Lock()
+	defer retryMu.Unlock()
+	time.Sleep(retryDelay)
+
+	if n := liveClients(); n > 0 {
+		logf("闪退补启（%s）：还有 %d 个客户端在跑，游戏全局单实例，这时候补不进去；本轮全部退出后再单独启动它", name, n)
+		return
+	}
+
+	// 只补"还没发过票"的：发过票说明凭证链路通，再启一次会把这个号顶掉。
+	clientsMu.Lock()
+	ticket, channel := slot.ticket, slot.channel
+	acc := *slot.acc
+	order := slot.seq
+	clientsMu.Unlock()
+	if accountRunning(accountKey(acc)) {
+		return
+	}
+
+	exe := resolveSkyPath()
+	if exe == "" {
+		return
+	}
+	// 原镜像可能已经被清理协程删掉，重建一套最稳（硬链接镜像只要几十毫秒）。
+	m, err := prepareMirror(exe, acc, ovMode, ovFps)
+	if err != nil {
+		logf("闪退补启（%s）：建镜像失败: %v", name, err)
+		return
+	}
+	if _, err := launchAt(acc, slot.dev, ticket, channel, m, ovMode, ovFps, order, true); err != nil {
+		logf("闪退补启（%s）失败: %v", name, err)
+		return
+	}
+	clientsMu.Lock()
+	if pid := runningByAccount[accountKey(acc)]; pid != 0 {
+		if s := clients[pid]; s != nil {
+			s.retried = true
+		}
+	}
+	clientsMu.Unlock()
+	logf("闪退补启：已单独重新拉起 %s（每批每号只补一次）", name)
+}
+
+// chooseInstall 决定这次用哪个安装目录。//
 // 第一个客户端用原目录；之后每个客户端都**新建**一套镜像目录，
 // 全部退出后统一删除（见 watchMirrors），下次多开再重新建。
 //
@@ -479,6 +796,7 @@ func prepareMirror(exe string, acc Account, ovMode string, ovFps int) (string, e
 		logf("浏览器壳安装失败: %v", err)
 	}
 	writeShimChannelHint(m, channelKey)
+	trackMirror(name)
 	logf("第 %d 套镜像已就绪: %s", seq+1, m)
 	return filepath.Join(m, filepath.Base(exe)), nil
 }
@@ -608,6 +926,13 @@ func stopAccount(accountID string) error {
 		return fmt.Errorf("这个账号没有在运行的光遇")
 	}
 	logf("停止账号 %s 的光遇（pid=%d）", accountID, pid)
+	clientsMu.Lock()
+	if s := clients[pid]; s != nil {
+		// 用户手动停的：启动看护协程看到进程消失时不能再补启，
+		// 否则"点停止 → 8 秒后又自己起来了"。
+		s.stopped = true
+	}
+	clientsMu.Unlock()
 	_ = fever.KillProcessTree(pid)
 	clientsMu.Lock()
 	delete(clients, pid)
@@ -622,45 +947,79 @@ func stopAccount(accountID string) error {
 }
 
 // watchMirrors 等所有客户端退出后清理镜像目录。
+//
+// 只跑一个观察者：以前每个客户端启动都 spawn 一个，11 个客户端就有 11 个
+// 协程在"全部退出"后同时扫同一批目录、各自重试删除、各自打一行日志
+// （日志里那串重复的"镜像已清理"就是这么来的）。现在镜像名统一登记，
+// 谁先退谁清理，其余观察者直接退出。
 func watchMirrors(exe string) {
+	if !startMirrorWatcher() {
+		return
+	}
+	defer stopMirrorWatcher()
+
 	root := fever.MirrorRoot(exe, loadConfig().MirrorDir)
-	// 先给"我这一批"的镜像目录拍个快照：清理协程要等"全部客户端退出"
-	// 之后才动手，慢一点的机器上这个等待可能拖到下一批多开已经开始建目录，
-	// 那时整目录删除会把新镜像删掉——新客户端从半删的目录里启动，
-	// 表现是闪退、或者 preferences.sav 没了（画质/窗口化"不生效"）。
-	known := mirrorDirNames(exe, root)
 	for i := 0; i < 360; i++ { // 最多盯 30 分钟
 		if liveClients() == 0 {
 			time.Sleep(3 * time.Second) // 给游戏收尾留时间
-			restoreShimsOf(root, known) // 先把浏览器还原，再删目录
-			fever.RemoveMirrorDirs(root, known)
-			// 做一轮清理就收工：仍有游戏在用的镜像会被跳过，它们的
-			// 清理由自己批次的观察者或下次启动的清理兜底。旧观察者
-			// 继续空转只会和新批次的启动赛跑。
-			logf("客户端已全部退出，镜像已清理（在用的已跳过）")
+			if liveClients() > 0 {
+				continue // 等待期间有客户端（或补启）又起来了，下一轮再说
+			}
+			names := takeMirrorNames()
+			if len(names) == 0 {
+				return
+			}
+			// 先删目录：壳（本程序的硬链接）跟着目录一起没了，不用先改名再删，
+			// 省掉每个镜像一次 30MB 文件的删除+改名。删不掉的（浏览器子进程
+			// 还占着文件）才还原壳，保证目录里不会留一个被换过的浏览器。
+			if left := fever.RemoveMirrorDirs(root, names); len(left) > 0 {
+				restoreShimsOf(root, left)
+				fever.RemoveMirrorDirs(root, left)
+			}
+			logf("客户端已全部退出，镜像已清理（%d 套，仍在用的已跳过）", len(names))
 			return
 		}
 		time.Sleep(5 * time.Second)
 	}
 }
 
-// mirrorDirNames 列出某个游戏当前所有的镜像目录名（相对镜像根目录）。
-func mirrorDirNames(exe, root string) []string {
-	prefix := filepath.Base(filepath.Dir(exe)) + "-"
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return nil
+// startMirrorWatcher 只允许一个观察者存在。
+func startMirrorWatcher() bool {
+	clientsMu.Lock()
+	defer clientsMu.Unlock()
+	if mirrorWatcherOn {
+		return false
 	}
-	var out []string
-	for _, e := range entries {
-		if e.IsDir() && strings.HasPrefix(e.Name(), prefix) {
-			out = append(out, e.Name())
-		}
-	}
-	return out
+	mirrorWatcherOn = true
+	return true
 }
 
-// restoreShimsOf 只还原指定目录里的浏览器壳（清理协程用快照里的名字）。
+func stopMirrorWatcher() {
+	clientsMu.Lock()
+	mirrorWatcherOn = false
+	clientsMu.Unlock()
+}
+
+// trackMirror 登记本批创建的镜像目录名（清理时按它删，不扫全目录）。
+func trackMirror(name string) {
+	if name == "" {
+		return
+	}
+	clientsMu.Lock()
+	mirrorNames = append(mirrorNames, name)
+	clientsMu.Unlock()
+}
+
+// takeMirrorNames 取走并清空登记的镜像名。
+func takeMirrorNames() []string {
+	clientsMu.Lock()
+	defer clientsMu.Unlock()
+	names := mirrorNames
+	mirrorNames = nil
+	return names
+}
+
+// restoreShimsOf 只还原指定目录里的浏览器壳（清理时删不掉的那几个）。
 func restoreShimsOf(root string, names []string) {
 	for _, name := range names {
 		dir := filepath.Join(root, name)

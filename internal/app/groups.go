@@ -43,7 +43,10 @@ type GroupSlot struct {
 	Mode       string `json:"mode,omitempty"`    // "" = 跟随组
 	Fps        int    `json:"fps,omitempty"`     // 0 = 跟随组
 	Display    string `json:"display,omitempty"` // "" = 跟随组
-	Disabled   bool   `json:"disabled,omitempty"`
+	// AutoEnter 这套组里对这个账号的自动进入覆盖：nil = 跟随账号自己的设置。
+	// 账号详情里已经有一份开关，这里再加一层是为了"同一套组里有的号点、有的不点"。
+	AutoEnter *bool `json:"auto_enter,omitempty"`
+	Disabled  bool  `json:"disabled,omitempty"`
 	// 窗口位置（物理像素）。HasRect=false 表示"这套没记过位置"，
 	// 启动时按排列方式算，不去摆一个 0,0,0,0。
 	X       int  `json:"x,omitempty"`

@@ -58,6 +58,10 @@ func groupAccountSettings(a Account, g LaunchGroup, s GroupSlot) Account {
 	if s.Display != "" {
 		a.DisplayMode = s.Display
 	}
+	// 组里单独指定了"这个号要不要自动进入"就覆盖账号自己的设置
+	if s.AutoEnter != nil {
+		a.AutoEnter = s.AutoEnter
+	}
 	if a.DisplayMode == "" {
 		a.DisplayMode = "windowed"
 	}
@@ -204,6 +208,10 @@ func executeGroupBatch(plan groupLaunchPlan, ops groupBatchOps) ([]Account, erro
 		paths[i] = p
 	}
 	// 必须先建齐镜像再同时启动：串行间隔会触发游戏全局单实例检测。
+	// 用挂起批量创建把这层竞态做稳（慢机器上 CreateProcess 一个要几百毫秒，
+	// 普通连发会让尾部错过窗口）。
+	beginSuspendBatch(len(picked))
+	defer endSuspendBatch()
 	errs := make([]error, len(picked))
 	var wg sync.WaitGroup
 	for i := range picked {
@@ -315,7 +323,7 @@ func launchGroup(id string) (string, error) {
 		return "", err
 	}
 	// 启动组也是多开：自动进入要等这批窗口排好、监控墙拉起之后再计时
-	armAutoEnterBatch()
+	armAutoEnterBatch(len(plan.picked))
 	started, launchErr := executeGroupBatch(plan, groupBatchOps{
 		precheck: func(a []Account) ([]Account, []string, []string, int) {
 			return precheckGroupAccounts(a, byKey, dev)
@@ -548,11 +556,22 @@ func arrangeGroupWhenReady(g LaunchGroup, plan groupLaunchPlan, started []Accoun
 		// 排列（或提前放弃）就是"窗口这轮稳定了"：放行自动进入的等待方。
 		// 放 defer 里，任何 return 都不会把等待方挂死。
 		defer releaseAutoEnterBatch()
+		// 开墙同样放 defer：排列提前 return 时也要把墙开起来，
+		// 否则自动进入会等一个不会出现的墙（现象就是"监控墙有时没开"）。
+		defer func() {
+			if groupLaunchGeneration.Load() == generation {
+				autoOpenWall()
+			}
+		}()
 		var batch []uint32
 		for _, c := range byKey {
 			batch = append(batch, c.PID)
 		}
 		deadline, readyAt := time.Now().Add(3*time.Minute), time.Time{}
+		// 软期限：有的客户端会卡在游戏自己的"网络异常，确认重试"弹窗上，
+		// 一直不发票；不能因为它把整批排列拖几分钟（用户看到的是"进去很久
+		// 才排列"）。到点就先用已经就绪的窗口排。
+		softDeadline := time.Now().Add(45 * time.Second)
 		for time.Now().Before(deadline) {
 			if groupLaunchGeneration.Load() != generation {
 				return
@@ -562,6 +581,10 @@ func arrangeGroupWhenReady(g LaunchGroup, plan groupLaunchPlan, started []Accoun
 				if s.Alive && !s.TicketSent {
 					pending = true
 				}
+			}
+			if pending && time.Now().After(softDeadline) {
+				logf("启动组排列：有客户端 45 秒还没发完票（可能卡在游戏弹窗上），先排列已就绪的窗口")
+				break
 			}
 			if !pending {
 				if readyAt.IsZero() {

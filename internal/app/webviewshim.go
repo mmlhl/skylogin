@@ -22,6 +22,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"skylogin/internal/fever"
 )
 
 const (
@@ -269,7 +271,7 @@ func installWebviewShim(mirrorRoot string) error {
 	if _, err := os.Stat(browser); err != nil {
 		return nil // 这个版本没有浏览器组件，跳过
 	}
-	self, err := os.Executable()
+	src, err := shimSource(mirrorRoot)
 	if err != nil {
 		return err
 	}
@@ -283,12 +285,49 @@ func installWebviewShim(mirrorRoot string) error {
 	}
 	_ = os.WriteFile(filepath.Join(cefDir, shimMarkerName), []byte(time.Now().Format(time.RFC3339)+"\n"), 0o644)
 	_ = os.Remove(browser)
-	if err := os.Link(self, browser); err != nil {
-		if err := copyFile(self, browser); err != nil {
+	if err := os.Link(src, browser); err != nil {
+		if err := copyFile(src, browser); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// shimTemplateName 是镜像根目录下的"壳模板"。同卷硬链接不了本程序时，
+// 先在这里放一份，之后每套镜像都从模板硬链接，不再逐份复制。
+const shimTemplateName = ".sky-shim.exe"
+
+// shimSource 返回可以用来硬链接的壳本体。
+//
+// 为什么需要模板：os.Executable() 和镜像不在同一卷时（工具装在 C:、
+// 游戏和多开目录在 D:/E:），os.Link 必然失败，旧代码退化成 copyFile ——
+// 每套镜像复制一份约 30MB 的本程序，11 开就是 300MB+ 的写入，还都是
+// 刚建好镜像、最该快的时候。模板放在镜像根目录（与镜像同卷），
+// 第一套复制一次，其余全部硬链接。
+func shimSource(mirrorRoot string) (string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	if fever.SameVolume(self, mirrorRoot) {
+		return self, nil
+	}
+	selfInfo, err := os.Stat(self)
+	if err != nil {
+		return "", err
+	}
+	tmpl := filepath.Join(mirrorRoot, shimTemplateName)
+	if ti, err := os.Stat(tmpl); err == nil && ti.Size() == selfInfo.Size() && !ti.ModTime().Before(selfInfo.ModTime()) {
+		return tmpl, nil
+	}
+	if err := os.MkdirAll(mirrorRoot, 0o755); err != nil {
+		return "", err
+	}
+	_ = os.Remove(tmpl)
+	if err := copyFile(self, tmpl); err != nil {
+		return "", err
+	}
+	return tmpl, nil
 }
 
 // restoreWebviewShim 把镜像里的浏览器还原成真身（删壳、改回原名）。
